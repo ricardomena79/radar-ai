@@ -1,7 +1,11 @@
-"""Proveedor de datos de mercado basado en Yahoo Finance (vía yfinance)."""
+"""Proveedor de datos de mercado basado en Yahoo Finance (vía yfinance).
+
+Responsabilidad única: obtener datos crudos de Yahoo Finance y normalizarlos
+a Quote. No calcula indicadores, no aplica scoring ni filtra símbolos.
+"""
 
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 import yfinance as yf
@@ -16,7 +20,36 @@ class YahooFinanceProvider(DataProvider):
     def get_quote(self, symbol: str) -> Quote:
         """Consulta yfinance y normaliza la respuesta a un Quote."""
         info = self._fetch_info(symbol)
+        return self._quote_from_info(symbol, info)
 
+    def get_quotes(self, symbols: List[str]) -> List[Quote]:
+        """Obtiene cotizaciones para varios símbolos compartiendo una única sesión HTTP.
+
+        Pensado para escanear listas grandes de símbolos (el Universo Racional
+        completo): un símbolo inválido o sin datos no interrumpe al resto.
+        """
+        if not symbols:
+            return []
+
+        tickers = yf.Tickers(" ".join(symbols)).tickers
+
+        quotes: List[Quote] = []
+        for symbol in symbols:
+            ticker = tickers.get(symbol) or tickers.get(symbol.upper())
+            if ticker is None:
+                continue
+            try:
+                info = ticker.info
+                if not info:
+                    continue
+                quotes.append(self._quote_from_info(symbol, info))
+            except (ProviderError, QuoteNotFoundError):
+                continue
+
+        return quotes
+
+    def _quote_from_info(self, symbol: str, info: Dict[str, Any]) -> Quote:
+        """Normaliza el diccionario `info` de yfinance a un Quote."""
         last_price = info.get("regularMarketPrice") or info.get("currentPrice")
         previous_close = info.get("regularMarketPreviousClose") or info.get("previousClose")
 
