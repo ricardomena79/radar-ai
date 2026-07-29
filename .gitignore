@@ -1,0 +1,12 @@
+.claude/
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+
+atlas/logs/*
+!atlas/logs/.gitkeep
+
+atlas/cache/*
+!atlas/cache/.gitkeep
