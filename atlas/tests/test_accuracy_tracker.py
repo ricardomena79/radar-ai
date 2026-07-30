@@ -14,7 +14,8 @@ from atlas.engine.decision_engine import COMPRAR, DESCARTAR, VIGILAR
 from atlas.knowledge import NORMAL, STATUS_ESTIMATED, STATUS_OK, KnowledgeEngine, MarketEvent
 from atlas.knowledge.engine_versions import current_versions_json
 from atlas.knowledge.prediction_store import PredictionRecord
-from atlas.learning import MIN_SAMPLE_SIZE, AccuracyTracker
+from atlas.learning import AccuracyTracker
+from atlas.learning.accuracy_tracker import MIN_SAMPLE_SIZE
 
 TEST_DB = Path(__file__).resolve().parents[1] / "cache" / "test_accuracy_tracker.db"
 
