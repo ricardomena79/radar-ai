@@ -71,6 +71,7 @@ class YahooFinanceProvider(DataProvider):
             previous_close=previous_close,
             market_cap=info.get("marketCap"),
             sector=info.get("sector"),
+            industry=info.get("industry"),
             float_shares=info.get("floatShares"),
             average_volume=average_volume,
             relative_volume=self._calculate_relative_volume(volume, average_volume),

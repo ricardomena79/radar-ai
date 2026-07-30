@@ -20,6 +20,7 @@ class Quote:
     previous_close: Optional[float]
     market_cap: Optional[float] = None
     sector: Optional[str] = None
+    industry: Optional[str] = None
     float_shares: Optional[int] = None
     average_volume: Optional[int] = None
     relative_volume: Optional[float] = None
