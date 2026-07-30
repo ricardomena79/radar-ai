@@ -4,9 +4,11 @@ Research Lab y Strategy Lab son solo interfaz todavía: se verifica que se
 puedan instanciar y que cada método declarado lance NotImplementedError (no
 un error inesperado, no un resultado inventado).
 
-Decision Journal sí tiene su registro (record_trade) implementado: se
-verifica que funcione end-to-end, y que su base de datos quede
-completamente separada de la Knowledge Base (archivos .db distintos).
+Decision Journal sí tiene su registro (record_trade/get_trades) implementado:
+se verifica que funcione end-to-end, que sea un repositorio puro (sin
+métodos de análisis ni estadísticas -- eso vive en Operator Learning
+Engine), y que su base de datos quede completamente separada de la
+Knowledge Base (archivos .db distintos).
 """
 
 from pathlib import Path
@@ -83,22 +85,18 @@ def test_decision_journal_records_and_stays_isolated() -> None:
     assert stored.buy_reason == "Ruptura de VWAP con RVOL alto"
     assert stored.profit_loss_percent == 2.17
 
-    stats = journal.get_statistics()
-    assert stats.total_trades == 1
-    assert stats.win_rate == 1.0
-
-    for call in (
-        journal.find_best_time_windows,
-        journal.find_best_asset_types,
-        journal.detect_recurring_errors,
-        journal.detect_early_exits,
-        journal.find_ignored_recommendations,
-    ):
-        try:
-            call()
-            raise AssertionError("Se esperaba NotImplementedError")
-        except NotImplementedError:
-            pass
+    # Decision Journal es un repositorio puro: no debe exponer ningún método
+    # de análisis ni de estadísticas (eso vive en Operator Learning Engine).
+    forbidden_methods = (
+        "get_statistics",
+        "find_best_time_windows",
+        "find_best_asset_types",
+        "detect_recurring_errors",
+        "detect_early_exits",
+        "find_ignored_recommendations",
+    )
+    for method_name in forbidden_methods:
+        assert not hasattr(journal, method_name), f"Decision Journal no debería exponer '{method_name}'"
 
     journal.close()
 
@@ -107,9 +105,8 @@ def test_decision_journal_records_and_stays_isolated() -> None:
     assert JOURNAL_TEST_DB.name != "atlas_knowledge.db"
 
     print(f"Decision Journal: operación registrada y leída correctamente (id={trade_id}).")
-    print(f"  Estadísticas: {stats.total_trades} operación(es), win_rate={stats.win_rate}")
     print(f"  Base de datos aislada: {JOURNAL_TEST_DB.name} (distinta de la Knowledge Base)")
-    print("  Métodos de análisis del operador responden NotImplementedError (esperado).")
+    print("  Confirmado: no expone get_statistics() ni métodos de análisis (repositorio puro).")
 
 
 if __name__ == "__main__":

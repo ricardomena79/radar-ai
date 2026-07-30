@@ -7,12 +7,10 @@ y no importa nada de atlas.knowledge: no hay forma de que estos dos
 conocimientos se mezclen por accidente, ni siquiera compartiendo una
 conexión o una tabla.
 
-`registrar una operación` (record_trade) es la función central y ya está
-implementada: no requiere ningún algoritmo, es la estructura de datos que
-pediste. Lo que todavía NO está implementado son los análisis futuros sobre
-el propio operador (horarios, tipos de acciones, errores repetitivos,
-ventas tempranas, recomendaciones ignoradas): esos métodos existen como
-interfaz (firma + docstring) y lanzan NotImplementedError.
+Responsabilidad única: registrar operaciones y exponer una API de lectura.
+No analiza comportamiento, no genera estadísticas, no saca conclusiones --
+eso es responsabilidad exclusiva de Operator Learning Engine, que consume
+estos datos a través de `get_trades()`.
 """
 
 import sqlite3
@@ -74,16 +72,6 @@ def _row_to_trade(row: sqlite3.Row) -> Trade:
         final_result=row["final_result"],
         profit_loss_percent=row["profit_loss_percent"],
     )
-
-
-@dataclass(frozen=True)
-class JournalStatistics:
-    """Estadísticas agregadas simples del diario (conteos y promedios, no patrones)."""
-
-    total_trades: int
-    trades_with_result: int
-    win_rate: Optional[float]
-    avg_profit_loss_percent: Optional[float]
 
 
 class DecisionJournalStore:
@@ -180,33 +168,18 @@ class DecisionJournalStore:
         rows = self._connection.execute(query, params).fetchall()
         return [_row_to_trade(row) for row in rows]
 
-    def get_statistics(self) -> JournalStatistics:
-        """Conteos y promedios simples. No es análisis de patrones (ver DecisionJournal)."""
-        total = self._connection.execute("SELECT COUNT(*) AS n FROM trades").fetchone()["n"]
-        row = self._connection.execute(
-            """
-            SELECT
-                COUNT(*) AS with_result,
-                AVG(CASE WHEN profit_loss_percent > 0 THEN 1.0 ELSE 0.0 END) AS win_rate,
-                AVG(profit_loss_percent) AS avg_pl
-            FROM trades WHERE profit_loss_percent IS NOT NULL
-            """
-        ).fetchone()
-
-        return JournalStatistics(
-            total_trades=int(total),
-            trades_with_result=int(row["with_result"] or 0),
-            win_rate=row["win_rate"],
-            avg_profit_loss_percent=row["avg_pl"],
-        )
-
     def close(self) -> None:
         self._connection.close()
 
 
 class DecisionJournal:
-    """Fachada del Decision Journal. Registra operaciones ya; analiza patrones del
-    operador todavía no (ver los métodos que lanzan NotImplementedError abajo)."""
+    """Fachada del Decision Journal: registrar y leer, nada más.
+
+    Cualquier análisis del comportamiento del operador (horarios, errores
+    repetitivos, ventas tempranas/tardías, disciplina, cumplimiento de las
+    recomendaciones de Atlas, evolución del desempeño) vive en
+    Operator Learning Engine, que consume estos datos vía `get_trades()`.
+    """
 
     def __init__(self, db_path: Optional[Path] = None) -> None:
         self.trades = DecisionJournalStore(db_path)
@@ -218,34 +191,6 @@ class DecisionJournal:
     def get_trades(self, **kwargs) -> List[Trade]:
         """Consulta operaciones registradas (ver DecisionJournalStore.get_trades)."""
         return self.trades.get_trades(**kwargs)
-
-    def get_statistics(self) -> JournalStatistics:
-        """Conteos y promedios simples del diario."""
-        return self.trades.get_statistics()
-
-    # --- Análisis futuro del comportamiento del operador (todavía no implementado) ---
-
-    def find_best_time_windows(self) -> list:
-        """Horarios donde el operador obtiene mejores resultados."""
-        raise NotImplementedError("Decision Journal: análisis de horarios todavía no implementado.")
-
-    def find_best_asset_types(self) -> list:
-        """Tipos de acciones/sectores donde el operador tiene mayor porcentaje de éxito."""
-        raise NotImplementedError("Decision Journal: análisis de tipos de activo todavía no implementado.")
-
-    def detect_recurring_errors(self) -> list:
-        """Errores repetitivos del operador (patrones asociados a pérdidas)."""
-        raise NotImplementedError("Decision Journal: detección de errores repetitivos todavía no implementada.")
-
-    def detect_early_exits(self) -> list:
-        """Ventas demasiado tempranas: casos donde el precio siguió subiendo después de vender."""
-        raise NotImplementedError("Decision Journal: detección de ventas tempranas todavía no implementada.")
-
-    def find_ignored_recommendations(self) -> list:
-        """Operaciones donde el operador ignoró la recomendación de Atlas (Decision Engine)."""
-        raise NotImplementedError(
-            "Decision Journal: detección de recomendaciones ignoradas todavía no implementada."
-        )
 
     def close(self) -> None:
         self.trades.close()
