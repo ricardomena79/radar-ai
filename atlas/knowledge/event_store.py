@@ -26,6 +26,19 @@ NORMAL = "NORMAL"
 
 EVENT_TYPES = {EXPLOSION, COLLAPSE, FALSE_BREAKOUT, NORMAL}
 
+# Fuente de un dato: de dónde vino cada pieza de información.
+SOURCE_YAHOO_FINANCE = "Yahoo Finance"
+SOURCE_RACIONAL = "Racional"
+SOURCE_CALCULATED = "Calculado por Atlas"
+DATA_SOURCES = {SOURCE_YAHOO_FINANCE, SOURCE_RACIONAL, SOURCE_CALCULATED}
+
+# Estado de un dato en el momento en que se capturó.
+STATUS_OK = "OK"
+STATUS_TIMEOUT = "TIMEOUT"
+STATUS_UNAVAILABLE = "NO DISPONIBLE"
+STATUS_ESTIMATED = "ESTIMADO"
+DATA_STATUSES = {STATUS_OK, STATUS_TIMEOUT, STATUS_UNAVAILABLE, STATUS_ESTIMATED}
+
 # Columnas de contexto de mercado (Market Context Engine), compartidas por
 # events y predictions. Centralizadas aquí para que ambos stores usen
 # exactamente los mismos nombres/tipos y la misma migración.
@@ -48,6 +61,23 @@ CONTEXT_COLUMNS = [
     ("day_of_week", "TEXT"),
     ("month", "TEXT"),
     ("earnings_season", "INTEGER"),  # 0/1/NULL: SQLite no tiene tipo booleano nativo
+]
+
+# Trazabilidad: de dónde vino el dato, cuándo se capturó exactamente, en qué
+# estado, y qué versión de cada motor de Atlas participó.
+PROVENANCE_COLUMNS = [
+    ("data_source", "TEXT"),
+    ("captured_at", "TEXT"),  # hora exacta de captura del dato (distinta de created_at, que es la inserción en la BD)
+    ("data_status", "TEXT"),
+    ("engine_versions", "TEXT"),  # JSON: {"atlas_core": "1.0", ...}
+]
+
+# Preparación para el futuro Market Replay Engine: dejar registrado dónde
+# quedó un símbolo dentro del ranking del escaneo que lo produjo, sin
+# necesidad de reconstruirlo después. No se usa todavía.
+REPLAY_COLUMNS = [
+    ("rank_in_scan", "INTEGER"),
+    ("scan_size", "INTEGER"),
 ]
 
 
@@ -116,6 +146,14 @@ class MarketEvent:
     day_of_week: Optional[str] = None
     month: Optional[str] = None
     earnings_season: Optional[bool] = None
+    # Trazabilidad del dato.
+    data_source: Optional[str] = None
+    captured_at: Optional[str] = None
+    data_status: Optional[str] = None
+    engine_versions: Optional[str] = None  # JSON, ver atlas.knowledge.engine_versions
+    # Preparación para el futuro Market Replay Engine.
+    rank_in_scan: Optional[int] = None
+    scan_size: Optional[int] = None
     id: Optional[int] = field(default=None, compare=False)
 
 
@@ -164,6 +202,12 @@ def _row_to_event(row: sqlite3.Row) -> MarketEvent:
         day_of_week=row["day_of_week"] if "day_of_week" in columns else None,
         month=row["month"] if "month" in columns else None,
         earnings_season=(None if earnings_season is None else bool(earnings_season)),
+        data_source=row["data_source"] if "data_source" in columns else None,
+        captured_at=row["captured_at"] if "captured_at" in columns else None,
+        data_status=row["data_status"] if "data_status" in columns else None,
+        engine_versions=row["engine_versions"] if "engine_versions" in columns else None,
+        rank_in_scan=row["rank_in_scan"] if "rank_in_scan" in columns else None,
+        scan_size=row["scan_size"] if "scan_size" in columns else None,
     )
 
 
@@ -227,65 +271,88 @@ class EventStore:
         )
         self._connection.commit()
 
+        # Migración aditiva: trazabilidad del dato y preparación para el
+        # futuro Market Replay Engine.
+        ensure_columns(self._connection, "events", PROVENANCE_COLUMNS)
+        ensure_columns(self._connection, "events", REPLAY_COLUMNS)
+        self._connection.execute("CREATE INDEX IF NOT EXISTS idx_events_data_status ON events(data_status)")
+        self._connection.execute("CREATE INDEX IF NOT EXISTS idx_events_rank_in_scan ON events(rank_in_scan)")
+        self._connection.commit()
+
     def record_event(self, event: MarketEvent) -> int:
         """Guarda un evento y devuelve su id."""
         if event.event_type not in EVENT_TYPES:
             raise ValueError(f"event_type inválido: '{event.event_type}'. Válidos: {sorted(EVENT_TYPES)}")
+        if event.data_source is not None and event.data_source not in DATA_SOURCES:
+            raise ValueError(f"data_source inválido: '{event.data_source}'. Válidos: {sorted(DATA_SOURCES)}")
+        if event.data_status is not None and event.data_status not in DATA_STATUSES:
+            raise ValueError(f"data_status inválido: '{event.data_status}'. Válidos: {sorted(DATA_STATUSES)}")
 
+        columns = [
+            "date", "time", "ticker", "sector", "industry", "price", "gap_percent", "rvol",
+            "volume", "float_shares", "market_cap", "atlas_score", "momentum_score",
+            "money_flow_score", "decision", "max_result_percent", "close_result_percent",
+            "event_type",
+            "spy_price", "spy_change_percent", "qqq_price", "qqq_change_percent",
+            "iwm_price", "iwm_change_percent", "vix_price", "vix_change_percent",
+            "btc_price", "btc_change_percent", "sector_etf_symbol", "sector_etf_change_percent",
+            "leading_sector", "leading_industry", "sector_money_flow_score",
+            "day_of_week", "month", "earnings_season",
+            "data_source", "captured_at", "data_status", "engine_versions",
+            "rank_in_scan", "scan_size",
+            "created_at",
+        ]
+        values = [
+            event.date,
+            event.time,
+            event.ticker,
+            event.sector,
+            event.industry,
+            event.price,
+            event.gap_percent,
+            event.rvol,
+            event.volume,
+            event.float_shares,
+            event.market_cap,
+            event.atlas_score,
+            event.momentum_score,
+            event.money_flow_score,
+            event.decision,
+            event.max_result_percent,
+            event.close_result_percent,
+            event.event_type,
+            event.spy_price,
+            event.spy_change_percent,
+            event.qqq_price,
+            event.qqq_change_percent,
+            event.iwm_price,
+            event.iwm_change_percent,
+            event.vix_price,
+            event.vix_change_percent,
+            event.btc_price,
+            event.btc_change_percent,
+            event.sector_etf_symbol,
+            event.sector_etf_change_percent,
+            event.leading_sector,
+            event.leading_industry,
+            event.sector_money_flow_score,
+            event.day_of_week,
+            event.month,
+            (None if event.earnings_season is None else int(event.earnings_season)),
+            event.data_source,
+            event.captured_at,
+            event.data_status,
+            event.engine_versions,
+            event.rank_in_scan,
+            event.scan_size,
+            datetime.now(timezone.utc).isoformat(),
+        ]
+        assert len(columns) == len(values)
+
+        placeholders = ", ".join("?" for _ in columns)
         cursor = self._connection.execute(
-            """
-            INSERT INTO events (
-                date, time, ticker, sector, industry, price, gap_percent, rvol,
-                volume, float_shares, market_cap, atlas_score, momentum_score,
-                money_flow_score, decision, max_result_percent, close_result_percent,
-                event_type,
-                spy_price, spy_change_percent, qqq_price, qqq_change_percent,
-                iwm_price, iwm_change_percent, vix_price, vix_change_percent,
-                btc_price, btc_change_percent, sector_etf_symbol, sector_etf_change_percent,
-                leading_sector, leading_industry, sector_money_flow_score,
-                day_of_week, month, earnings_season,
-                created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                event.date,
-                event.time,
-                event.ticker,
-                event.sector,
-                event.industry,
-                event.price,
-                event.gap_percent,
-                event.rvol,
-                event.volume,
-                event.float_shares,
-                event.market_cap,
-                event.atlas_score,
-                event.momentum_score,
-                event.money_flow_score,
-                event.decision,
-                event.max_result_percent,
-                event.close_result_percent,
-                event.event_type,
-                event.spy_price,
-                event.spy_change_percent,
-                event.qqq_price,
-                event.qqq_change_percent,
-                event.iwm_price,
-                event.iwm_change_percent,
-                event.vix_price,
-                event.vix_change_percent,
-                event.btc_price,
-                event.btc_change_percent,
-                event.sector_etf_symbol,
-                event.sector_etf_change_percent,
-                event.leading_sector,
-                event.leading_industry,
-                event.sector_money_flow_score,
-                event.day_of_week,
-                event.month,
-                (None if event.earnings_season is None else int(event.earnings_season)),
-                datetime.now(timezone.utc).isoformat(),
-            ),
+            f"INSERT INTO events ({', '.join(columns)}) VALUES ({placeholders})",
+            values,
         )
         self._connection.commit()
         return int(cursor.lastrowid)

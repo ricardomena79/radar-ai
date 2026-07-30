@@ -13,7 +13,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
-from atlas.knowledge.event_store import CONTEXT_COLUMNS, connect, ensure_columns
+from atlas.knowledge.event_store import (
+    CONTEXT_COLUMNS,
+    DATA_SOURCES,
+    DATA_STATUSES,
+    PROVENANCE_COLUMNS,
+    REPLAY_COLUMNS,
+    connect,
+    ensure_columns,
+)
 
 
 @dataclass(frozen=True)
@@ -49,6 +57,14 @@ class PredictionRecord:
     day_of_week: Optional[str] = None
     month: Optional[str] = None
     earnings_season: Optional[bool] = None
+    # Trazabilidad del dato.
+    data_source: Optional[str] = None
+    captured_at: Optional[str] = None
+    data_status: Optional[str] = None
+    engine_versions: Optional[str] = None  # JSON, ver atlas.knowledge.engine_versions
+    # Preparación para el futuro Market Replay Engine.
+    rank_in_scan: Optional[int] = None
+    scan_size: Optional[int] = None
     id: Optional[int] = field(default=None, compare=False)
 
 
@@ -89,6 +105,12 @@ def _row_to_prediction(row: sqlite3.Row) -> PredictionRecord:
         day_of_week=row["day_of_week"] if "day_of_week" in columns else None,
         month=row["month"] if "month" in columns else None,
         earnings_season=(None if earnings_season is None else bool(earnings_season)),
+        data_source=row["data_source"] if "data_source" in columns else None,
+        captured_at=row["captured_at"] if "captured_at" in columns else None,
+        data_status=row["data_status"] if "data_status" in columns else None,
+        engine_versions=row["engine_versions"] if "engine_versions" in columns else None,
+        rank_in_scan=row["rank_in_scan"] if "rank_in_scan" in columns else None,
+        scan_size=row["scan_size"] if "scan_size" in columns else None,
     )
 
 
@@ -131,52 +153,81 @@ class PredictionStore:
         ensure_columns(self._connection, "predictions", CONTEXT_COLUMNS)
         self._connection.commit()
 
+        # Migración aditiva: trazabilidad del dato y preparación para el
+        # futuro Market Replay Engine.
+        ensure_columns(self._connection, "predictions", PROVENANCE_COLUMNS)
+        ensure_columns(self._connection, "predictions", REPLAY_COLUMNS)
+        self._connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_predictions_data_status ON predictions(data_status)"
+        )
+        self._connection.commit()
+
     def record_prediction(self, prediction: PredictionRecord) -> int:
         """Guarda una predicción y devuelve su id."""
+        if prediction.data_source is not None and prediction.data_source not in DATA_SOURCES:
+            raise ValueError(
+                f"data_source inválido: '{prediction.data_source}'. Válidos: {sorted(DATA_SOURCES)}"
+            )
+        if prediction.data_status is not None and prediction.data_status not in DATA_STATUSES:
+            raise ValueError(
+                f"data_status inválido: '{prediction.data_status}'. Válidos: {sorted(DATA_STATUSES)}"
+            )
+
+        columns = [
+            "date", "time", "ticker", "mode", "decision", "confidence",
+            "atlas_score", "momentum_score", "money_flow_score", "event_id",
+            "spy_price", "spy_change_percent", "qqq_price", "qqq_change_percent",
+            "iwm_price", "iwm_change_percent", "vix_price", "vix_change_percent",
+            "btc_price", "btc_change_percent", "sector_etf_symbol", "sector_etf_change_percent",
+            "leading_sector", "leading_industry", "sector_money_flow_score",
+            "day_of_week", "month", "earnings_season",
+            "data_source", "captured_at", "data_status", "engine_versions",
+            "rank_in_scan", "scan_size",
+            "created_at",
+        ]
+        values = [
+            prediction.date,
+            prediction.time,
+            prediction.ticker,
+            prediction.mode,
+            prediction.decision,
+            prediction.confidence,
+            prediction.atlas_score,
+            prediction.momentum_score,
+            prediction.money_flow_score,
+            prediction.event_id,
+            prediction.spy_price,
+            prediction.spy_change_percent,
+            prediction.qqq_price,
+            prediction.qqq_change_percent,
+            prediction.iwm_price,
+            prediction.iwm_change_percent,
+            prediction.vix_price,
+            prediction.vix_change_percent,
+            prediction.btc_price,
+            prediction.btc_change_percent,
+            prediction.sector_etf_symbol,
+            prediction.sector_etf_change_percent,
+            prediction.leading_sector,
+            prediction.leading_industry,
+            prediction.sector_money_flow_score,
+            prediction.day_of_week,
+            prediction.month,
+            (None if prediction.earnings_season is None else int(prediction.earnings_season)),
+            prediction.data_source,
+            prediction.captured_at,
+            prediction.data_status,
+            prediction.engine_versions,
+            prediction.rank_in_scan,
+            prediction.scan_size,
+            datetime.now(timezone.utc).isoformat(),
+        ]
+        assert len(columns) == len(values)
+
+        placeholders = ", ".join("?" for _ in columns)
         cursor = self._connection.execute(
-            """
-            INSERT INTO predictions (
-                date, time, ticker, mode, decision, confidence,
-                atlas_score, momentum_score, money_flow_score, event_id,
-                spy_price, spy_change_percent, qqq_price, qqq_change_percent,
-                iwm_price, iwm_change_percent, vix_price, vix_change_percent,
-                btc_price, btc_change_percent, sector_etf_symbol, sector_etf_change_percent,
-                leading_sector, leading_industry, sector_money_flow_score,
-                day_of_week, month, earnings_season,
-                created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                prediction.date,
-                prediction.time,
-                prediction.ticker,
-                prediction.mode,
-                prediction.decision,
-                prediction.confidence,
-                prediction.atlas_score,
-                prediction.momentum_score,
-                prediction.money_flow_score,
-                prediction.event_id,
-                prediction.spy_price,
-                prediction.spy_change_percent,
-                prediction.qqq_price,
-                prediction.qqq_change_percent,
-                prediction.iwm_price,
-                prediction.iwm_change_percent,
-                prediction.vix_price,
-                prediction.vix_change_percent,
-                prediction.btc_price,
-                prediction.btc_change_percent,
-                prediction.sector_etf_symbol,
-                prediction.sector_etf_change_percent,
-                prediction.leading_sector,
-                prediction.leading_industry,
-                prediction.sector_money_flow_score,
-                prediction.day_of_week,
-                prediction.month,
-                (None if prediction.earnings_season is None else int(prediction.earnings_season)),
-                datetime.now(timezone.utc).isoformat(),
-            ),
+            f"INSERT INTO predictions ({', '.join(columns)}) VALUES ({placeholders})",
+            values,
         )
         self._connection.commit()
         return int(cursor.lastrowid)
