@@ -358,6 +358,7 @@ class EventStore:
         return int(cursor.lastrowid)
 
     def get_event(self, event_id: int) -> Optional[MarketEvent]:
+        """Devuelve el evento por id, o None si no existe."""
         row = self._connection.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
         return _row_to_event(row) if row else None
 
@@ -402,10 +403,12 @@ class EventStore:
         return [_row_to_event(row) for row in rows]
 
     def count(self) -> int:
+        """Total de eventos registrados."""
         row = self._connection.execute("SELECT COUNT(*) AS n FROM events").fetchone()
         return int(row["n"])
 
     def count_by_type(self) -> dict:
+        """Conteo de eventos agrupado por event_type."""
         rows = self._connection.execute(
             "SELECT event_type, COUNT(*) AS n FROM events GROUP BY event_type"
         ).fetchall()
@@ -430,4 +433,5 @@ class EventStore:
         return self._connection
 
     def close(self) -> None:
+        """Cierra la conexión SQLite."""
         self._connection.close()

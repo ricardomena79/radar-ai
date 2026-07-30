@@ -139,6 +139,7 @@ class PatternEvolution:
         self._registry = pattern_registry
 
     def evaluate_pattern(self, pattern_key: str) -> PatternEvolutionReport:
+        """Evalúa un único patrón por su identidad y propone (sin aplicar) una transición."""
         pattern = self._registry.get_pattern(pattern_key)
         if pattern is None:
             raise KeyError(f"No existe un patrón registrado con pattern_key='{pattern_key}'")

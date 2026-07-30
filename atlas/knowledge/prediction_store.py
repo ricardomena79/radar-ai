@@ -265,14 +265,17 @@ class PredictionStore:
         return [_row_to_prediction(row) for row in rows]
 
     def count(self) -> int:
+        """Total de predicciones registradas."""
         row = self._connection.execute("SELECT COUNT(*) AS n FROM predictions").fetchone()
         return int(row["n"])
 
     def count_by_decision(self) -> dict:
+        """Conteo de predicciones agrupado por decisión (COMPRAR/VIGILAR/DESCARTAR)."""
         rows = self._connection.execute(
             "SELECT decision, COUNT(*) AS n FROM predictions GROUP BY decision"
         ).fetchall()
         return {row["decision"]: row["n"] for row in rows}
 
     def close(self) -> None:
+        """Cierra la conexión SQLite."""
         self._connection.close()

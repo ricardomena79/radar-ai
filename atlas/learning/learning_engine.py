@@ -48,31 +48,39 @@ class LearningEngine:
     # --- Accuracy Tracker ---
 
     def overall_accuracy(self) -> AccuracyReport:
+        """Precisión general de todas las decisiones clasificables (COMPRAR/DESCARTAR)."""
         return self._accuracy_tracker.overall_accuracy()
 
     def accuracy_by_decision(self) -> AccuracyReport:
+        """Precisión separada por tipo de decisión."""
         return self._accuracy_tracker.accuracy_by_decision()
 
     def accuracy_by_confidence_band(self) -> AccuracyReport:
+        """Precisión separada por banda de confianza de la predicción."""
         return self._accuracy_tracker.accuracy_by_confidence_band()
 
     def accuracy_by_sector(self) -> AccuracyReport:
+        """Precisión separada por sector del símbolo."""
         return self._accuracy_tracker.accuracy_by_sector()
 
     def accuracy_by_engine_version(self) -> AccuracyReport:
+        """Precisión separada por versión de Decision Engine activa al momento de la predicción."""
         return self._accuracy_tracker.accuracy_by_engine_version()
 
     # --- Pattern Evolution ---
 
     def evaluate_pattern(self, pattern_key: str) -> PatternEvolutionReport:
+        """Evalúa la vigencia de un patrón y propone (sin aplicar) una transición de estado."""
         return self._pattern_evolution.evaluate_pattern(pattern_key)
 
     def evaluate_all_patterns(self, state: Optional[str] = None) -> List[PatternEvolutionReport]:
+        """Evalúa todos los patrones conocidos, opcionalmente filtrados por estado actual."""
         return self._pattern_evolution.evaluate_all(state=state)
 
     # --- Calibration Advisor ---
 
     def generate_calibration_proposals(self) -> List[CalibrationProposal]:
+        """Propuestas de calibración (transiciones de patrón + revisiones de motor)."""
         return self._calibration_advisor.generate_all_proposals()
 
     # --- Reporte consolidado ---

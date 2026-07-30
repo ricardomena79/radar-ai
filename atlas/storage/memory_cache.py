@@ -19,6 +19,7 @@ class _CacheEntry:
     expires_at: Optional[float]
 
     def is_expired(self) -> bool:
+        """True si la entrada tiene TTL y ya venció."""
         return self.expires_at is not None and time.monotonic() >= self.expires_at
 
 

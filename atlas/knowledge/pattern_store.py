@@ -292,6 +292,7 @@ class PatternRegistry:
         return self.get_pattern(pattern_key)
 
     def get_pattern(self, pattern_key: str) -> Optional[Pattern]:
+        """Devuelve el patrón por su identidad, o None si nunca se registró."""
         row = self._connection.execute(
             "SELECT * FROM patterns WHERE pattern_key = ?", (pattern_key,)
         ).fetchone()
@@ -354,4 +355,5 @@ class PatternRegistry:
         return [_row_to_pattern(row) for row in rows]
 
     def close(self) -> None:
+        """Cierra la conexión SQLite."""
         self._connection.close()

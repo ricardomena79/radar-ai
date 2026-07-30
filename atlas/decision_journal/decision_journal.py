@@ -169,6 +169,7 @@ class DecisionJournalStore:
         return [_row_to_trade(row) for row in rows]
 
     def close(self) -> None:
+        """Cierra la conexión SQLite."""
         self._connection.close()
 
 
@@ -193,4 +194,5 @@ class DecisionJournal:
         return self.trades.get_trades(**kwargs)
 
     def close(self) -> None:
+        """Cierra la conexión SQLite."""
         self.trades.close()

@@ -231,6 +231,7 @@ class CalibrationManagerStore:
         return self.get_latest(recommendation_key)
 
     def get_all_versions(self, recommendation_key: str) -> List[CalibrationRecommendation]:
+        """Todas las versiones de una recomendación, en orden ascendente. Ninguna se borra."""
         rows = self._connection.execute(
             "SELECT * FROM calibration_recommendations WHERE recommendation_key = ? ORDER BY version ASC",
             (recommendation_key,),
@@ -238,6 +239,7 @@ class CalibrationManagerStore:
         return [_row_to_recommendation(row) for row in rows]
 
     def get_latest(self, recommendation_key: str) -> Optional[CalibrationRecommendation]:
+        """Devuelve la versión más reciente de una recomendación, o None si no existe."""
         row = self._connection.execute(
             """
             SELECT * FROM calibration_recommendations
@@ -319,6 +321,7 @@ class CalibrationManagerStore:
         return [_row_to_recommendation(row) for row in rows]
 
     def close(self) -> None:
+        """Cierra la conexión SQLite."""
         self._connection.close()
 
 
@@ -389,18 +392,23 @@ class CalibrationManager:
         return self.store.update_status(recommendation_key, IMPLEMENTED, notes=notes, result=result)
 
     def get_latest(self, recommendation_key: str) -> Optional[CalibrationRecommendation]:
+        """Devuelve la versión más reciente de una recomendación, o None si no existe."""
         return self.store.get_latest(recommendation_key)
 
     def get_all_versions(self, recommendation_key: str) -> List[CalibrationRecommendation]:
+        """Todas las versiones de una recomendación, en orden ascendente."""
         return self.store.get_all_versions(recommendation_key)
 
     def get_status_history(self, recommendation_key: str) -> List[StatusChange]:
+        """Historial completo de estados de una recomendación, a través de todas sus versiones."""
         return self.store.get_status_history(recommendation_key)
 
     def list_recommendations(
         self, status: Optional[str] = None, category: Optional[str] = None
     ) -> List[CalibrationRecommendation]:
+        """Última versión de cada recomendación, opcionalmente filtrada por estado/categoría."""
         return self.store.list_recommendations(status=status, category=category)
 
     def close(self) -> None:
+        """Cierra la conexión SQLite."""
         self.store.close()

@@ -157,5 +157,6 @@ class DecisionRecorder:
         return self._journal.record_trade(trade)
 
     def close(self) -> None:
+        """Cierra Knowledge Base y Decision Journal."""
         self._knowledge.close()
         self._journal.close()
