@@ -26,6 +26,39 @@ NORMAL = "NORMAL"
 
 EVENT_TYPES = {EXPLOSION, COLLAPSE, FALSE_BREAKOUT, NORMAL}
 
+# Columnas de contexto de mercado (Market Context Engine), compartidas por
+# events y predictions. Centralizadas aquí para que ambos stores usen
+# exactamente los mismos nombres/tipos y la misma migración.
+CONTEXT_COLUMNS = [
+    ("spy_price", "REAL"),
+    ("spy_change_percent", "REAL"),
+    ("qqq_price", "REAL"),
+    ("qqq_change_percent", "REAL"),
+    ("iwm_price", "REAL"),
+    ("iwm_change_percent", "REAL"),
+    ("vix_price", "REAL"),
+    ("vix_change_percent", "REAL"),
+    ("btc_price", "REAL"),
+    ("btc_change_percent", "REAL"),
+    ("sector_etf_symbol", "TEXT"),
+    ("sector_etf_change_percent", "REAL"),
+    ("leading_sector", "TEXT"),
+    ("leading_industry", "TEXT"),
+    ("sector_money_flow_score", "REAL"),
+    ("day_of_week", "TEXT"),
+    ("month", "TEXT"),
+    ("earnings_season", "INTEGER"),  # 0/1/NULL: SQLite no tiene tipo booleano nativo
+]
+
+
+def ensure_columns(connection: sqlite3.Connection, table: str, columns) -> None:
+    """Agrega a `table` las columnas de `columns` que todavía no existan (migración aditiva)."""
+    existing = {row["name"] for row in connection.execute(f"PRAGMA table_info({table})").fetchall()}
+    for name, sql_type in columns:
+        if name not in existing:
+            connection.execute(f"ALTER TABLE {table} ADD COLUMN {name} {sql_type}")
+    connection.commit()
+
 
 def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
     """Abre (y prepara) una conexión SQLite compartida por todos los stores de knowledge/."""
@@ -64,10 +97,31 @@ class MarketEvent:
     decision: Optional[str] = None
     max_result_percent: Optional[float] = None
     close_result_percent: Optional[float] = None
+    # Contexto de mercado (Market Context Engine), capturado junto al evento.
+    spy_price: Optional[float] = None
+    spy_change_percent: Optional[float] = None
+    qqq_price: Optional[float] = None
+    qqq_change_percent: Optional[float] = None
+    iwm_price: Optional[float] = None
+    iwm_change_percent: Optional[float] = None
+    vix_price: Optional[float] = None
+    vix_change_percent: Optional[float] = None
+    btc_price: Optional[float] = None
+    btc_change_percent: Optional[float] = None
+    sector_etf_symbol: Optional[str] = None
+    sector_etf_change_percent: Optional[float] = None
+    leading_sector: Optional[str] = None
+    leading_industry: Optional[str] = None
+    sector_money_flow_score: Optional[float] = None
+    day_of_week: Optional[str] = None
+    month: Optional[str] = None
+    earnings_season: Optional[bool] = None
     id: Optional[int] = field(default=None, compare=False)
 
 
 def _row_to_event(row: sqlite3.Row) -> MarketEvent:
+    columns = row.keys()
+    earnings_season = row["earnings_season"] if "earnings_season" in columns else None
     return MarketEvent(
         id=row["id"],
         date=row["date"],
@@ -88,6 +142,28 @@ def _row_to_event(row: sqlite3.Row) -> MarketEvent:
         max_result_percent=row["max_result_percent"],
         close_result_percent=row["close_result_percent"],
         event_type=row["event_type"],
+        spy_price=row["spy_price"] if "spy_price" in columns else None,
+        spy_change_percent=row["spy_change_percent"] if "spy_change_percent" in columns else None,
+        qqq_price=row["qqq_price"] if "qqq_price" in columns else None,
+        qqq_change_percent=row["qqq_change_percent"] if "qqq_change_percent" in columns else None,
+        iwm_price=row["iwm_price"] if "iwm_price" in columns else None,
+        iwm_change_percent=row["iwm_change_percent"] if "iwm_change_percent" in columns else None,
+        vix_price=row["vix_price"] if "vix_price" in columns else None,
+        vix_change_percent=row["vix_change_percent"] if "vix_change_percent" in columns else None,
+        btc_price=row["btc_price"] if "btc_price" in columns else None,
+        btc_change_percent=row["btc_change_percent"] if "btc_change_percent" in columns else None,
+        sector_etf_symbol=row["sector_etf_symbol"] if "sector_etf_symbol" in columns else None,
+        sector_etf_change_percent=(
+            row["sector_etf_change_percent"] if "sector_etf_change_percent" in columns else None
+        ),
+        leading_sector=row["leading_sector"] if "leading_sector" in columns else None,
+        leading_industry=row["leading_industry"] if "leading_industry" in columns else None,
+        sector_money_flow_score=(
+            row["sector_money_flow_score"] if "sector_money_flow_score" in columns else None
+        ),
+        day_of_week=row["day_of_week"] if "day_of_week" in columns else None,
+        month=row["month"] if "month" in columns else None,
+        earnings_season=(None if earnings_season is None else bool(earnings_season)),
     )
 
 
@@ -141,6 +217,16 @@ class EventStore:
         )
         self._connection.commit()
 
+        # Migración aditiva: agrega las columnas de contexto de mercado si la
+        # tabla ya existía de una versión anterior sin ellas.
+        ensure_columns(self._connection, "events", CONTEXT_COLUMNS)
+        self._connection.execute("CREATE INDEX IF NOT EXISTS idx_events_day_of_week ON events(day_of_week)")
+        self._connection.execute("CREATE INDEX IF NOT EXISTS idx_events_month ON events(month)")
+        self._connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_events_leading_sector ON events(leading_sector)"
+        )
+        self._connection.commit()
+
     def record_event(self, event: MarketEvent) -> int:
         """Guarda un evento y devuelve su id."""
         if event.event_type not in EVENT_TYPES:
@@ -152,8 +238,14 @@ class EventStore:
                 date, time, ticker, sector, industry, price, gap_percent, rvol,
                 volume, float_shares, market_cap, atlas_score, momentum_score,
                 money_flow_score, decision, max_result_percent, close_result_percent,
-                event_type, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                event_type,
+                spy_price, spy_change_percent, qqq_price, qqq_change_percent,
+                iwm_price, iwm_change_percent, vix_price, vix_change_percent,
+                btc_price, btc_change_percent, sector_etf_symbol, sector_etf_change_percent,
+                leading_sector, leading_industry, sector_money_flow_score,
+                day_of_week, month, earnings_season,
+                created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 event.date,
@@ -174,6 +266,24 @@ class EventStore:
                 event.max_result_percent,
                 event.close_result_percent,
                 event.event_type,
+                event.spy_price,
+                event.spy_change_percent,
+                event.qqq_price,
+                event.qqq_change_percent,
+                event.iwm_price,
+                event.iwm_change_percent,
+                event.vix_price,
+                event.vix_change_percent,
+                event.btc_price,
+                event.btc_change_percent,
+                event.sector_etf_symbol,
+                event.sector_etf_change_percent,
+                event.leading_sector,
+                event.leading_industry,
+                event.sector_money_flow_score,
+                event.day_of_week,
+                event.month,
+                (None if event.earnings_season is None else int(event.earnings_season)),
                 datetime.now(timezone.utc).isoformat(),
             ),
         )
