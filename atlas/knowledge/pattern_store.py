@@ -9,11 +9,15 @@ lo largo de todo su historial en la base, para poder comparar el
 comportamiento típico de dos acciones entre sí.
 """
 
+import json
 import math
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+import sqlite3
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
-from atlas.knowledge.event_store import EventStore, MarketEvent
+from atlas.knowledge.event_store import EventStore, MarketEvent, connect
 
 FEATURE_RANGES: Dict[str, Tuple[float, float]] = {
     "gap_percent": (-20.0, 20.0),
@@ -128,3 +132,226 @@ class PatternStore:
         if dna_a is None or dna_b is None:
             return None
         return _similarity(dna_a.features, dna_b.features)
+
+
+# ---------------------------------------------------------------------------
+# PatternRegistry: identidad persistente de un patrón, con estado y su
+# historial completo de transiciones. Principio de Conservación del
+# Conocimiento: ningún patrón se borra ni se sobrescribe, solo cambia de
+# estado. Si un patrón reaparece (incluso años después), reutiliza su
+# `pattern_key` y por lo tanto todo su historial acumulado.
+#
+# Quién escribe acá: por arquitectura, el único llamador previsto de
+# `register_pattern()`/`transition_state()` es Calibration Manager, una vez
+# que un cambio de estado fue aprobado por un humano. Learning Engine solo
+# *propone* transiciones (PatternEvolutionReport); nunca las aplica él
+# mismo. Esta clase no impone ese límite en tiempo de ejecución (igual que
+# el resto de Atlas no bloquea mecánicamente sus reglas de "único
+# escritor"), pero está documentado como el contrato a respetar.
+# ---------------------------------------------------------------------------
+
+PATTERN_OBSERVATION = "En observación"
+PATTERN_ACTIVE = "Activo"
+PATTERN_DECAYING = "En decadencia"
+PATTERN_INACTIVE = "Inactivo"
+PATTERN_REACTIVATED = "Reactivado"
+
+PATTERN_STATES = {
+    PATTERN_OBSERVATION,
+    PATTERN_ACTIVE,
+    PATTERN_DECAYING,
+    PATTERN_INACTIVE,
+    PATTERN_REACTIVATED,
+}
+
+
+@dataclass(frozen=True)
+class Pattern:
+    """Un patrón (o antipatrón) con identidad persistente y estado actual."""
+
+    pattern_key: str  # identidad única y estable; reutilizada si el patrón reaparece
+    name: str
+    category: str
+    state: str
+    evidence: Dict[str, Any]
+    created_at: str
+    updated_at: str
+    id: Optional[int] = field(default=None, compare=False)
+
+
+@dataclass(frozen=True)
+class PatternTransition:
+    """Una entrada del historial de transiciones de un patrón. Nunca se borra ni se edita."""
+
+    pattern_key: str
+    from_state: Optional[str]
+    to_state: str
+    reason: str
+    evidence: Dict[str, Any]
+    transitioned_at: str
+    id: Optional[int] = field(default=None, compare=False)
+
+
+def _row_to_pattern(row: sqlite3.Row) -> Pattern:
+    return Pattern(
+        id=row["id"],
+        pattern_key=row["pattern_key"],
+        name=row["name"],
+        category=row["category"],
+        state=row["state"],
+        evidence=json.loads(row["evidence"]) if row["evidence"] else {},
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _row_to_transition(row: sqlite3.Row) -> PatternTransition:
+    return PatternTransition(
+        id=row["id"],
+        pattern_key=row["pattern_key"],
+        from_state=row["from_state"],
+        to_state=row["to_state"],
+        reason=row["reason"],
+        evidence=json.loads(row["evidence"]) if row["evidence"] else {},
+        transitioned_at=row["transitioned_at"],
+    )
+
+
+class PatternRegistry:
+    """Identidad persistente de patrones: estado actual + historial completo de transiciones."""
+
+    def __init__(self, db_path: Optional[Path] = None) -> None:
+        self._connection = connect(db_path)
+        self._create_schema()
+
+    def _create_schema(self) -> None:
+        self._connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS patterns (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pattern_key TEXT NOT NULL UNIQUE,
+                name TEXT NOT NULL,
+                category TEXT NOT NULL,
+                state TEXT NOT NULL,
+                evidence TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        self._connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS pattern_transitions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pattern_key TEXT NOT NULL,
+                from_state TEXT,
+                to_state TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                evidence TEXT,
+                transitioned_at TEXT NOT NULL,
+                FOREIGN KEY (pattern_key) REFERENCES patterns(pattern_key)
+            )
+            """
+        )
+        self._connection.execute("CREATE INDEX IF NOT EXISTS idx_patterns_state ON patterns(state)")
+        self._connection.execute("CREATE INDEX IF NOT EXISTS idx_patterns_category ON patterns(category)")
+        self._connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_pattern_transitions_key ON pattern_transitions(pattern_key)"
+        )
+        self._connection.commit()
+
+    def register_pattern(
+        self,
+        pattern_key: str,
+        name: str,
+        category: str,
+        evidence: Optional[Dict[str, Any]] = None,
+    ) -> Pattern:
+        """Crea un patrón nuevo (estado inicial: En observación), o si `pattern_key` ya
+        existe, lo devuelve tal cual está -- nunca duplica ni reinicia su historial."""
+        existing = self.get_pattern(pattern_key)
+        if existing is not None:
+            return existing
+
+        now = datetime.now(timezone.utc).isoformat()
+        self._connection.execute(
+            """
+            INSERT INTO patterns (pattern_key, name, category, state, evidence, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (pattern_key, name, category, PATTERN_OBSERVATION, json.dumps(evidence or {}), now, now),
+        )
+        self._connection.execute(
+            """
+            INSERT INTO pattern_transitions (pattern_key, from_state, to_state, reason, evidence, transitioned_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (pattern_key, None, PATTERN_OBSERVATION, "Patrón descubierto por primera vez", json.dumps(evidence or {}), now),
+        )
+        self._connection.commit()
+        return self.get_pattern(pattern_key)
+
+    def get_pattern(self, pattern_key: str) -> Optional[Pattern]:
+        row = self._connection.execute(
+            "SELECT * FROM patterns WHERE pattern_key = ?", (pattern_key,)
+        ).fetchone()
+        return _row_to_pattern(row) if row else None
+
+    def transition_state(
+        self,
+        pattern_key: str,
+        new_state: str,
+        reason: str,
+        evidence: Optional[Dict[str, Any]] = None,
+    ) -> Pattern:
+        """Cambia el estado de un patrón existente y agrega una fila al historial.
+        Nunca borra ni sobrescribe la fila anterior: el historial es acumulativo."""
+        if new_state not in PATTERN_STATES:
+            raise ValueError(f"Estado inválido: '{new_state}'. Válidos: {sorted(PATTERN_STATES)}")
+
+        current = self.get_pattern(pattern_key)
+        if current is None:
+            raise KeyError(f"No existe un patrón registrado con pattern_key='{pattern_key}'")
+
+        now = datetime.now(timezone.utc).isoformat()
+        merged_evidence = {**current.evidence, **(evidence or {})}
+
+        self._connection.execute(
+            "UPDATE patterns SET state = ?, evidence = ?, updated_at = ? WHERE pattern_key = ?",
+            (new_state, json.dumps(merged_evidence), now, pattern_key),
+        )
+        self._connection.execute(
+            """
+            INSERT INTO pattern_transitions (pattern_key, from_state, to_state, reason, evidence, transitioned_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (pattern_key, current.state, new_state, reason, json.dumps(evidence or {}), now),
+        )
+        self._connection.commit()
+        return self.get_pattern(pattern_key)
+
+    def get_transition_history(self, pattern_key: str) -> List[PatternTransition]:
+        """Historial completo de transiciones de un patrón, en orden cronológico."""
+        rows = self._connection.execute(
+            "SELECT * FROM pattern_transitions WHERE pattern_key = ? ORDER BY id ASC",
+            (pattern_key,),
+        ).fetchall()
+        return [_row_to_transition(row) for row in rows]
+
+    def list_patterns(self, state: Optional[str] = None, category: Optional[str] = None) -> List[Pattern]:
+        """Lista patrones, opcionalmente filtrados por estado y/o categoría."""
+        clauses = []
+        params: list = []
+        if state is not None:
+            clauses.append("state = ?")
+            params.append(state)
+        if category is not None:
+            clauses.append("category = ?")
+            params.append(category)
+
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = self._connection.execute(f"SELECT * FROM patterns {where} ORDER BY updated_at DESC", params).fetchall()
+        return [_row_to_pattern(row) for row in rows]
+
+    def close(self) -> None:
+        self._connection.close()

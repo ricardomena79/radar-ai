@@ -29,7 +29,19 @@ from atlas.knowledge.event_store import (
     MarketEvent,
 )
 from atlas.knowledge.knowledge_engine import KnowledgeEngine, KnowledgeStatistics
-from atlas.knowledge.pattern_store import PatternStore, SymbolDNA
+from atlas.knowledge.pattern_store import (
+    PATTERN_ACTIVE,
+    PATTERN_DECAYING,
+    PATTERN_INACTIVE,
+    PATTERN_OBSERVATION,
+    PATTERN_REACTIVATED,
+    PATTERN_STATES,
+    Pattern,
+    PatternRegistry,
+    PatternStore,
+    PatternTransition,
+    SymbolDNA,
+)
 from atlas.knowledge.prediction_store import PredictionRecord, PredictionStore
 
 __all__ = [
@@ -61,6 +73,15 @@ __all__ = [
     "PredictionStore",
     "SymbolDNA",
     "PatternStore",
+    "Pattern",
+    "PatternTransition",
+    "PatternRegistry",
+    "PATTERN_OBSERVATION",
+    "PATTERN_ACTIVE",
+    "PATTERN_DECAYING",
+    "PATTERN_INACTIVE",
+    "PATTERN_REACTIVATED",
+    "PATTERN_STATES",
     "KnowledgeStatistics",
     "KnowledgeEngine",
 ]
