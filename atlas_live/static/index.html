@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <title>Atlas Live</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <h1>ATLAS</h1>
+    <div class="status">
+      <span id="scan-status">cargando...</span>
+      <button id="rescan-btn">Actualizar ahora</button>
+    </div>
+  </header>
+
+  <main>
+    <section id="hero"></section>
+
+    <h2 class="section-title">Las siguientes mejores oportunidades</h2>
+    <div id="ranking-list">
+      <div class="loading">Cargando...</div>
+    </div>
+
+    <div class="market-strip" id="context-bar"></div>
+  </main>
+
+  <div id="detail-overlay">
+    <div id="detail-panel">
+      <div class="detail-header">
+        <h2 id="detail-title">—</h2>
+        <button class="close-btn" id="detail-close">✕</button>
+      </div>
+      <div id="detail-body" class="loading">Cargando...</div>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
