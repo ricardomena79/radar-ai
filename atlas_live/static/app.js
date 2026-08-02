@@ -96,65 +96,72 @@ function riskBadge(riskLevel) {
   return `<span class="risk-badge risk-${riskLevel}">Riesgo ${riskLevel}</span>`;
 }
 
-// --- Hero: oportunidad del momento ---
+// --- Hero: oportunidad más explosiva ---
+//
+// Ojo: este hero ya NO refleja la "decisión de Atlas" (Decision Engine).
+// Refleja el resultado #1 del motor de Radar Explosivo (explosive_engine.py
+// en el backend, atlas_live/), que es una pregunta distinta: probabilidad
+// de movimiento fuerte en los próximos 5-10 minutos, no calidad de la
+// empresa ni recomendación de compra.
 
-function renderHero(topPick) {
+function reasonsList(reasons) {
+  if (!reasons || reasons.length === 0) return "";
+  return `<ul class="reasons-list">${reasons.map(r => `<li>${r}</li>`).join("")}</ul>`;
+}
+
+function renderHero(topExplosive) {
   const hero = document.getElementById("hero");
 
-  if (!topPick) {
+  if (!topExplosive) {
     hero.innerHTML = `
-      <div class="hero-label">⭐ La decisión de Atlas</div>
-      <div class="hero-empty">Todavía no hay un análisis calculado. Puede tardar unos minutos.</div>
+      <div class="hero-label">🔥 Oportunidad más explosiva</div>
+      <div class="hero-empty">Todavía no hay ninguna oportunidad de alto momentum. Puede tardar unos minutos, o simplemente no hay nada explosivo ahora mismo.</div>
     `;
     return;
   }
 
-  // Si la mejor opción disponible no es una compra clara, Atlas lo dice
-  // directamente en vez de disfrazar una opción débil como "la oportunidad".
-  if (topPick.display_decision.code !== "SI_COMPRARIA") {
-    hero.innerHTML = `
-      <div class="hero-label">⭐ La decisión de Atlas</div>
-      <div class="hero-empty">Hoy yo esperaría. No encontré una oportunidad con suficiente confianza.</div>
-    `;
-    return;
-  }
+  const exp = topExplosive.explosive;
+  const exceptionNote = exp.is_size_exception
+    ? `<div class="hero-exception">⚠ Excepción de tamaño — ver motivo abajo</div>`
+    : "";
+  const highlightClass = isHighlighted(topExplosive.symbol) ? " highlight-new" : "";
 
   hero.innerHTML = `
-    <div class="hero-card" data-symbol="${topPick.symbol}">
-      <div class="hero-label">⭐ La decisión de Atlas</div>
+    <div class="hero-card${highlightClass}" data-symbol="${topExplosive.symbol}">
+      <div class="hero-label">🔥 Oportunidad más explosiva</div>
       <div class="hero-field">
         <div class="label">Empresa</div>
-        <div class="hero-symbol">${topPick.symbol}</div>
-        <div class="hero-name">${topPick.name || ""}</div>
-      </div>
-      <div class="hero-field">
-        <div class="label">Recomendación</div>
-        ${decisionBadge(topPick.display_decision)}
+        <div class="hero-symbol">${topExplosive.symbol}</div>
+        <div class="hero-name">${topExplosive.name || ""}</div>
       </div>
       <div class="hero-row">
         <div class="hero-metric">
-          <div class="label">Confianza de Atlas</div>
-          <div class="value">${fmt(topPick.confidence, 0)}%</div>
-        </div>
-        <div class="hero-metric">
-          <div class="label">Nivel de riesgo</div>
-          <div class="value">${riskBadge(topPick.risk_level)}</div>
+          <div class="label">Puntaje de explosión</div>
+          <div class="value">${fmt(exp.score, 0)}</div>
         </div>
       </div>
+      ${exceptionNote}
+      ${reasonsList(exp.reasons)}
     </div>
   `;
-  hero.querySelector(".hero-card").addEventListener("click", () => openDetail(topPick.symbol));
+  hero.querySelector(".hero-card").addEventListener("click", () => openDetail(topExplosive.symbol));
 }
 
-// --- Lista de oportunidades ---
+// --- Listas de oportunidades ---
+//
+// Radar General y Watchlist muestran el ranking de Decision Engine, sin
+// recalcular ni reclasificar nada (solo se filtra/ordena en el navegador
+// con campos que el backend ya entrega: display_decision). Radar Explosivo
+// es distinto: usa el campo `explosive` que calculó explosive_engine.py,
+// un motor propio de atlas_live, independiente de Decision Engine.
 
-function renderRanking(ranking) {
-  const list = document.getElementById("ranking-list");
-  if (!ranking || ranking.length === 0) {
-    list.innerHTML = `<div class="empty-note">Sin resultados todavía. El primer análisis puede tardar unos minutos.</div>`;
+function renderCardList(containerId, rows, emptyMessage) {
+  const list = document.getElementById(containerId);
+  if (!rows || rows.length === 0) {
+    list.innerHTML = `<div class="empty-note">${emptyMessage}</div>`;
     return;
   }
-  list.innerHTML = ranking.map(row => `
+  list.innerHTML = rows.map(row => `
     <div class="opp-card" data-symbol="${row.symbol}">
       <div class="opp-id">
         <span class="opp-symbol">${row.symbol}</span>
@@ -176,6 +183,67 @@ function renderRanking(ranking) {
   });
 }
 
+// Radar Explosivo: usa exclusivamente el resultado del motor propio
+// (row.explosive), no display_decision. Elegibles = pasaron los filtros
+// de explosive_engine.py (RVOL, gap/cambio, volatilidad, tamaño...);
+// ordenados por su puntaje de explosión, no por confianza de Decision Engine.
+function explosivoRows(ranking) {
+  return (ranking || [])
+    .filter(row => row.explosive && row.explosive.eligible)
+    .slice()
+    .sort((a, b) => (b.explosive.score ?? -Infinity) - (a.explosive.score ?? -Infinity));
+}
+
+// Watchlist: interesantes pero sin recomendación de compra todavía
+// (VIGILAR en Decision Engine, mostrado como Esperaría/Solo observaría).
+function watchlistRows(ranking) {
+  return (ranking || []).filter(row =>
+    row.display_decision &&
+    (row.display_decision.code === "ESPERARIA" || row.display_decision.code === "SOLO_OBSERVARIA")
+  );
+}
+
+function renderRanking(ranking) {
+  renderCardList("ranking-list", ranking, "Sin resultados todavía. El primer análisis puede tardar unos minutos.");
+}
+
+function renderExplosivoList(rows) {
+  const list = document.getElementById("explosivo-list");
+  if (!rows || rows.length === 0) {
+    list.innerHTML = `<div class="empty-note">Sin oportunidades de alto momentum en este momento.</div>`;
+    return;
+  }
+  list.innerHTML = rows.map(row => `
+    <div class="opp-card explosive-card${isHighlighted(row.symbol) ? " highlight-new" : ""}" data-symbol="${row.symbol}">
+      <div class="opp-header">
+        <div class="opp-id">
+          <span class="opp-symbol">${row.symbol}</span>
+          <span class="opp-name">${row.name || ""}</span>
+          ${row.explosive.is_size_exception ? `<span class="exception-badge">⚠ Excepción de tamaño</span>` : ""}
+          ${isHighlighted(row.symbol) ? `<span class="new-badge">NUEVA</span>` : ""}
+        </div>
+        <div class="opp-confidence">
+          <div class="value">${fmt(row.explosive.score, 0)}</div>
+          <div class="label">Puntaje explosión</div>
+        </div>
+      </div>
+      ${reasonsList(row.explosive.reasons)}
+    </div>
+  `).join("");
+
+  list.querySelectorAll(".opp-card").forEach(card => {
+    card.addEventListener("click", () => openDetail(card.dataset.symbol));
+  });
+}
+
+function renderWatchlist(ranking) {
+  renderCardList(
+    "watchlist-list",
+    watchlistRows(ranking),
+    "Nada interesante todavía sin recomendación."
+  );
+}
+
 function renderContextStrip(context) {
   const bar = document.getElementById("context-bar");
   if (!context) {
@@ -195,14 +263,42 @@ function renderContextStrip(context) {
   bar.innerHTML = html;
 }
 
+// Símbolos elegibles vistos en el último poll -- `null` significa "todavía
+// no hubo un primer poll", para no disparar notificaciones de "nuevas"
+// oportunidades apenas se carga la página (no son nuevas, son las que ya
+// existían). Se vuelve un Set real recién después del primer poll.
+let previousEligibleSymbols = null;
+
+function detectNewOpportunities(eligibleExplosive) {
+  const currentSymbols = new Set(eligibleExplosive.map(row => row.symbol));
+
+  if (previousEligibleSymbols === null) {
+    previousEligibleSymbols = currentSymbols;
+    return [];
+  }
+
+  const newRows = eligibleExplosive.filter(row => !previousEligibleSymbols.has(row.symbol));
+  previousEligibleSymbols = currentSymbols;
+  return newRows;
+}
+
 async function refreshRanking() {
   try {
     const res = await fetch("/api/ranking");
     const data = await res.json();
 
-    const topPick = (data.ranking || []).find(r => r.is_top_pick) || (data.ranking || [])[0] || null;
-    renderHero(topPick);
+    const eligibleExplosive = explosivoRows(data.ranking);
+
+    // Se detectan y despachan ANTES de renderizar, para que el resaltado
+    // visual (channelVisualHighlight) ya esté activo cuando se pintan las
+    // tarjetas de este mismo ciclo.
+    const newOpportunities = detectNewOpportunities(eligibleExplosive);
+    dispatchNotifications(newOpportunities);
+
+    renderHero(eligibleExplosive[0] || null);
+    renderExplosivoList(eligibleExplosive);
     renderRanking(data.ranking);
+    renderWatchlist(data.ranking);
     renderContextStrip(data.context);
 
     const statusEl = document.getElementById("scan-status");
@@ -364,6 +460,162 @@ document.getElementById("detail-overlay").addEventListener("click", (e) => {
 document.getElementById("rescan-btn").addEventListener("click", async () => {
   await fetch("/api/rescan", { method: "POST" });
   document.getElementById("scan-status").textContent = "Analizando el mercado...";
+});
+
+// --- Navegación entre las tres secciones (menú lateral) ---
+// Puramente de presentación: no cambia qué datos se piden ni cómo se
+// calculan, solo qué sección queda visible. Radar Explosivo es la
+// pantalla principal (primera visible al cargar).
+
+const VIEW_TITLES = {
+  explosivo: "🔥 Radar Explosivo",
+  general: "📈 Radar General",
+  watchlist: "📋 Watchlist",
+  diagnostico: "🔬 Diagnóstico",
+};
+
+function showView(viewName) {
+  document.querySelectorAll(".view").forEach(section => {
+    section.classList.toggle("active", section.id === `view-${viewName}`);
+  });
+  document.querySelectorAll(".nav-item").forEach(btn => {
+    btn.classList.toggle("active", btn.dataset.view === viewName);
+  });
+  document.getElementById("view-title").textContent = VIEW_TITLES[viewName] || "ATLAS";
+
+  if (viewName === "diagnostico") {
+    loadDiagnostics();
+  }
+}
+
+document.querySelectorAll(".nav-item").forEach(btn => {
+  btn.addEventListener("click", () => showView(btn.dataset.view));
+});
+
+// --- Diagnóstico del Radar Explosivo ---
+//
+// A diferencia de las otras tres vistas, esta NO se refresca con el
+// polling de refreshRanking() (sería pedir el detalle de ~200 símbolos
+// cada 20 segundos sin necesidad): se pide bajo demanda, cada vez que el
+// usuario abre la pestaña, contra /api/explosive-diagnostics.
+
+function fmtCap(value) {
+  if (value === null || value === undefined) return "—";
+  const abs = Math.abs(value);
+  if (abs >= 1e12) return `$${(value / 1e12).toFixed(2)}T`;
+  if (abs >= 1e9) return `$${(value / 1e9).toFixed(2)}B`;
+  if (abs >= 1e6) return `$${(value / 1e6).toFixed(0)}M`;
+  return `$${fmt(value, 0)}`;
+}
+
+async function loadDiagnostics() {
+  const content = document.getElementById("diagnostico-content");
+  content.innerHTML = `<div class="loading">Cargando...</div>`;
+  try {
+    const res = await fetch("/api/explosive-diagnostics");
+    const data = await res.json();
+    if (!data.available) {
+      content.innerHTML = `<div class="empty-note">Todavía no hay un escaneo completo para diagnosticar. Espera al primer análisis.</div>`;
+      return;
+    }
+    renderDiagnostics(data);
+  } catch (err) {
+    content.innerHTML = `<div class="empty-note">Error al cargar el diagnóstico.</div>`;
+  }
+}
+
+function renderDiagnostics(data) {
+  const content = document.getElementById("diagnostico-content");
+
+  const funnelSteps = [
+    { label: "Universo analizado", count: data.total_universe },
+    ...data.funnel.map(f => ({ label: f.label, count: f.count })),
+    { label: "Radar Explosivo final", count: data.final_eligible_count, isFinal: true },
+  ];
+
+  const funnelHtml = `
+    <div class="funnel">
+      ${funnelSteps.map(step => `
+        <div class="funnel-step ${step.isFinal ? "funnel-final" : ""}">
+          <div class="funnel-label">${step.label}</div>
+          <div class="funnel-count">${step.count}</div>
+        </div>
+      `).join("")}
+    </div>
+    ${data.data_errors > 0 ? `
+      <div class="funnel-note">
+        ${data.data_errors} símbolo(s) no se pudieron evaluar (error de datos del proveedor) --
+        no cuentan como descartados por ningún filtro del Radar Explosivo.
+      </div>
+    ` : ""}
+  `;
+
+  const tableRows = data.table.map(row => `
+    <tr class="${row.status === "Aprobada" ? "row-approved" : "row-excluded"}" data-symbol="${row.symbol}">
+      <td>${row.symbol}</td>
+      <td>${row.status}</td>
+      <td>${row.reason}</td>
+      <td>${fmtCap(row.market_cap)}</td>
+      <td>${row.gap_pct === null || row.gap_pct === undefined ? "—" : fmtPct(row.gap_pct)}</td>
+      <td>${row.relative_volume === null || row.relative_volume === undefined ? "—" : row.relative_volume.toFixed(1) + "x"}</td>
+      <td>${row.score === null || row.score === undefined ? "—" : fmt(row.score, 0)}</td>
+    </tr>
+  `).join("");
+
+  content.innerHTML = `
+    ${funnelHtml}
+    <h2 class="section-title" style="margin-top:28px">Aprobadas y descartadas más cercanas a calificar</h2>
+    <div class="diag-table-wrap">
+      <table class="diag-table">
+        <thead>
+          <tr>
+            <th>Ticker</th><th>Estado</th><th>Motivo</th>
+            <th>Market cap</th><th>Gap</th><th>RVOL</th><th>Puntaje</th>
+          </tr>
+        </thead>
+        <tbody>${tableRows}</tbody>
+      </table>
+    </div>
+  `;
+
+  content.querySelectorAll("tbody tr").forEach(tr => {
+    tr.addEventListener("click", () => openDetail(tr.dataset.symbol));
+  });
+}
+
+// --- Controles de notificaciones (navegador / sonido) ---
+// Solo lee/escribe `notificationSettings` (definido en notifications.js) y
+// pide permiso del navegador cuando corresponde -- no conoce nada de cómo
+// se despachan las notificaciones, eso es responsabilidad de cada canal.
+
+const notifBrowserToggle = document.getElementById("notif-browser-toggle");
+const notifSoundToggle = document.getElementById("notif-sound-toggle");
+
+notifBrowserToggle.checked = notificationSettings.browserEnabled && Notification?.permission === "granted";
+notifSoundToggle.checked = notificationSettings.soundEnabled;
+
+notifBrowserToggle.addEventListener("change", async () => {
+  if (notifBrowserToggle.checked) {
+    const permission = await requestBrowserNotificationPermission();
+    if (permission !== "granted") {
+      notifBrowserToggle.checked = false;
+      notificationSettings.browserEnabled = false;
+      saveNotificationSettings(notificationSettings);
+      if (permission === "unsupported") {
+        alert("Este navegador no soporta notificaciones.");
+      } else {
+        alert("Notificaciones bloqueadas -- habilitalas en la configuración del navegador para este sitio.");
+      }
+      return;
+    }
+  }
+  notificationSettings.browserEnabled = notifBrowserToggle.checked;
+  saveNotificationSettings(notificationSettings);
+});
+
+notifSoundToggle.addEventListener("change", () => {
+  notificationSettings.soundEnabled = notifSoundToggle.checked;
+  saveNotificationSettings(notificationSettings);
 });
 
 refreshRanking();

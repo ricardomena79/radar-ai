@@ -1,0 +1,7 @@
+{
+  "categories": ["EXPLOSION", "FALSE_BREAKOUT", "LOSER", "WEAK", "NORMAL"],
+  "explosion_threshold_pct": 10.0,
+  "false_breakout_ceiling_pct": 5.0,
+  "loser_threshold_pct": -5.0,
+  "weak_ceiling_pct": 2.0
+}

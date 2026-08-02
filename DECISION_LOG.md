@@ -1,0 +1,223 @@
+# DECISION_LOG.md
+
+Historial oficial de decisiones del proyecto. Toda decisión importante futura debe registrarse aquí antes de darse por adoptada, con Fecha, Problema, Alternativas evaluadas, Decisión tomada, Justificación e Impacto esperado -- ver [ATLAS_CONSTITUTION.md](ATLAS_CONSTITUTION.md).
+
+Las entradas de esta sección quedan reconstruidas a partir de las decisiones reales tomadas durante el desarrollo de Atlas Live / Radar Explosivo (sesión iniciada 2026-08-01), no son hipotéticas.
+
+---
+
+## 2026-08-01 -- Congelamiento de la investigación de RVOL hasta cerrar la validación de 30 días
+
+**Problema**: la hipótesis de RVOL (Propuesta 1 de `RADAR_EXPLOSIVO_V2.md`, y la comparación de 5 escenarios que le siguió) ya mostró evidencia fuerte y consistente con 7-8 días de datos. Seguir profundizando sobre RVOL específicamente con datos parciales arriesga sacar una conclusión prematura antes de tener el dataset completo.
+
+**Alternativas evaluadas**: seguir refinando la hipótesis de RVOL con más experimentos vs. congelarla (no proponer más cambios sobre RVOL) y redirigir el esfuerzo de auditoría a los otros 5 filtros mientras termina la validación.
+
+**Decisión tomada**: congelar RVOL. No se abre ninguna propuesta nueva relacionada con RVOL hasta recalcular la comparación de 5 escenarios con los 30 días completos. Mientras tanto, la auditoría continúa sobre el resto de los filtros.
+
+**Justificación**: decisión directa del usuario -- "considero esta hipótesis suficientemente investigada por ahora." Evita analizar dos variables en movimiento a la vez y da tiempo a que la validación complete su recolección.
+
+**Impacto esperado**: la próxima hipótesis a formalizar (liquidez, ver sección "SIGUIENTE CUELLO DE BOTELLA" de `RADAR_EXPLOSIVO_V2.md`) se investiga sin interferencia de RVOL en el análisis.
+
+---
+
+## 2026-08-01 -- Excepción controlada: avanzar en Alertas en tiempo real (fase 7) mientras la validación histórica sigue en curso
+
+**Problema**: la metodología "un objetivo a la vez" dejaba sin trabajo posible mientras la validación de 30 días corría en segundo plano, porque casi todas las fases restantes de la hoja de ruta dependen de sus resultados o del Radar Explosivo validado.
+
+**Alternativas evaluadas**: esperar sin avanzar nada hasta que cierre la validación vs. identificar una fase con una porción genuinamente independiente (técnica, no solo de calendario) y trabajarla como excepción explícita.
+
+**Decisión tomada**: excepción controlada y aprobada explícitamente por el usuario. Se implementó la infraestructura de notificación de la fase 7 (Alertas en tiempo real) -- 3 canales (navegador, sonido, resaltado visual), arquitectura modular para agregar canales futuros -- separando el "mecanismo técnico" (independiente) del "juicio sobre si la señal es confiable para operar" (que sigue dependiendo de la validación, sin resolverse).
+
+**Justificación**: la infraestructura de notificación reacciona al mismo campo `explosive.eligible` que ya expone el dashboard hoy -- no necesita ningún resultado de los 30 días para funcionar ni para tener valor, y no toca `explosive_engine.py`, `explosive_config.json` ni `/atlas`.
+
+**Impacto esperado**: Atlas ya no depende de que alguien tenga el dashboard abierto para enterarse de una oportunidad nueva. Fase 7 del roadmap pasa de "Pendiente" a "~40% completado" -- ver `ATLAS_ROADMAP.md`.
+
+---
+
+## 2026-08-01 -- Reorganización del dashboard en tres secciones
+
+**Problema**: la interfaz original de Atlas Live mostraba una sola pantalla dominada por la recomendación de Decision Engine ("¿Atlas compraría esto?"), sin distinguir entre oportunidades de alto momentum, el ranking general del mercado y acciones interesantes sin recomendación aún.
+
+**Alternativas evaluadas**: mantener una sola vista vs. dividir en secciones especializadas navegables desde un menú lateral.
+
+**Decisión tomada**: tres secciones (Radar Explosivo, Radar General, Watchlist) con Radar Explosivo como pantalla principal.
+
+**Justificación**: cada sección responde una pregunta distinta; mezclarlas obligaba a Radar Explosivo a heredar la lógica de Decision Engine, que no es su propósito.
+
+**Impacto esperado**: mejor experiencia de usuario, sin tocar Decision Engine ni Atlas Score.
+
+---
+
+## 2026-08-01 -- Radar Explosivo como motor propio, independiente de Decision Engine
+
+**Problema**: la primera versión de Radar Explosivo filtraba sobre `display_decision.code == "SI_COMPRARIA"` (una traducción de la salida de Decision Engine), lo que mezclaba "es una buena inversión" con "se está moviendo rápido ahora".
+
+**Alternativas evaluadas**: (a) seguir filtrando sobre la salida de Decision Engine; (b) construir un motor de puntaje propio dentro de `atlas_live`; (c) implementarlo como el Índice de Explosión (IE) ya reservado como stub vacío en `atlas/engine/explosion_index.py`.
+
+**Decisión tomada**: (b) -- motor propio, 100% dentro de `atlas_live`, cero cambios en `/atlas`.
+
+**Justificación**: Decision Engine responde una pregunta de calidad/confianza de inversión; Radar Explosivo responde una pregunta de velocidad. Usar la salida de Decision Engine como filtro heredaba sesgos que no aplican (ej. mega-caps de alta confianza pero movimiento lento).
+
+**Impacto esperado**: Radar Explosivo deja de depender de Decision Engine; permite penalizar activamente a empresas grandes y lentas cuando existen alternativas de mayor momentum.
+
+---
+
+## 2026-08-01 -- Penalización continua por tamaño, con excepción por catalizador extremo
+
+**Problema**: mega-caps como AMZN o AAPL aparecían como "mejor oportunidad" en pruebas reales, pese a ser estructuralmente incapaces de moverse explosivamente en 5-10 minutos la mayoría de los días.
+
+**Alternativas evaluadas**: prohibir mega-caps por completo (corte binario) vs. penalización logarítmica continua sobre el puntaje final, con una excepción explícita para catalizadores extraordinarios (gap ≥ 5% y RVOL ≥ 5x simultáneos).
+
+**Decisión tomada**: penalización continua + excepción explícita y justificada en el texto de razones mostrado al usuario.
+
+**Justificación**: un corte binario ignoraría el caso real de una mega-cap con una sorpresa de earnings genuina; una penalización continua deja que la "velocidad pesa más que la calidad de la empresa" (instrucción explícita del usuario) sin volverse una regla absoluta sin excepciones.
+
+**Impacto esperado**: verificado con datos reales -- una microcap con señales moderadas (score 89) supera a una mega-cap con catalizador extremo (score 35.8) en las pruebas sintéticas del motor.
+
+---
+
+## 2026-08-01 -- Configuración centralizada en JSON, separada del código del motor
+
+**Problema**: se pidió que todos los umbrales del Radar Explosivo (precio, gap, RVOL, market cap, float, pesos de cada factor) fueran ajustables sin modificar la lógica del motor.
+
+**Alternativas evaluadas**: constantes dentro de los módulos Python vs. un archivo de configuración externo cargado en tiempo de ejecución.
+
+**Decisión tomada**: `atlas_live/explosive_config.json`, con un loader (`explosive_config.py`) que aplica valores por defecto si el archivo falta o está corrupto.
+
+**Justificación**: cumple el pedido explícito de "completamente configurable... para ajustar sin tocar código", y evita que un JSON mal editado tumbe el motor en producción.
+
+**Impacto esperado**: los umbrales pueden ajustarse (fase "Optimización del Radar" del roadmap) sin tocar ningún archivo `.py`.
+
+---
+
+## 2026-08-01 -- Registro de factores "enchufables" en vez de lógica embebida
+
+**Problema**: se pidió que el diseño permitiera agregar nuevos factores (noticias, opciones, short interest, float) en el futuro sin reescribir el motor.
+
+**Alternativas evaluadas**: if/else embebido en la función de puntaje vs. un registro (`FACTORS: List[Factor]`) de funciones puras e independientes.
+
+**Decisión tomada**: patrón de registro (`atlas_live/explosive_factors.py`), donde cada factor es una función aislada que recibe los mismos `ExplosiveInputs` y devuelve un puntaje + una razón en lenguaje natural.
+
+**Justificación**: aislar cada señal reduce el riesgo de que agregar un factor nuevo rompa el cálculo de los demás, y hace que cada factor sea auditable por separado.
+
+**Impacto esperado**: agregar un factor nuevo debería requerir solo una función nueva + una entrada de peso en el JSON de configuración, sin tocar `explosive_engine.py`.
+
+---
+
+## 2026-08-01 -- Modo Diagnóstico instrumentando el motor real, no reconstruyéndolo aparte
+
+**Problema**: se pidió poder auditar cuántas acciones caen en cada etapa del embudo de filtros y por qué, sin convertir el Radar Explosivo en una caja negra.
+
+**Alternativas evaluadas**: reconstruir el embudo evaluando cada símbolo contra cada umbral por separado en un módulo de diagnóstico aparte, vs. instrumentar directamente `explosive_engine.evaluate()` para que deje un rastro (`stage_trace`, `failed_stage`, `metrics`) de su propia ejecución real.
+
+**Decisión tomada**: instrumentar `evaluate()` in situ. Se verificó explícitamente (con casos sintéticos) que el refactor no cambia ningún resultado (mismo `score`, mismo `eligible` que antes de agregar la instrumentación).
+
+**Justificación**: reconstruir el embudo aparte arriesgaba que el diagnóstico divergiera silenciosamente del comportamiento real del motor con el tiempo.
+
+**Impacto esperado**: el modo Diagnóstico es, por construcción, siempre fiel al motor real -- confirmado comparando la API contra la interfaz, número por número, sin discrepancias.
+
+---
+
+## 2026-08-01 -- Validación histórica contra el Universo Racional completo, no la muestra de 200
+
+**Problema**: el escaneo en vivo usa una muestra de 200 símbolos (150 acciones + 50 ETFs). Validar la pregunta "¿el radar detecta a la verdadera ganadora del día?" contra esa misma muestra sesga la prueba a favor del motor si la ganadora real no estaba en la muestra.
+
+**Alternativas evaluadas**: validar contra la muestra de 200 (más rápido) vs. contra el Universo Racional completo (~2577 símbolos, mucho más lento).
+
+**Decisión tomada**: Universo Racional completo. Decisión explícita del usuario: "no me interesa la velocidad... prefiero que tarde más y que la respuesta sea correcta".
+
+**Justificación**: una validación que no puede ver a la verdadera ganadora del día no es una validación honesta de la capacidad de detección del motor.
+
+**Impacto esperado**: validación mucho más lenta (~30 sesiones × 2577 símbolos, con descargas de velas de 5 minutos por día) pero estadísticamente representativa.
+
+---
+
+## 2026-08-01 -- Reconstrucción histórica con velas intradía reales, snapshot a los 10 minutos, sin usar el cierre del día como insumo
+
+**Problema**: para validar honestamente si el radar "detecta antes", los indicadores de entrada no pueden usar información que todavía no existía en el momento simulado (mirar el cierre del día completo sería trampa).
+
+**Alternativas evaluadas**: aproximar con el cierre del día completo (simple, pero con lookahead) vs. reconstruir con velas reales de 5 minutos del propio día, cortadas en el minuto 10 después de la apertura.
+
+**Decisión tomada**: velas de 5 minutos reales. Esto limita la validación a fechas dentro de la ventana de ~60 días que conserva Yahoo Finance para datos intradía (se usó el resultado del día completo únicamente como verdad de referencia -- "quién ganó realmente ese día" -- nunca como insumo del radar).
+
+**Justificación**: es la única forma de medir si el radar detecta la oportunidad antes de que ocurra, no después.
+
+**Impacto esperado**: la validación histórica queda acotada a los últimos ~60 días de mercado como máximo; se documenta esta limitación en vez de ocultarla.
+
+---
+
+## 2026-08-01 -- Cero cambios en `/atlas` durante todo el desarrollo de Radar Explosivo, Diagnóstico, Validación histórica y Explosive DNA
+
+**Problema**: instrucción explícita y repetida del usuario de no modificar Atlas Core en ningún momento de este desarrollo.
+
+**Decisión tomada**: todo el código nuevo (`explosive_engine.py`, `explosive_factors.py`, `explosive_config.py/json`, `explosive_diagnostics.py`, todo `atlas_live/backtest/`) vive exclusivamente dentro de `atlas_live/`. Cuando se necesitaron fórmulas de indicadores (RSI, EMA, ATR, VWAP) para la reconstrucción histórica, se reutilizaron en modo lectura las funciones puras de `atlas.engine.score_engine` y `atlas.engine.momentum_engine`, sin modificarlas.
+
+**Justificación**: Atlas Core está documentado como "congelado en v1.0"; todo lo experimental debe validarse afuera antes de siquiera proponerse como cambio al Core (ver fase "Optimización del Radar" del roadmap, y Principio 3 de la Constitución).
+
+**Impacto esperado**: confirmado con `git status` en cada iteración de esta sesión -- cero archivos dentro de `/atlas` modificados.
+
+---
+
+## 2026-08-01 -- Adopción de la metodología de evolución por evidencia (formato PROBLEMA/HIPÓTESIS/...)
+
+**Problema**: Atlas venía creciendo por acumulación de funciones (Radar Explosivo, Diagnóstico, validación, Explosive DNA) sin un mecanismo formal que obligara a justificar cada adición antes de construirla.
+
+**Alternativas evaluadas**: continuar con revisión caso por caso vs. adoptar un formato obligatorio de propuesta (PROBLEMA, HIPÓTESIS, principios que la respaldan, impacto esperado, riesgos, validación, criterios de éxito) que deba aprobarse antes de implementar.
+
+**Decisión tomada**: formato obligatorio adoptado y formalizado en la sección "METODOLOGÍA DE PROPUESTAS" de `ATLAS_CONSTITUTION.md`. Ninguna mejora futura se implementa sin ese diseño aprobado, validación histórica y luego validación en tiempo real, en ese orden.
+
+**Justificación**: decisión directa del usuario -- "no quiero más cambios por intuición... quiero que Atlas evolucione únicamente mediante evidencia."
+
+**Impacto esperado**: cada propuesta futura queda trazable y auditable en este mismo archivo, con su justificación explícita contra la Constitución, en vez de perderse en el historial de una conversación.
+
+---
+
+## 2026-08-01 -- Adopción de ATLAS_CONSTITUTION.md como autoridad máxima del proyecto
+
+**Problema**: el proyecto necesitaba un documento de gobernanza estable que sobreviva a decisiones puntuales de cualquier conversación futura.
+
+**Decisión tomada**: creación de `ATLAS_CONSTITUTION.md` con misión, objetivo, 8 principios, límites explícitos ("lo que Atlas nunca hará"), métricas oficiales y regla de que toda propuesta futura debe citar qué principio la respalda.
+
+**Justificación**: decisión directa del usuario, para evitar que el proyecto derive hacia convertirse en un screener genérico o una herramienta de inversión de largo plazo.
+
+**Impacto esperado**: toda propuesta de mejora a partir de este punto debe evaluarse contra este documento antes de implementarse.
+
+---
+
+## 2026-08-02 -- Congelamiento de Atlas Alpha 1.0 como baseline oficial del Memory Engine
+
+**Problema**: el Memory Engine se construyó por una secuencia de propuestas aprobadas por separado (diseño original, plan de 8 entregables, Ranking Score de desempate, integración en tiempo real, Modo Interactivo Continuo) sin un punto de referencia único contra el cual medir mejoras futuras -- sin una baseline explícita, cualquier cambio posterior corre el riesgo de evaluarse contra "lo que había antes" de forma ambigua, no contra un estado concreto y documentado.
+
+**Decisión tomada**: congelar el estado actual del Memory Engine como **Atlas Alpha 1.0** (2026-08-02) -- primera versión funcional capaz de generar rankings, aprender, registrar y sellar predicciones, calificarlas automáticamente, recalibrarse diariamente, y mantenerse activa durante toda la sesión de trabajo (Modo Interactivo Continuo). Declarada explícitamente en [MEMORY_ENGINE.md](MEMORY_ENGINE.md) y en el checklist maestro de `ATLAS_MASTER_DOCUMENT.md` (sección 18, bloque K, punto 75). A partir de esta versión, **cualquier mejora al Memory Engine debe demostrar una mejora medible respecto a Atlas Alpha 1.0 antes de incorporarse**.
+
+**Justificación**: decisión directa del usuario, tras aprobar la integración en tiempo real y el Modo Interactivo Continuo. Es la misma lógica de evolución por evidencia que ya rige el resto del proyecto (Principio 2 de la Constitución), aplicada ahora como una baseline formal y nombrada, no solo como un principio general.
+
+**Impacto esperado**: toda propuesta futura sobre el Memory Engine (nuevas condiciones, otra fórmula de Ranking Score, checkpoints intermedios, etc.) debe incluir una comparación explícita contra Atlas Alpha 1.0 -- mismo tipo de comparación ya usada para el Ranking Score (posición y Precision@10/@20 antes/después) -- antes de considerarse para incorporarse.
+
+---
+
+## 2026-08-02 -- Atlas Alpha 1.0: "construido, listo para primera validación" (no "terminado"); reglas de funcionamiento del Learning Engine documentadas por adelantado
+
+**Problema**: dos cosas para dejar sin ambigüedad antes de la primera validación en mercado real de mañana. (1) Tras conectar los últimos paneles de la Cabina del Piloto se describió a Atlas Alpha 1.0 como "formalmente cerrado" -- el usuario corrigió ese estado: está construido, pero todavía no validado en condiciones reales, por lo que "terminado" es prematuro. (2) Se agregaron dos indicadores permanentes en la Cabina (🧠 Aprendizaje, 🎯 Confianza de Atlas) antes de que exista una propuesta formal del Learning Engine (aprendizaje continuo) -- sin fijar sus reglas de funcionamiento ahora, se corría el riesgo de que una implementación futura las definiera de forma distinta a lo ya decidido en esta conversación.
+
+**Alternativas evaluadas**: (a) no documentar nada todavía y esperar a la propuesta formal completa del Learning Engine; (b) documentar solo las reglas ya dadas por el usuario, sin implementar ningún cálculo, dejando explícitamente abiertas las preguntas de diseño que todavía faltan (umbral, Learning Store, Learning Comparator, versionado del Memory Store).
+
+**Decisión tomada**: (b). Se creó [LEARNING_ENGINE.md](LEARNING_ENGINE.md) -- notas de arquitectura previas a la propuesta formal, explícitamente distinguido del "Learning Engine" de 8 etapas ya existente y congelado en `/atlas` Core (para no confundir ambos en una sesión futura). Documenta: la máquina de estados del ciclo de Aprendizaje (`Observando` → `Aprendiendo` → `Comparación en curso` al llegar al umbral, sin reinicio automático, hasta que termine la comparación y se cree una nueva versión validada del conocimiento -- recién ahí puede empezar un ciclo nuevo) y el requisito de explicabilidad de la Confianza de Atlas (nunca un número arbitrario, siempre debe poder señalar qué factores contribuyeron, sube y baja con el tiempo, nunca depende de un solo día). Ningún cálculo se implementó -- `atlas_live/memory/learning_status.py` sigue devolviendo el mismo estado honestamente vacío que antes, ahora con un puntero a este documento.
+
+**Justificación**: decisión directa del usuario -- "No considero Atlas Alpha 1.0 terminado todavía. Lo considero construido y listo para su primera validación en mercado real" y "Solo dejar documentadas estas reglas como parte de la arquitectura del Learning Engine. Después de eso, no agregaremos más funcionalidades." Mismo principio ya aplicado en todo el proyecto: documentar decisiones de arquitectura antes de que el código las tenga que redescubrir, sin adelantar implementación sin propuesta aprobada.
+
+**Impacto esperado**: cuando se formalice la propuesta del Learning Engine, debe partir de estas reglas (no puede contradecirlas sin una nueva decisión explícita del usuario). Mientras tanto, ningún comportamiento del sistema cambió -- Atlas Alpha 1.0 queda exactamente como estaba, listo para la primera validación en mercado real que comienza mañana (ver [PRIMER_DIA_OPERACION_ATLAS_ALPHA.md](PRIMER_DIA_OPERACION_ATLAS_ALPHA.md)).
+
+---
+
+## 2026-08-02 -- Data Fusion Engine: propuesta formal aprobada solo como diseño, implementación explícitamente diferida
+
+**Problema**: inmediatamente después de cerrar la etapa de construcción y fijar el backlog diferido (Learning Store, Learning Comparator, Confianza real, Data Fusion Engine, nuevos proveedores -- "ninguno se implementará antes de obtener varios días de evidencia en tiempo real"), se pidió implementar directamente la arquitectura de múltiples proveedores de datos -- contradiciendo esa misma regla recién fijada.
+
+**Alternativas evaluadas**: se presentaron tres opciones explícitamente vía pregunta al usuario -- (a) mantener el plan original, no tocar nada todavía; (b) override consciente, implementar ya; (c) solo propuesta formal de arquitectura, sin código. El usuario eligió (c), y además confirmó explícitamente que sigue sin querer implementación antes de la validación en mercado real.
+
+**Decisión tomada**: se redactó [DATA_FUSION_ENGINE_PROPUESTA.md](DATA_FUSION_ENGINE_PROPUESTA.md) -- propuesta formal completa (PROBLEMA/HIPÓTESIS/PRINCIPIOS/ARQUITECTURA/INTERFACES/FAILOVER/VALIDACIÓN ENTRE FUENTES/IMPACTO/PLAN DE MIGRACIÓN/RIESGOS/CRITERIOS DE ÉXITO), sin escribir ni una línea de código. Hallazgo clave del diseño: `atlas/data/providers/base.py` (`DataProvider`) y `atlas/data/collectors/data_collector.py` (`DataCollector`) ya existen en el Core congelado, ya anticipan múltiples proveedores (docstring de `DataProvider` los menciona explícitamente), y **todo** `atlas_live/` y `/atlas` Core ya pasan exclusivamente por `DataCollector` -- confirmado revisando el código, no supuesto. Esto reduce el "Data Fusion Engine" a una nueva implementación de `DataProvider` (`FusionProvider`, con failover) construida en `atlas_live/data_fusion/` (nunca dentro de `/atlas`, por la regla de arquitectura de la Constitución), que migra únicamente los 3 call sites de `atlas_live/` que hoy instancian `YahooFinanceProvider()` a mano. Se recomienda Alpaca como segundo proveedor (ya evaluado y recomendado en `DATA_PROVIDER_EVALUATION.md`), y se recomienda explícitamente **no** usar TradingView (sin API oficial, contradice el pedido de "fuente oficial compatible").
+
+**Justificación**: decisión directa del usuario, tras marcarle la contradicción con la regla que él mismo había fijado minutos antes y ofrecerle las tres alternativas explícitamente -- "Opción 3... No quiero implementarlo antes de obtener varios días de evidencia en mercado real. Sin embargo, esta propuesta debe contemplar que Atlas, en su versión madura, nunca dependerá de una sola fuente de datos."
+
+**Impacto esperado**: cuando llegue el momento (varios días de evidencia real de Atlas Alpha 1.0), la implementación puede empezar directamente desde este diseño sin tener que rediscutirlo. Ningún comportamiento del sistema cambió hoy -- cero código nuevo, cero archivos de `/atlas` o `atlas_live/data_fusion/` creados.

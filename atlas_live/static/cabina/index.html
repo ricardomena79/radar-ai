@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Atlas -- Cabina del Piloto</title>
+<link rel="stylesheet" href="cabina.css">
+</head>
+<body>
+
+<div class="sim-banner">
+  ⚠ DATOS SIMULADOS -- estructura en revisión, todavía no conectada al Memory Engine ni al Radar real
+</div>
+
+<!-- ================= BARRA SUPERIOR PERMANENTE ================= -->
+<div class="topbar">
+  <div class="topbar-item">
+    <span class="dot dot-green" id="topbar-status-dot"></span>
+    <span id="topbar-status-text">Sistema OK</span>
+  </div>
+  <div class="topbar-sep"></div>
+  <div class="topbar-item topbar-session" id="topbar-session">PREMARKET</div>
+  <div class="topbar-sep"></div>
+  <div class="topbar-item">NY <span id="topbar-clock" class="topbar-mono">--:--:--</span></div>
+  <div class="topbar-sep"></div>
+  <div class="topbar-item" id="topbar-countdown-label">Apertura en <span id="topbar-countdown" class="topbar-mono">--:--:--</span></div>
+  <div class="topbar-sep"></div>
+  <div class="topbar-item topbar-learning" id="topbar-learning" title="Progreso del aprendizaje continuo -- NO representa inteligencia ni precisión, solo cuánta evidencia nueva se acumuló respecto de un umbral (todavía sin definir, pendiente del Learning Engine).">🧠 Aprendizaje: <span id="topbar-learning-text">--</span></div>
+  <div class="topbar-sep"></div>
+  <div class="topbar-item topbar-confidence" id="topbar-confidence" title="Confianza global del sistema completo -- nunca depende de una sola operación ni de un solo día (pendiente del Learning Comparator).">🎯 Confianza: <span id="topbar-confidence-text">--</span></div>
+  <div class="topbar-sep"></div>
+  <div class="topbar-item topbar-dim">Última actualización: <span id="topbar-last-update"></span></div>
+  <div class="topbar-sep"></div>
+  <button class="topbar-btn" id="btn-save-snapshot" title="Guarda un archivo JSON con el estado actual de Atlas (Oportunidad del Día, Plan B, Top Explosivas, Top Momentum, No tocar, Memory Engine, Prediction Journal, Exit Journal, Mission Control, Aprendizaje, Confianza). Solo guarda -- no analiza ni interpreta nada.">📸 Guardar Estado del Día</button>
+</div>
+
+<!-- ================= BARRA DE ACTIVIDAD ================= -->
+<div class="activity-bar">
+  <span class="activity-dot"></span>
+  <span id="activity-text">Iniciando...</span>
+</div>
+
+<div class="shell">
+
+  <!-- ================= MENÚ LATERAL ================= -->
+  <nav class="sidebar">
+    <div class="brand">ATLAS<span class="brand-sub">Cabina del Piloto</span></div>
+
+    <button class="nav-item active" data-view="dashboard">🏠 Dashboard</button>
+    <button class="nav-item" data-view="oportunidad">🎯 Oportunidad del día</button>
+
+    <div class="nav-group-label">OPORTUNIDADES</div>
+    <button class="nav-item nav-item--sub" data-view="microcaps">🚀 Explosivas</button>
+    <button class="nav-item nav-item--sub" data-view="momentum">📈 Momentum</button>
+    <button class="nav-item nav-item--sub" data-view="etf">🏦 ETF</button>
+    <button class="nav-item nav-item--sub" data-view="no-tocar">🔴 No tocar</button>
+
+    <div class="nav-group-label">INTELIGENCIA</div>
+    <button class="nav-item nav-item--sub" data-view="memory-engine">🧠 Memory Engine</button>
+    <button class="nav-item nav-item--sub" data-view="prediction-journal">📒 Prediction Journal</button>
+    <button class="nav-item nav-item--sub" data-view="exit-journal">📉 Exit Journal</button>
+
+    <div class="nav-sep"></div>
+    <button class="nav-item" data-view="radar-completo">📊 Radar Completo</button>
+    <button class="nav-item" data-view="mission-control">⚙ Mission Control</button>
+    <button class="nav-item" data-view="config">🔧 Configuración</button>
+  </nav>
+
+  <!-- ================= CONTENIDO ================= -->
+  <main class="content">
+
+    <!-- ---------- 1. DASHBOARD (solo lo necesario para decidir rápido) ---------- -->
+    <section class="view active" id="view-dashboard">
+
+      <!-- Calidad del Mercado -- lectura general, antes de cualquier candidato puntual -->
+      <div class="quality-bar" id="dashboard-quality"></div>
+
+      <!-- Atlas Recomienda (principal) + Plan B -- elemento dominante de la pantalla -->
+      <div class="hero-row">
+        <div class="hero" id="dashboard-hero"></div>
+        <div class="plan-b" id="dashboard-plan-b"></div>
+      </div>
+
+      <!-- Atlas Opina -- resumen de estrategia del día -->
+      <div class="opina-panel">
+        <div class="opina-title">🗣 Atlas Opina</div>
+        <div class="opina-body" id="dashboard-opina"></div>
+      </div>
+
+      <!-- Alertas en tiempo real -->
+      <div class="alerts-panel">
+        <div class="alerts-title">🔔 Alertas en tiempo real</div>
+        <div id="dashboard-alerts"></div>
+      </div>
+
+      <!-- Tres bloques simultáneos, con estado general -->
+      <div class="triple-grid">
+        <div class="triple-col triple-col--verde">
+          <div class="triple-col-title">🚀 Explosivas</div>
+          <div class="triple-col-status" id="explosivas-status"></div>
+          <div id="dashboard-explosivas"></div>
+        </div>
+        <div class="triple-col triple-col--amarillo">
+          <div class="triple-col-title">📈 Momentum</div>
+          <div class="triple-col-status" id="momentum-status"></div>
+          <div id="dashboard-momentum"></div>
+        </div>
+        <div class="triple-col triple-col--rojo">
+          <div class="triple-col-title">🔴 No tocar</div>
+          <div class="triple-col-status" id="no-tocar-status"></div>
+          <div id="dashboard-no-tocar"></div>
+        </div>
+      </div>
+
+      <!-- ¿Por qué NO? -- candidatos llamativos a simple vista que Atlas descartó, con el motivo -->
+      <div class="whynot-panel">
+        <div class="whynot-title">❓ ¿Por qué NO?</div>
+        <div id="dashboard-whynot"></div>
+      </div>
+    </section>
+
+    <!-- ---------- 2. OPORTUNIDAD DEL DÍA (detalle completo) ---------- -->
+    <section class="view" id="view-oportunidad">
+      <header class="view-header"><h1>🎯 Oportunidad del día</h1></header>
+      <div id="oportunidad-detail"></div>
+    </section>
+
+    <!-- ---------- 3. EXPLOSIVAS ---------- -->
+    <section class="view" id="view-microcaps">
+      <header class="view-header"><h1>🚀 Microcaps Explosivas</h1>
+        <div class="header-meta">market_cap &lt; $300M -- categoría EXPLOSION o candidato fuerte</div>
+      </header>
+      <div class="table-wrap"><table class="data-table" id="microcaps-table"></table></div>
+    </section>
+
+    <!-- ---------- 4. MOMENTUM ---------- -->
+    <section class="view" id="view-momentum">
+      <header class="view-header"><h1>📈 Momentum</h1>
+        <div class="header-meta">Movimiento de 3% a 10% -- fallback cuando no hay explosivas</div>
+      </header>
+      <div class="table-wrap"><table class="data-table" id="momentum-table"></table></div>
+    </section>
+
+    <!-- ---------- 5. ETF ---------- -->
+    <section class="view" id="view-etf">
+      <header class="view-header"><h1>🏦 ETF</h1></header>
+      <div class="table-wrap"><table class="data-table" id="etf-table"></table></div>
+    </section>
+
+    <!-- ---------- 6. NO TOCAR ---------- -->
+    <section class="view" id="view-no-tocar">
+      <header class="view-header"><h1>🔴 No tocar</h1>
+        <div class="header-meta">Falsas rupturas, sin evidencia confiable, o semáforo rojo</div>
+      </header>
+      <div class="table-wrap"><table class="data-table" id="no-tocar-table"></table></div>
+    </section>
+
+    <!-- ---------- 7. MEMORY ENGINE ---------- -->
+    <section class="view" id="view-memory-engine">
+      <header class="view-header"><h1>🧠 Memory Engine</h1>
+        <div class="header-meta">Atlas Alpha 1.0 -- evidencia y tasas base vigentes</div>
+      </header>
+      <div id="memory-engine-body"></div>
+    </section>
+
+    <!-- ---------- 8. PREDICTION JOURNAL ---------- -->
+    <section class="view" id="view-prediction-journal">
+      <header class="view-header"><h1>📒 Prediction Journal</h1></header>
+      <div id="prediction-journal-body"></div>
+    </section>
+
+    <!-- ---------- 9. EXIT JOURNAL ---------- -->
+    <section class="view" id="view-exit-journal">
+      <header class="view-header"><h1>📉 Exit Journal</h1>
+        <div class="header-meta">Memoria histórica de trayectoria -- sin recomendación de salida (fase pendiente)</div>
+      </header>
+      <div class="table-wrap"><table class="data-table" id="exit-journal-table"></table></div>
+    </section>
+
+    <!-- ---------- 10. RADAR COMPLETO ---------- -->
+    <section class="view" id="view-radar-completo">
+      <header class="view-header"><h1>📊 Radar Completo</h1>
+        <div class="header-meta">Universo completo escaneado, sin filtrar</div>
+      </header>
+      <div class="table-wrap"><table class="data-table" id="radar-completo-table"></table></div>
+    </section>
+
+    <!-- ---------- 11. MISSION CONTROL ---------- -->
+    <section class="view" id="view-mission-control">
+      <header class="view-header"><h1>⚙ Mission Control</h1></header>
+      <div class="table-wrap"><table class="data-table" id="mission-control-table"></table></div>
+    </section>
+
+    <!-- ---------- 12. CONFIGURACIÓN ---------- -->
+    <section class="view" id="view-config">
+      <header class="view-header"><h1>🔧 Configuración</h1></header>
+      <div id="config-body"></div>
+    </section>
+
+  </main>
+</div>
+
+<script src="mock_data.js"></script>
+<script src="cabina.js"></script>
+</body>
+</html>

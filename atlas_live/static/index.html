@@ -6,24 +6,76 @@
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <header>
-    <h1>ATLAS</h1>
-    <div class="status">
-      <span id="scan-status">cargando...</span>
-      <button id="rescan-btn">Actualizar ahora</button>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="sidebar-brand">ATLAS</div>
+      <nav class="sidebar-nav">
+        <button class="nav-item active" data-view="explosivo">
+          <span class="nav-emoji">🔥</span> Radar Explosivo
+        </button>
+        <button class="nav-item" data-view="general">
+          <span class="nav-emoji">📈</span> Radar General
+        </button>
+        <button class="nav-item" data-view="watchlist">
+          <span class="nav-emoji">📋</span> Watchlist
+        </button>
+        <button class="nav-item" data-view="diagnostico">
+          <span class="nav-emoji">🔬</span> Diagnóstico
+        </button>
+      </nav>
+    </aside>
+
+    <div class="app-main">
+      <header>
+        <h1 id="view-title">🔥 Radar Explosivo</h1>
+        <div class="status">
+          <span id="scan-status">cargando...</span>
+          <div class="notif-settings" title="Notificaciones al aparecer una oportunidad nueva">
+            <label class="notif-toggle">
+              <input type="checkbox" id="notif-browser-toggle"> 🔔
+            </label>
+            <label class="notif-toggle">
+              <input type="checkbox" id="notif-sound-toggle"> 🔊
+            </label>
+          </div>
+          <button id="rescan-btn">Actualizar ahora</button>
+        </div>
+      </header>
+
+      <main>
+        <section id="view-explosivo" class="view active">
+          <section id="hero"></section>
+          <h2 class="section-title">Oportunidades intradía de alto momentum</h2>
+          <div id="explosivo-list">
+            <div class="loading">Cargando...</div>
+          </div>
+        </section>
+
+        <section id="view-general" class="view">
+          <h2 class="section-title">Ranking completo del mercado</h2>
+          <div id="ranking-list">
+            <div class="loading">Cargando...</div>
+          </div>
+        </section>
+
+        <section id="view-watchlist" class="view">
+          <h2 class="section-title">Interesantes, todavía sin recomendación</h2>
+          <div id="watchlist-list">
+            <div class="loading">Cargando...</div>
+          </div>
+        </section>
+
+        <section id="view-diagnostico" class="view">
+          <h2 class="section-title">Diagnóstico del Radar Explosivo</h2>
+          <div id="diagnostico-content">
+            <div class="loading">Cargando...</div>
+          </div>
+        </section>
+
+        <div class="market-strip" id="context-bar"></div>
+      </main>
     </div>
-  </header>
-
-  <main>
-    <section id="hero"></section>
-
-    <h2 class="section-title">Las siguientes mejores oportunidades</h2>
-    <div id="ranking-list">
-      <div class="loading">Cargando...</div>
-    </div>
-
-    <div class="market-strip" id="context-bar"></div>
-  </main>
+  </div>
 
   <div id="detail-overlay">
     <div id="detail-panel">
@@ -35,6 +87,7 @@
     </div>
   </div>
 
+  <script src="/notifications.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

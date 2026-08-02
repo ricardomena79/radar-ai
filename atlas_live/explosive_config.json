@@ -1,0 +1,32 @@
+{
+  "gates": {
+    "min_price": 1.0,
+    "min_dollar_volume": 2000000,
+    "min_rvol": 0.0,
+    "min_abs_gap_or_change_pct": 2.0,
+    "min_volatility_score": 50.0,
+    "large_cap_ceiling": 10000000000,
+    "mega_cap_exception_gap_pct": 5.0,
+    "mega_cap_exception_rvol": 5.0
+  },
+  "weights": {
+    "relative_volume": 0.25,
+    "volatility": 0.15,
+    "momentum": 0.15,
+    "gap": 0.15,
+    "vwap_distance": 0.10,
+    "sector_money_flow": 0.10,
+    "float": 0.10
+  },
+  "size_factor": {
+    "small_cap_reference": 300000000,
+    "mega_cap_reference": 200000000000,
+    "min_factor": 0.5,
+    "max_factor": 1.0
+  },
+  "float_factor": {
+    "low_float_reference": 20000000,
+    "high_float_reference": 500000000
+  },
+  "top_n": 20
+}

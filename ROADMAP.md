@@ -1,4 +1,6 @@
-# ATLAS ROADMAP
+> **Reemplazado por [ATLAS_ROADMAP.md](ATLAS_ROADMAP.md).** Este archivo se conserva como registro histórico del plan original (fases 1-3, previo a la Constitución del proyecto) y no se elimina ni se edita, pero ya no es la fuente de verdad del plan maestro. Para el estado y las fases vigentes, ver `ATLAS_ROADMAP.md`.
+
+# ATLAS ROADMAP (histórico)
 
 ## Objetivo
 

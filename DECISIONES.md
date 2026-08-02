@@ -1,4 +1,6 @@
-# DECISIONES DE ATLAS
+> **Reemplazado por [ATLAS_CONSTITUTION.md](ATLAS_CONSTITUTION.md)** (misión, objetivo y principios) **y [DECISION_LOG.md](DECISION_LOG.md)** (historial de decisiones con alternativas evaluadas y justificación). Este archivo se conserva como registro histórico de la filosofía original del proyecto y no se elimina ni se edita, pero ya no es la fuente de verdad -- su contenido ("Atlas no busca la acción que más sube... busca la de mayor probabilidad de operación rentable") queda matizado por la Constitución vigente, que sí prioriza explícitamente la detección de movimiento explosivo sobre otras consideraciones.
+
+# DECISIONES DE ATLAS (histórico)
 
 ## Filosofía
 

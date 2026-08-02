@@ -35,6 +35,9 @@ from atlas.engine.momentum_engine import calculate_momentum_score
 from atlas.engine.money_flow_engine import MoneyFlowEngine
 from atlas.knowledge import NORMAL, KnowledgeEngine
 
+from atlas_live import explosive_diagnostics, explosive_engine
+from atlas_live.explosive_config import load_config as load_explosive_config
+
 # --- Configuración, pensada para poder ajustarse sin tocar el resto del archivo ---
 WATCHLIST_EQUITIES = 150
 WATCHLIST_ETFS = 50
@@ -124,6 +127,15 @@ class _State:
         # Cache interna (no forma parte del snapshot JSON): el Money Flow
         # Engine ya escaneado, para que get_symbol_detail() lo reutilice.
         self.money_flow_engine: Optional[MoneyFlowEngine] = None
+        # Cache interna del modo Diagnóstico: se sirve bajo demanda (no en
+        # cada poll de /api/ranking) vía get_explosive_diagnostics().
+        self.explosive_diagnostics: Optional[Dict[str, Any]] = None
+        # Cabina del Piloto, Panel 2 en adelante (2026-08-02): ranking del
+        # Memory Engine (Ranking Score) ya serializado, servido bajo demanda
+        # vía get_memory_ranking() -- no forma parte de snapshot()/`/api/ranking`
+        # para no cambiar ese contrato ya en uso.
+        self.memory_ranking: List[Dict[str, Any]] = []
+        self.memory_ranking_generated_at: Optional[str] = None
 
     def snapshot(self) -> Dict[str, Any]:
         with self._lock:
@@ -144,12 +156,20 @@ class _State:
             for key, value in kwargs.items():
                 setattr(self, key, value)
 
+    def diagnostics_snapshot(self) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            return self.explosive_diagnostics
+
+    def memory_ranking_snapshot(self) -> Dict[str, Any]:
+        with self._lock:
+            return {"generated_at": self.memory_ranking_generated_at, "candidates": self.memory_ranking}
+
 
 STATE = _State()
 
 
 def _score_symbol(asset: Asset, collector: DataCollector, money_flow_engine: MoneyFlowEngine,
-                   recorder: DecisionRecorder, context) -> Optional[Dict[str, Any]]:
+                   recorder: DecisionRecorder, context, explosive_cfg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     try:
         quote = collector.get_quote(asset.symbol)
         atlas_score = calculate_atlas_score(asset.symbol, collector)
@@ -172,6 +192,16 @@ def _score_symbol(asset: Asset, collector: DataCollector, money_flow_engine: Mon
         atr_component = atlas_score.component("atr")
         atr_score = atr_component.score if atr_component else None
 
+        # Radar Explosivo: motor propio de atlas_live, independiente de
+        # Decision Engine. Reutiliza el quote/momentum_result/money_flow ya
+        # calculados arriba -- no repite ninguna llamada a Atlas Core.
+        explosive_result = explosive_engine.evaluate(
+            quote=quote,
+            momentum_result=momentum_result,
+            sector_money_flow_score=money_flow_score,
+            config=explosive_cfg,
+        )
+
         return {
             "symbol": asset.symbol,
             "name": asset.name,
@@ -185,6 +215,16 @@ def _score_symbol(asset: Asset, collector: DataCollector, money_flow_engine: Mon
             "confidence": decision_result.confidence,
             "display_decision": _display_decision(decision_result.decision, decision_result.confidence),
             "risk_level": _risk_level(atr_score, context.vix_price if context else None),
+            "explosive": {
+                "eligible": explosive_result.eligible,
+                "score": explosive_result.score,
+                "reasons": explosive_result.reasons,
+                "excluded_reason": explosive_result.excluded_reason,
+                "is_size_exception": explosive_result.is_size_exception,
+                "failed_stage": explosive_result.failed_stage,
+                "stage_trace": explosive_result.stage_trace,
+                "metrics": explosive_result.metrics,
+            },
         }
     except Exception:
         return None
@@ -237,11 +277,15 @@ def run_scan_once() -> None:
         journal = DecisionJournal()
         recorder = DecisionRecorder(knowledge_engine=knowledge, decision_journal=journal)
 
+        # Se carga una sola vez por ciclo (no por símbolo) para no releer el
+        # archivo de configuración del Radar Explosivo cientos de veces.
+        explosive_cfg = load_explosive_config()
+
         results: List[Dict[str, Any]] = []
         errors = 0
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
             futures = [
-                executor.submit(_score_symbol, asset, collector, money_flow_engine, recorder, market_context)
+                executor.submit(_score_symbol, asset, collector, money_flow_engine, recorder, market_context, explosive_cfg)
                 for asset in assets
             ]
             for future in as_completed(futures):
@@ -261,6 +305,31 @@ def run_scan_once() -> None:
             row["rank"] = rank
             row["is_top_pick"] = rank == 1
 
+        # Diagnóstico del Radar Explosivo: se arma sobre TODO `results` (el
+        # universo escaneado completo), no sobre `results[:TOP_N]`, porque
+        # el embudo tiene que reflejar cuántos símbolos hay en cada etapa
+        # de verdad, no solo los que entraron al ranking de Decision Engine.
+        diagnostics = explosive_diagnostics.build_diagnostics(results, errors)
+
+        # Integración en tiempo real del Memory Engine (Ranking Score +
+        # Prediction Journal) -- envuelta en su propio try/except, igual
+        # que record_decision() más arriba: el Memory Engine nunca debe
+        # tumbar el escaneo principal. No modifica nada de lo anterior, solo
+        # lee `results` ya calculado. Ver atlas_live/memory/live_integration.py.
+        memory_ranking_serialized: List[Dict[str, Any]] = []
+        try:
+            from atlas_live.memory import live_integration
+            live_integration.run_live_cycle(results)
+            # Cabina del Piloto, Panel 2 en adelante: mismo ranking que ya se
+            # usa para el snapshot dinámico del Prediction Journal, servido
+            # también para la interfaz -- ninguna llamada ni cálculo nuevo.
+            memory_ranking_serialized = [
+                live_integration.serialize_ranked_candidate(c)
+                for c in live_integration.build_live_ranking(results)
+            ]
+        except Exception:
+            pass
+
         STATE.update(
             context=context_payload,
             ranking=results[:TOP_N],
@@ -270,6 +339,9 @@ def run_scan_once() -> None:
             symbols_ok=len(results),
             errors=errors,
             scanning=False,
+            explosive_diagnostics=diagnostics,
+            memory_ranking=memory_ranking_serialized,
+            memory_ranking_generated_at=datetime.now(timezone.utc).isoformat() if memory_ranking_serialized else STATE.memory_ranking_generated_at,
         )
     except Exception as exc:
         STATE.update(scanning=False, last_error=f"{exc}\n{traceback.format_exc()}")
@@ -367,19 +439,62 @@ def get_symbol_detail(symbol: str) -> Dict[str, Any]:
     }
 
 
+def get_explosive_diagnostics() -> Optional[Dict[str, Any]]:
+    """Diagnóstico del último escaneo completo, o None si todavía no corrió ninguno."""
+    return STATE.diagnostics_snapshot()
+
+
+def get_memory_ranking() -> Dict[str, Any]:
+    """Ranking del Memory Engine (Ranking Score) del último ciclo -- Cabina
+    del Piloto, Panel 2 en adelante. `candidates` queda vacío hasta que
+    corra el primer ciclo completo."""
+    return STATE.memory_ranking_snapshot()
+
+
 _background_thread: Optional[threading.Thread] = None
+_stop_event = threading.Event()
 
 
 def _refresh_loop() -> None:
-    while True:
+    while not _stop_event.is_set():
         run_scan_once()
-        time.sleep(REFRESH_INTERVAL_SECONDS)
+        # `wait()` en vez de `sleep()`: si se pide detener a mitad de la
+        # espera, el hilo despierta enseguida en vez de tardar hasta
+        # REFRESH_INTERVAL_SECONDS -- necesario para que el cierre
+        # prolijo (`request_stop` + `wait_until_stopped`) sea rápido.
+        _stop_event.wait(REFRESH_INTERVAL_SECONDS)
 
 
 def start_background_refresh() -> None:
-    """Arranca el hilo de refresco periódico (una sola vez por proceso)."""
+    """Arranca el hilo de refresco periódico (una sola vez por proceso).
+
+    Modo Interactivo Continuo (decisión de arquitectura, 2026-08-02): Atlas
+    V1 escanea, actualiza el Ranking, el Memory Engine y el Prediction
+    Journal de forma continua mientras el proceso esté vivo -- no es un
+    servicio 24/7 (eso queda fuera de alcance, versión futura); es un hilo
+    de fondo que vive y muere con la aplicación, con un mecanismo explícito
+    para terminar de forma segura (`request_stop`/`wait_until_stopped`) en
+    vez de que un cierre lo corte a mitad de una escritura."""
     global _background_thread
     if _background_thread is not None:
         return
+    _stop_event.clear()
     _background_thread = threading.Thread(target=_refresh_loop, daemon=True)
     _background_thread.start()
+
+
+def request_stop() -> None:
+    """Pide que el ciclo de refresco termine después del cycle en curso --
+    no lo interrumpe a mitad de una escritura."""
+    _stop_event.set()
+
+
+def wait_until_stopped(timeout: Optional[float] = None) -> bool:
+    """Espera a que el hilo de fondo termine su ciclo actual y salga.
+    Devuelve True si terminó dentro del timeout, False si no (en ese caso,
+    el hilo sigue siendo daemon -- el proceso puede cerrar igual, pero sin
+    la garantía de que el último ciclo terminó de escribir)."""
+    if _background_thread is None:
+        return True
+    _background_thread.join(timeout)
+    return not _background_thread.is_alive()

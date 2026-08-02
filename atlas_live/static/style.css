@@ -22,6 +22,71 @@ body {
   font-size: 14px;
 }
 
+/* --- Estructura general: menú lateral + contenido --- */
+.app-shell {
+  display: flex;
+  min-height: 100vh;
+}
+
+.sidebar {
+  width: 220px;
+  flex-shrink: 0;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+}
+
+.sidebar-brand {
+  padding: 18px 20px;
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  border-bottom: 1px solid var(--border);
+}
+
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  padding: 10px;
+  gap: 4px;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: transparent;
+  color: var(--text-dim);
+  border: none;
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-weight: 600;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.nav-item:hover { background: var(--panel-2); color: var(--text); opacity: 1; }
+.nav-item.active { background: var(--panel-2); color: var(--text); border-left: 3px solid var(--accent); }
+.nav-emoji { font-size: 15px; }
+
+.app-main {
+  flex: 1;
+  min-width: 0;
+}
+
+@media (max-width: 720px) {
+  .app-shell { flex-direction: column; }
+  .sidebar { width: 100%; flex-direction: row; align-items: center; }
+  .sidebar-brand { border-bottom: none; border-right: 1px solid var(--border); }
+  .sidebar-nav { flex-direction: row; padding: 8px; overflow-x: auto; }
+  .nav-item.active { border-left: none; border-bottom: 3px solid var(--accent); }
+}
+
+/* --- Vistas (Radar Explosivo / Radar General / Watchlist) --- */
+.view { display: none; }
+.view.active { display: block; }
+
 header {
   display: flex;
   align-items: center;
@@ -162,6 +227,120 @@ main {
   border: 1px dashed var(--border);
   border-radius: 10px;
 }
+.hero-exception {
+  color: var(--amber);
+  font-size: 12px;
+  font-weight: 700;
+  margin-top: 10px;
+}
+
+/* --- Razones del Radar Explosivo ("por qué fue seleccionada") --- */
+.reasons-list {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.reasons-list li {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 10px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.exception-badge {
+  background: rgba(217,164,65,0.18);
+  color: var(--amber);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.explosive-card {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+}
+.explosive-card .opp-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.explosive-card .opp-id { flex-wrap: wrap; }
+
+/* --- Diagnóstico del Radar Explosivo --- */
+.funnel {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.funnel-step {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 18px;
+  min-width: 150px;
+  flex: 1;
+}
+.funnel-label {
+  font-size: 11px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.funnel-count {
+  font-size: 26px;
+  font-weight: 800;
+  margin-top: 4px;
+}
+.funnel-final { border-color: var(--accent); }
+.funnel-final .funnel-count { color: var(--accent); }
+.funnel-note {
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.diag-table-wrap {
+  overflow-x: auto;
+  margin-top: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.diag-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.diag-table th, .diag-table td {
+  padding: 9px 14px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.diag-table th {
+  color: var(--text-dim);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  background: var(--panel);
+}
+.diag-table tbody tr { cursor: pointer; }
+.diag-table tbody tr:hover { background: var(--panel-2); }
+.diag-table td:nth-child(3) {
+  white-space: normal;
+  min-width: 220px;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+.row-approved td:nth-child(2) { color: var(--green); font-weight: 700; }
+.row-excluded td:nth-child(2) { color: var(--text-dim); }
 
 /* --- Lista simplificada de oportunidades --- */
 #ranking-list {
@@ -327,3 +506,44 @@ main {
 }
 
 #tv-container { height: 420px; margin-bottom: 8px; }
+
+/* --- Notificaciones: controles del header --- */
+.notif-settings {
+  display: flex;
+  gap: 6px;
+}
+.notif-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  font-size: 13px;
+}
+.notif-toggle:hover { background: #232a3d; }
+.notif-toggle input { cursor: pointer; }
+
+/* --- Resaltado de oportunidades nuevas --- */
+.new-badge {
+  background: var(--accent);
+  color: #05101f;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+}
+
+@keyframes highlight-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(74, 158, 255, 0.55); }
+  50% { box-shadow: 0 0 0 8px rgba(74, 158, 255, 0); }
+}
+
+.hero-card.highlight-new,
+.opp-card.highlight-new {
+  border-color: var(--accent);
+  animation: highlight-pulse 1.2s ease-out 3;
+}
