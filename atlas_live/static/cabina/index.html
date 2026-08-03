@@ -8,10 +8,6 @@
 </head>
 <body>
 
-<div class="sim-banner">
-  ⚠ DATOS SIMULADOS -- estructura en revisión, todavía no conectada al Memory Engine ni al Radar real
-</div>
-
 <!-- ================= BARRA SUPERIOR PERMANENTE ================= -->
 <div class="topbar">
   <div class="topbar-item">
@@ -38,6 +34,7 @@
 <div class="activity-bar">
   <span class="activity-dot"></span>
   <span id="activity-text">Iniciando...</span>
+  <span class="mock-tag" title="Texto rotativo de ejemplo, no describe el ciclo de escaneo real">MOCK</span>
 </div>
 
 <div class="shell">
@@ -83,13 +80,13 @@
 
       <!-- Atlas Opina -- resumen de estrategia del día -->
       <div class="opina-panel">
-        <div class="opina-title">🗣 Atlas Opina</div>
+        <div class="opina-title">🗣 Atlas Opina <span class="mock-tag" title="Insight Engine no implementado todavía -- texto de ejemplo">MOCK</span></div>
         <div class="opina-body" id="dashboard-opina"></div>
       </div>
 
       <!-- Alertas en tiempo real -->
       <div class="alerts-panel">
-        <div class="alerts-title">🔔 Alertas en tiempo real</div>
+        <div class="alerts-title">🔔 Alertas en tiempo real <span class="mock-tag" title="Event Engine no implementado todavía -- ejemplos, no alertas reales">MOCK</span></div>
         <div id="dashboard-alerts"></div>
       </div>
 
@@ -114,7 +111,7 @@
 
       <!-- ¿Por qué NO? -- candidatos llamativos a simple vista que Atlas descartó, con el motivo -->
       <div class="whynot-panel">
-        <div class="whynot-title">❓ ¿Por qué NO?</div>
+        <div class="whynot-title">❓ ¿Por qué NO? <span class="mock-tag" title="Ejemplos ilustrativos, todavía no generados por el Radar real">MOCK</span></div>
         <div id="dashboard-whynot"></div>
       </div>
     </section>
@@ -143,7 +140,7 @@
 
     <!-- ---------- 5. ETF ---------- -->
     <section class="view" id="view-etf">
-      <header class="view-header"><h1>🏦 ETF</h1></header>
+      <header class="view-header"><h1>🏦 ETF <span class="mock-tag" title="Fuera del orden de conexión al Radar real -- fila por fila ya lo indica también">MOCK</span></h1></header>
       <div class="table-wrap"><table class="data-table" id="etf-table"></table></div>
     </section>
 
@@ -194,7 +191,7 @@
 
     <!-- ---------- 12. CONFIGURACIÓN ---------- -->
     <section class="view" id="view-config">
-      <header class="view-header"><h1>🔧 Configuración</h1></header>
+      <header class="view-header"><h1>🔧 Configuración <span class="mock-tag" title="Valores correctos hoy, pero estáticos -- no se leen en vivo del backend">MOCK</span></h1></header>
       <div id="config-body"></div>
     </section>
 

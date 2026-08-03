@@ -80,8 +80,12 @@ def test_run_live_cycle_premarket_guarda_snapshot_dinamico() -> None:
     assert pj.is_sealed("2026-08-03") is False
 
     snaps = pj.get_dynamic_snapshots("2026-08-03")
-    assert len(snaps) == len(SYNTHETIC_RESULTS)
-    print("OK - ciclo en premarket (fuera de la ventana de sellado) guarda solo snapshot dinámico")
+    # Regla de consenso (2026-08-03): DEBIL1/DEBIL2 (eligible=False) nunca
+    # entran al Prediction Journal, ni siquiera al snapshot dinámico
+    # informativo -- solo FUERTE1/FUERTE2 (eligible=True).
+    assert len(snaps) == 2
+    assert {s["symbol"] for s in snaps} == {"FUERTE1", "FUERTE2"}
+    print("OK - ciclo en premarket (fuera de la ventana de sellado) guarda solo snapshot dinámico, sin inelegibles")
 
 
 def test_run_live_cycle_sella_en_la_ventana_una_sola_vez() -> None:
@@ -95,15 +99,19 @@ def test_run_live_cycle_sella_en_la_ventana_una_sola_vez() -> None:
     assert resumen_sellado["accion"] == "snapshot_dinamico+sellado"
     assert pj.is_sealed(date) is True
     sellado = pj.get_sealed_predictions(date)
-    assert len(sellado) == len(SYNTHETIC_RESULTS)
+    # Regla de consenso (2026-08-03): solo los 2 elegibles quedan sellados,
+    # nunca DEBIL1/DEBIL2 -- el Prediction Journal completo, no solo el
+    # candidato #1, respeta el veto de Radar Explosivo.
+    assert len(sellado) == 2
+    assert {r["symbol"] for r in sellado} == {"FUERTE1", "FUERTE2"}
 
     # Un segundo ciclo dentro de la misma ventana NO debe intentar re-sellar
     # (y por lo tanto no debe fallar con AlreadySealedError).
     resumen_segundo = li.run_live_cycle(SYNTHETIC_RESULTS, now=_et(2026, 8, 3, 9, 28))
     assert resumen_segundo["error"] is None, resumen_segundo
     assert resumen_segundo["accion"] == "snapshot_dinamico"  # ya sellado, no se repite
-    assert len(pj.get_sealed_predictions(date)) == len(SYNTHETIC_RESULTS)  # sin duplicar
-    print("OK - el sellado ocurre una sola vez, ciclos siguientes en la ventana no re-sellan ni fallan")
+    assert len(pj.get_sealed_predictions(date)) == 2  # sin duplicar
+    print("OK - el sellado ocurre una sola vez, ciclos siguientes en la ventana no re-sellan ni fallan, sin inelegibles")
 
 
 def test_run_live_cycle_regular_registra_trayectoria_si_hay_sellado() -> None:
@@ -116,7 +124,10 @@ def test_run_live_cycle_regular_registra_trayectoria_si_hay_sellado() -> None:
     resumen = li.run_live_cycle(SYNTHETIC_RESULTS, now=_et(2026, 8, 3, 10, 0))
     assert resumen["session"] == "regular"
     assert resumen["error"] is None, resumen
-    assert "trayectoria_muestreada=4/4" in resumen["accion"], resumen
+    # Regla de consenso (2026-08-03): solo 2 símbolos quedaron sellados
+    # (FUERTE1/FUERTE2), no 4 -- la trayectoria se muestrea sobre el
+    # ranking sellado, así que ahora son 2/2, no 4/4.
+    assert "trayectoria_muestreada=2/2" in resumen["accion"], resumen
 
     trayectoria = ej.get_trajectory("FUERTE1", date)
     assert len(trayectoria) == 1
@@ -177,10 +188,15 @@ def test_run_live_cycle_califica_al_cierre_con_collector_falso() -> None:
     assert fuerte2["result_category"] == "FALSE_BREAKOUT"
     print(f"OK - FUERTE2 calificado: categoria={fuerte2['result_category']} (cambio real -3.0%, era elegible)")
 
-    # DEBIL1/DEBIL2 no tenían cotización en el collector falso -> siguen sin calificar, no se inventa nada.
-    debil1 = sellado["DEBIL1"]
-    assert debil1["graded_at"] is None
-    print("OK - DEBIL1/DEBIL2 sin cotización disponible quedan sin calificar, no se inventa resultado")
+    # Regla de consenso (2026-08-03): DEBIL1/DEBIL2 (eligible=False) nunca
+    # llegaron a sellarse -- ni siquiera están en `sellado` para calificar.
+    # Antes de esta regla, se sellaban igual y quedaban sin calificar por
+    # falta de cotización; ahora Radar Explosivo los descarta desde el
+    # sellado mismo, un paso antes.
+    assert "DEBIL1" not in sellado
+    assert "DEBIL2" not in sellado
+    assert len(sellado) == 2
+    print("OK - DEBIL1/DEBIL2 (inelegibles) nunca llegaron a sellarse -- ni siquiera compiten por calificación")
 
     # Exit Journal: el resumen objetivo de FUERTE1 debe quedar cerrado en
     # el mismo ciclo de calificación, usando la trayectoria de 2 puntos ya

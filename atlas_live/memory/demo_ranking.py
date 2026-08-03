@@ -102,6 +102,7 @@ class RankedCandidate:
     price_regular: Optional[float]
     price_premarket: Optional[float]
     price_afterhours: Optional[float]
+    price_overnight: Optional[float]  # cuarta sesión (Overnight/BOATS) -- siempre None hasta que exista un proveedor que la entregue
     price_as_of: Optional[str]
     probability_pct: Optional[float]
     confidence: str
@@ -114,6 +115,11 @@ class RankedCandidate:
     ranking_score: rs.RankingScore
     tie_break_note: Optional[str]
     sort_key: float  # se mantiene por compatibilidad de lectura del Nivel 1; el orden real usa ranking_score
+    # Regla de consenso (2026-08-03, ver MEMORY_ENGINE.md): motivo exacto
+    # por el que Radar Explosivo rechazó el símbolo, cuando `eligible_radar`
+    # es False -- para que "No tocar" pueda explicar el rechazo real, no
+    # solo el del Memory Engine.
+    radar_excluded_reason: Optional[str]
 
 
 def build_ranked_candidate(
@@ -189,6 +195,7 @@ def build_ranked_candidate(
         price_regular=metrics.get("price_regular"),
         price_premarket=metrics.get("price_premarket"),
         price_afterhours=metrics.get("price_afterhours"),
+        price_overnight=metrics.get("price_overnight"),
         price_as_of=metrics.get("price_as_of"),
         probability_pct=probability_pct,
         confidence=confidence,
@@ -201,6 +208,7 @@ def build_ranked_candidate(
         ranking_score=score,
         tie_break_note=tie_break_note,
         sort_key=score.nivel1_wilson_lower_bound,
+        radar_excluded_reason=row["explosive"].get("excluded_reason"),
     )
 
 
@@ -220,10 +228,17 @@ def build_ranking(date: str, source_path: str, category: str = "EXPLOSION") -> L
         for row in scan["rows"]
     ]
 
-    # Nivel 1 sin cambios (probabilidad/orden general); Niveles 2-4 solo
-    # desempatan dentro de candidatos con el mismo Nivel 1 -- comparación
-    # lexicográfica de la tupla RankingScore, no una suma con pesos.
-    ranked.sort(key=lambda c: c.ranking_score, reverse=True)
+    # Regla de consenso (2026-08-03, aprobada explícitamente por el
+    # usuario, ver MEMORY_ENGINE.md): Radar Explosivo es el filtro de
+    # operabilidad, el Memory Engine evalúa la evidencia histórica -- la
+    # recomendación final solo existe cuando ambos están de acuerdo. Por
+    # eso `eligible_radar` ordena PRIMERO (True siempre antes que False),
+    # y el Ranking Score (Nivel 1 sin cambios; Niveles 2-4 desempatan
+    # dentro del mismo Nivel 1, comparación lexicográfica, no una suma
+    # con pesos) solo decide el orden DENTRO de cada grupo. Un candidato
+    # que Radar Explosivo rechazó nunca puede quedar por encima de uno
+    # que sí aceptó, sin importar cuán alto sea su Ranking Score.
+    ranked.sort(key=lambda c: (c.eligible_radar, c.ranking_score), reverse=True)
     return ranked
 
 

@@ -156,6 +156,7 @@ def evaluate(
         "price_regular": quote.price_regular,
         "price_premarket": quote.price_premarket,
         "price_afterhours": quote.price_afterhours,
+        "price_overnight": quote.price_overnight,
         "price_as_of": quote.timestamp.isoformat() if quote.timestamp else None,
     }
 

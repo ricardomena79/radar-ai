@@ -109,6 +109,18 @@ function priceBreakdownHtml(c) {
       <span class="price-row-label">${label}${isUsed ? ' <span class="price-row-used-pill">EN USO</span>' : ""}</span>
       <span class="price-row-value">${value !== null && value !== undefined ? fmtMoney(value) : '<span class="dim">--</span>'}</span>
     </div>`;
+  // Cuarta sesión (Overnight / Blue Ocean ATS, 2026-08-02) -- Atlas no
+  // tiene este dato con ningún proveedor actual. Se muestra la fila con
+  // el mismo criterio que el resto de la Cabina: nunca ocultar una
+  // categoría que existe, nunca inventar un valor. Sin párrafo -- el
+  // dato mismo ("No disponible con el proveedor actual") es la
+  // explicación. Queda lista para el día en que un proveedor del Data
+  // Fusion Engine llene `price_overnight` -- esta misma fila lo mostraría.
+  const overnightRow = `
+    <div class="price-row price-row--unavailable">
+      <span class="price-row-label">Overnight (Blue Ocean ATS)</span>
+      <span class="price-row-value">${c.price_overnight !== null && c.price_overnight !== undefined ? fmtMoney(c.price_overnight) : '<span class="dim">No disponible con el proveedor actual</span>'}</span>
+    </div>`;
   return `
     <div class="price-breakdown">
       <div class="price-breakdown-header">${marketStateBadgeHtml(c.market_state)}<span class="price-breakdown-header-note">Estado de mercado detectado por ${priceSourceLabel(c.price_source)}</span></div>
@@ -120,6 +132,7 @@ function priceBreakdownHtml(c) {
         ${row("Regular", c.price_regular, c.price_type === "regular")}
         ${row("Premarket", c.price_premarket, c.price_type === "premarket")}
         ${row("After-hours", c.price_afterhours, c.price_type === "afterhours")}
+        ${overnightRow}
       </div>
       <div class="price-row price-row--meta"><span class="price-row-label">Fuente</span><span class="price-row-value">${priceSourceLabel(c.price_source)}</span></div>
       <div class="price-row price-row--meta"><span class="price-row-label">Actualizado</span><span class="price-row-value">${fmtTime(c.price_as_of)} ET</span></div>
@@ -209,6 +222,11 @@ function tickTopbar() {
  * calendario en el cliente (tickTopbar), no dependen de este fetch. */
 const STATUS_POLL_MS = 15000;
 
+// Calidad del Mercado (2026-08-03) lee `context` (VIX real, ya calculado
+// por MarketContextEngine) del mismo /api/ranking que ya se pollea acá --
+// se guarda en una variable global para no duplicar el fetch.
+let _lastContext = null;
+
 async function fetchSystemStatus() {
   try {
     const res = await fetch("/api/ranking");
@@ -234,6 +252,8 @@ async function fetchSystemStatus() {
     }
 
     lastUpdate.textContent = data.generated_at ? data.generated_at.slice(11, 19) + " UTC" : "--";
+    _lastContext = data.context;
+    renderMarketQuality();
   } catch (err) {
     document.getElementById("topbar-status-dot").className = "dot dot-red";
     document.getElementById("topbar-status-text").textContent = "Sin conexión con el servidor";
@@ -250,15 +270,47 @@ function renderGlobalStatus() {
 
 /* ---------------- Dashboard: Oportunidad del Día (dominante) + 3 bloques ---------------- */
 
+// Calidad del Mercado (2026-08-03) -- factores reales, SIN veredicto
+// compuesto ("BUENA/REGULAR/MALA"): combinarlos en un solo número sería
+// un algoritmo nuevo sin validar (Principio 3 de la Constitución). El
+// usuario prefirió explícitamente mostrar los factores por separado
+// hasta que exista una fórmula validada -- ver DECISION_LOG.md.
+// Umbral de VIX reutilizado tal cual de scan_worker.py (RISK_VIX_HIGH=25,
+// RISK_VIX_LOW=18), no inventado acá.
+const VIX_HIGH = 25.0;
+const VIX_LOW = 18.0;
+
+function vixLabel(vix) {
+  if (vix === null || vix === undefined) return '<span class="dim">sin dato</span>';
+  const nivel = vix >= VIX_HIGH ? "Alta" : vix <= VIX_LOW ? "Baja" : "Normal";
+  return `${fmtNum(vix)} (${nivel})`;
+}
+
 function renderMarketQuality() {
-  const q = MOCK.marketQuality;
   const el = document.getElementById("dashboard-quality");
-  el.className = `quality-bar quality-bar--${q.level}`;
+  const candidates = _memoryRanking.candidates;
+  const total = candidates.length;
+  const vix = _lastContext ? _lastContext.vix_price : null;
+  // Regla de consenso (2026-08-03): estos 4 conteos también deben exigir
+  // eligible_radar -- si no, "Calidad del Mercado" podría reportar
+  // "oportunidades" u "candidatos que superan el Ranking" inflados con
+  // símbolos que Radar Explosivo ya rechazó. Reutiliza los mismos
+  // helpers que ya protegen Explosivas/Momentum/No tocar, en vez de
+  // duplicar el criterio.
+  const superanRanking = candidates.filter(c => c.eligible_radar && (c.semaforo === "verde" || c.semaforo === "amarillo")).length;
+  const altaConfianza = candidates.filter(c => c.eligible_radar && c.confidence === "Alta").length;
+  const microcapsVerde = _explosivasReal().length;
+  const noTocar = _noTocarReal().length;
+
+  el.className = "quality-bar";
   el.innerHTML = `
-    <span class="quality-label">${semaforoHtml(q.level === "buena" ? "verde" : q.level === "regular" ? "amarillo" : "rojo")} CALIDAD DEL MERCADO: ${q.label}</span>
-    <span class="quality-headline">${q.headline}</span>
+    <span class="quality-label">📊 Calidad del Mercado -- factores reales <span class="dim" style="font-weight:400;font-size:11px">(sin veredicto compuesto todavía -- ver diseño en discusión)</span></span>
     <span class="quality-factors">
-      ${q.factors.map(f => `<span class="quality-factor">${f.label}: <b>${f.value}</b></span>`).join("")}
+      <span class="quality-factor">VIX: <b>${vixLabel(vix)}</b></span>
+      <span class="quality-factor">Candidatos que superan el Ranking: <b>${total ? `${superanRanking}/${total} (${fmtNum(superanRanking / total * 100, 0)}%)` : '<span class="dim">sin datos</span>'}</b></span>
+      <span class="quality-factor">Oportunidades de alta confianza: <b>${altaConfianza}</b></span>
+      <span class="quality-factor">Microcaps con evidencia confiable: <b>${microcapsVerde}</b></span>
+      <span class="quality-factor">Símbolos "No tocar" hoy: <b>${noTocar}</b></span>
     </span>`;
 }
 
@@ -297,6 +349,7 @@ async function fetchMemoryRanking() {
   renderMicrocaps();
   renderMomentum();
   renderNoTocar();
+  renderMarketQuality();
   if (document.querySelector('.nav-item[data-view="oportunidad"]').classList.contains("active")) {
     renderOportunidad();
   }
@@ -425,8 +478,15 @@ function startPanelStatusPolling() {
  * JSON -- no recalcula, no analiza, no interpreta nada. Sirve para
  * comparar manualmente distintos momentos del día más tarde. */
 function collectDaySnapshot() {
-  const oportunidad = _memoryRanking.candidates[0] || null;
-  const planB = _memoryRanking.candidates[1] || null;
+  // Regla de consenso (2026-08-03): mismo criterio que renderHero()/
+  // renderPlanB() -- el snapshot descargado no debe capturar un
+  // candidato inelegible como "oportunidad_del_dia"/"plan_b" aunque sea
+  // candidates[0]/[1] en el array crudo (pasaría solo si hay menos de 2
+  // candidatos elegibles hoy).
+  const c0 = _memoryRanking.candidates[0];
+  const c1 = _memoryRanking.candidates[1];
+  const oportunidad = (c0 && c0.eligible_radar) ? c0 : null;
+  const planB = (c1 && c1.eligible_radar) ? c1 : null;
   const explosivasAll = _explosivasReal();
   const momentumAll = _momentumReal();
   const noTocarAll = _noTocarReal();
@@ -465,10 +525,13 @@ function saveDaySnapshot() {
 function renderHero() {
   const o = _memoryRanking.candidates[0];
   const el = document.getElementById("dashboard-hero");
-  if (!o) {
+  // Regla de consenso (2026-08-03): el servidor ya ordena elegibles
+  // primero, pero si NO existe ningún candidato elegible hoy,
+  // candidates[0] puede ser inelegible -- Hero nunca debe recomendarlo.
+  if (!o || !o.eligible_radar) {
     el.innerHTML = `<div class="hero-empty">${_memoryRanking.generated_at === null
       ? "Esperando el primer escaneo del día..."
-      : "Sin oportunidad destacada en este momento."}</div>`;
+      : "Sin oportunidad destacada en este momento -- ningún candidato pasa el filtro de Radar Explosivo y el Memory Engine a la vez."}</div>`;
     return;
   }
   el.innerHTML = `
@@ -500,7 +563,10 @@ function renderHero() {
 function renderPlanB() {
   const b = _memoryRanking.candidates[1];
   const el = document.getElementById("dashboard-plan-b");
-  if (!b) {
+  // Regla de consenso (2026-08-03): mismo criterio que Hero -- si el
+  // segundo candidato del ranking no es elegible (porque hay menos de 2
+  // candidatos elegibles hoy), Plan B no debe mostrarlo.
+  if (!b || !b.eligible_radar) {
     el.innerHTML = `<div class="hero-empty">Sin Plan B disponible hoy.</div>`;
     return;
   }
@@ -549,14 +615,19 @@ function startActivityFeed() {
   setInterval(tick, 4000);
 }
 
-// Definición de cada bloque a partir del ranking real, ya documentada en
-// la respuesta al usuario: Explosivas = microcap + semáforo verde;
-// Momentum = semáforo amarillo (cualquier tamaño); No tocar = semáforo
-// rojo (sin condición confiable que matchee HOY -- no es una predicción
-// de "va a fallar", es la ausencia de evidencia a favor).
-function _explosivasReal() { return _memoryRanking.candidates.filter(c => c.market_cap_bucket === "micro" && c.semaforo === "verde"); }
-function _momentumReal() { return _memoryRanking.candidates.filter(c => c.semaforo === "amarillo"); }
-function _noTocarReal() { return _memoryRanking.candidates.filter(c => c.semaforo === "rojo"); }
+// Regla de consenso (2026-08-03, aprobada explícitamente por el usuario,
+// ver MEMORY_ENGINE.md): Radar Explosivo es el filtro de operabilidad,
+// el Memory Engine evalúa la evidencia histórica -- la recomendación
+// final SOLO existe cuando ambos están de acuerdo. Un candidato con
+// `eligible_radar === false` nunca puede aparecer como Explosiva,
+// Momentum, Hero ni Plan B, sin importar su semáforo o Ranking Score
+// (el servidor ya lo ordena por debajo de los elegibles -- este filtro
+// es la segunda capa de protección, explícita en la Cabina). Si
+// cualquiera de los dos sistemas rechaza un símbolo, va a "No tocar"
+// con el motivo real de cuál de los dos lo rechazó.
+function _explosivasReal() { return _memoryRanking.candidates.filter(c => c.eligible_radar && c.market_cap_bucket === "micro" && c.semaforo === "verde"); }
+function _momentumReal() { return _memoryRanking.candidates.filter(c => c.eligible_radar && c.semaforo === "amarillo"); }
+function _noTocarReal() { return _memoryRanking.candidates.filter(c => !c.eligible_radar || c.semaforo === "rojo"); }
 
 // El Dashboard muestra como máximo DASHBOARD_TOP_N por columna -- hallazgo
 // real al conectar datos en vivo: con el universo completo, "Momentum"
@@ -612,8 +683,10 @@ function renderTripleColumns() {
 function renderOportunidad() {
   const o = _memoryRanking.candidates[0];
   const el = document.getElementById("oportunidad-detail");
-  if (!o) {
-    el.innerHTML = `<div class="empty-state">${_memoryRanking.generated_at === null ? "Esperando el primer escaneo del día..." : "Sin oportunidad destacada en este momento."}</div>`;
+  // Regla de consenso (2026-08-03): mismo criterio que renderHero() --
+  // este es su detalle completo, mismo candidato.
+  if (!o || !o.eligible_radar) {
+    el.innerHTML = `<div class="empty-state">${_memoryRanking.generated_at === null ? "Esperando el primer escaneo del día..." : "Sin oportunidad destacada en este momento -- ningún candidato pasa el filtro de Radar Explosivo y el Memory Engine a la vez."}</div>`;
     return;
   }
   el.innerHTML = `
@@ -719,12 +792,23 @@ function renderEtf() {
   ]);
 }
 
+// Motivo mostrado en "No tocar": si Radar Explosivo lo rechazó, ESE es el
+// motivo real (aunque el Memory Engine tuviera semáforo verde/amarillo --
+// regla de consenso, 2026-08-03) -- nunca se muestran los dos mezclados
+// como si fueran lo mismo.
+function _noTocarMotivo(r) {
+  if (!r.eligible_radar) {
+    return `<span class="no-tocar-radar-reason">🚫 Radar Explosivo: ${r.radar_excluded_reason || "no elegible"}</span>`;
+  }
+  return r.explanation;
+}
+
 function renderNoTocar() {
   renderGenericTable("no-tocar-table", _noTocarReal(), [
     { label: "Símbolo", render: r => `<span class="sym">${r.symbol}</span>` },
     { label: "Precio", render: r => `${fmtMoney(r.price)}<br>${priceContextLine(r)}` },
     { label: "Cambio", render: r => fmtPct(r.change_pct) },
-    { label: "Motivo", render: r => r.explanation },
+    { label: "Motivo", render: r => _noTocarMotivo(r) },
     { label: "Semáforo", render: r => semaforoHtml(r.semaforo) },
   ]);
 }
@@ -735,7 +819,9 @@ function renderRadarCompleto() {
     { label: "Precio", render: r => `${fmtMoney(r.price)}<br>${priceContextLine(r)}` },
     { label: "Cambio", render: r => fmtPct(r.change_pct) },
     { label: "Score Radar", render: r => fmtNum(r.score) },
-    { label: "Elegible", render: r => r.eligible_radar ? "Sí" : '<span class="dim">No</span>' },
+    { label: "Elegible", render: r => r.eligible_radar
+        ? "Sí"
+        : `<span class="no-tocar-radar-reason">No -- ${r.radar_excluded_reason || "no elegible"}</span>` },
     { label: "Probabilidad ME", render: r => r.probability_pct !== null ? fmtNum(r.probability_pct) + "%" : '<span class="dim">--</span>' },
     { label: "Semáforo", render: r => semaforoHtml(r.semaforo) },
   ]);

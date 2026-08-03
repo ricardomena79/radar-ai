@@ -117,6 +117,7 @@ def serialize_ranked_candidate(c: demo_ranking.RankedCandidate) -> Dict[str, Any
         "symbol": c.symbol,
         "score": c.score,
         "eligible_radar": c.eligible_radar,
+        "radar_excluded_reason": c.radar_excluded_reason,
         "market_cap_bucket": c.market_cap_bucket,
         "price": c.price,
         "change_pct": c.change_pct,
@@ -126,6 +127,7 @@ def serialize_ranked_candidate(c: demo_ranking.RankedCandidate) -> Dict[str, Any
         "price_regular": c.price_regular,
         "price_premarket": c.price_premarket,
         "price_afterhours": c.price_afterhours,
+        "price_overnight": c.price_overnight,
         "price_as_of": c.price_as_of,
         "probability_pct": c.probability_pct,
         "confidence": c.confidence,
@@ -184,7 +186,13 @@ def build_live_ranking(results: List[Dict[str, Any]], now: Optional[datetime] = 
         for row in results
         if row.get("explosive") is not None
     ]
-    ranked.sort(key=lambda c: c.ranking_score, reverse=True)
+    # Regla de consenso (2026-08-03, ver demo_ranking.build_ranking() para
+    # el detalle completo): `eligible_radar` ordena primero -- esto
+    # también protege el sellado del Prediction Journal (`_to_journaled`
+    # toma los primeros TOP_N_JOURNAL de este mismo `ranked`), no solo la
+    # Cabina. Un símbolo que Radar Explosivo rechazó nunca puede quedar
+    # sellado como la predicción oficial del día.
+    ranked.sort(key=lambda c: (c.eligible_radar, c.ranking_score), reverse=True)
     return ranked
 
 
@@ -261,7 +269,14 @@ def run_live_cycle(results: List[Dict[str, Any]], now: Optional[datetime] = None
     try:
         if session == "premarket":
             ranking = build_live_ranking(results, now=now)
-            journaled = [_to_journaled(i, c) for i, c in enumerate(ranking[:TOP_N_JOURNAL], start=1)]
+            # Regla de consenso (2026-08-03): el Prediction Journal entero
+            # -- no solo el candidato #1 -- excluye a quien Radar Explosivo
+            # rechazó. `ranking` ya viene ordenado con los elegibles
+            # primero, pero si hay menos de TOP_N_JOURNAL elegibles, un
+            # slice ciego arrastraría inelegibles a las posiciones bajas
+            # -- se filtran acá antes de tomar el top N.
+            elegibles = [c for c in ranking if c.eligible_radar]
+            journaled = [_to_journaled(i, c) for i, c in enumerate(elegibles[:TOP_N_JOURNAL], start=1)]
             pj.record_dynamic_snapshot(date, now.isoformat(), journaled)
             accion = "snapshot_dinamico"
 

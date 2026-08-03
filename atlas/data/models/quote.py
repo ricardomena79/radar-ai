@@ -39,3 +39,12 @@ class Quote:
     price_regular: Optional[float] = None
     price_premarket: Optional[float] = None
     price_afterhours: Optional[float] = None
+
+    # Cuarta sesión (2026-08-02, ver DATA_FUSION_ENGINE_PROPUESTA.md,
+    # "SESIÓN OVERNIGHT"): "Overnight" (ej. Blue Ocean ATS), que algunas
+    # plataformas externas muestran y que ningún proveedor de Atlas
+    # entrega hoy. Campo dejado listo a propósito -- siempre `None`
+    # mientras no exista un proveedor que lo llene (ninguno lo hace
+    # todavía) -- para que un futuro proveedor del Data Fusion Engine
+    # pueda poblarlo sin tocar este archivo ni ningún consumidor.
+    price_overnight: Optional[float] = None

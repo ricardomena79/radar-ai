@@ -32,16 +32,25 @@ html, body {
   height: 100%;
 }
 
-/* ---------- Banner de datos simulados -- persistente, imposible de ignorar ---------- */
-.sim-banner {
-  background: var(--amber-bg);
+/* ---------- Regla de consenso (2026-08-03) -- motivo de rechazo real de
+   Radar Explosivo en "No tocar", distinto del texto del Memory Engine ---------- */
+.no-tocar-radar-reason { color: var(--red); }
+
+/* ---------- Etiqueta MOCK -- por panel, no un banner global (2026-08-03).
+   El banner único de arriba mentía sobre 15 de 22 paneles ya reales; esta
+   etiqueta va solo en los paneles que efectivamente siguen simulados. ---------- */
+.mock-tag {
+  display: inline-block;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
   color: var(--amber);
-  border-bottom: 1px solid var(--amber);
-  text-align: center;
-  padding: 6px 12px;
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
+  background: var(--amber-bg);
+  border: 1px solid var(--amber);
+  border-radius: 3px;
+  padding: 1px 5px;
+  margin-left: 8px;
+  vertical-align: middle;
 }
 
 /* ---------- Barra superior permanente ---------- */
@@ -223,9 +232,6 @@ html, body {
   margin-bottom: 18px;
   border: 1px solid var(--border);
 }
-.quality-bar--buena { background: var(--green-bg); border-color: var(--green); }
-.quality-bar--regular { background: var(--amber-bg); border-color: var(--amber); }
-.quality-bar--mala { background: var(--red-bg); border-color: var(--red); }
 .quality-label {
   font-weight: 700;
   font-size: 13px;
@@ -380,6 +386,13 @@ html, body {
 .price-row--used .price-row-value { color: var(--accent); font-size: 17px; }
 .price-row--meta { margin-top: 10px; flex-direction: row; gap: 6px; align-items: baseline; }
 .price-row--meta .price-row-value { font-size: 13px; font-weight: 600; color: var(--text-dim); }
+/* Cuarta sesión (Overnight/BOATS, 2026-08-02) -- Atlas no tiene este dato
+   hoy. Se muestra atenuada, con guion bajo punteado, para distinguirla a
+   simple vista de las tres sesiones que Atlas sí puede reportar, sin que
+   parezca un error ni una fila rota. */
+.price-row--unavailable { opacity: 0.55; }
+.price-row--unavailable .price-row-label { border-bottom: 1px dashed var(--text-faint); padding-bottom: 1px; width: fit-content; }
+.price-row--unavailable .price-row-value { font-size: 11px; font-weight: 500; font-style: italic; }
 .price-note { margin-top: 8px; font-size: 11px; color: var(--text-faint); max-width: 900px; }
 
 /* ---------- Plan B: segunda oportunidad, subordinada a la principal ---------- */

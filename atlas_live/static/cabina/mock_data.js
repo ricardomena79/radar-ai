@@ -112,21 +112,9 @@ const MOCK = {
 
   atlasOpina: "Actividad de premarket alta en microcaps con catalizadores de gap fuerte -- NUWE concentra la evidencia más sólida del día (n=179, límite de Wilson 57.6%). XRX confirma la misma condición con score real más bajo, buen respaldo si NUWE pierde fuerza antes de la apertura. Momentum viene débil: ningún candidato alcanza confianza Alta, no es el foco de hoy. Precaución particular con SOXS y GNOM -- ambos ya mostraron el patrón de falsa ruptura en la validación histórica.",
 
-  // Calidad del Mercado -- lectura general de las condiciones del día,
-  // distinta de cualquier candidato puntual. El nivel siempre va acompañado
-  // de los factores que lo sostienen, mismo criterio que el resto de la
-  // cabina (nunca un veredicto sin evidencia visible).
-  marketQuality: {
-    level: "buena", // buena | regular | mala
-    label: "BUENA",
-    headline: "Condiciones favorables para operar hoy",
-    factors: [
-      { label: "Actividad de microcaps", value: "Alta" },
-      { label: "Candidatos con evidencia confiable", value: "5" },
-      { label: "Falsas rupturas detectadas hoy", value: "2" },
-      { label: "Volatilidad general (VIX)", value: "Normal" },
-    ],
-  },
+  // Calidad del Mercado se conectó a datos reales el 2026-08-03
+  // (cabina.js::renderMarketQuality()) -- este mock queda retirado, ver
+  // DECISION_LOG.md.
 
   // "¿Por qué NO?" -- candidatos que a simple vista podrían parecer
   // atractivos (gran suba, alto volumen, nombre conocido) pero que Atlas

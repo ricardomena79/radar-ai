@@ -300,3 +300,58 @@ Atlas V1 escanea, actualiza el Ranking, el Memory Engine y el Prediction Journal
 **Fuera de este plan, explícitamente**: aplicar cualquier propuesta de recalibración a `explosive_config.json`/`explosive_factors.py` de forma permanente -- requiere su propia propuesta formal y aprobación, cada vez.
 
 **Orden de ejecución**: estrictamente 1→8, sin saltos, cada uno aprobado antes de empezar el siguiente.
+
+---
+
+## REGLA DE CONSENSO -- Radar Explosivo + Memory Engine (regla permanente, 2026-08-03)
+
+**Declarada oficialmente por el usuario, tras encontrar un caso real**: un
+símbolo sin actividad real de premarket (PRPL) apareció en "Explosivas"
+porque el Memory Engine le asignó semáforo verde usando `relative_volume`
+de la sesión regular anterior (Yahoo no expone volumen de premarket --
+ver `DATA_FUSION_ENGINE_PROPUESTA.md`), **a pesar de que Radar Explosivo
+ya lo había rechazado** (`eligible_radar=false`, liquidez insuficiente).
+La Cabina nunca revisaba ese veto.
+
+**Regla, textual**: *"El Radar Explosivo es el filtro de operabilidad. El
+Memory Engine evalúa la evidencia histórica. La recomendación final solo
+puede existir cuando ambos están de acuerdo. Si cualquiera de los dos
+rechaza un símbolo, Atlas debe explicarlo, no recomendarlo."*
+
+**Un candidato con `eligible_radar = false` nunca puede aparecer como**:
+Explosiva, Momentum, Hero, Plan B, ni como predicción sellada o snapshot
+dinámico del Prediction Journal -- sin importar su semáforo o Ranking
+Score. Solo puede aparecer en **"No tocar"** (con el motivo real de
+Radar Explosivo, no el del Memory Engine) o en **"Radar Completo"**
+(la vista de auditoría completa, con la columna "Elegible" mostrando el
+motivo exacto de rechazo).
+
+**Dónde se implementó (una sola fuente de verdad, no un parche por
+panel)**:
+- `demo_ranking.build_ranking()` / `live_integration.build_live_ranking()`:
+  el orden ya no es solo por Ranking Score -- ordena primero por
+  `(eligible_radar, ranking_score)`. Un candidato rechazado por Radar
+  Explosivo **nunca** puede quedar por encima de uno aceptado, sin
+  importar cuán fuerte sea su evidencia histórica.
+- `live_integration.run_live_cycle()`: el Prediction Journal (snapshot
+  dinámico Y sellado) filtra a `eligible_radar=True` antes de tomar el
+  top N -- un símbolo rechazado nunca queda sellado, ni siquiera en una
+  posición baja.
+- `RankedCandidate.radar_excluded_reason` (nuevo campo, propagado hasta
+  la Cabina): el motivo exacto de Radar Explosivo, para poder explicarlo
+  en "No tocar"/"Radar Completo" en vez de mezclarlo con la explicación
+  del Memory Engine.
+- `cabina.js`: `_explosivasReal()`/`_momentumReal()` exigen
+  `eligible_radar` explícitamente (segunda capa de protección, además
+  del orden ya corregido en el servidor); `_noTocarReal()` incluye a
+  cualquier inelegible, no solo semáforo rojo; `renderHero()`/
+  `renderPlanB()`/`renderOportunidad()` verifican elegibilidad antes de
+  mostrar el candidato top; "Calidad del Mercado" y el snapshot
+  descargable ("Guardar Estado del Día") también exigen `eligible_radar`
+  en sus conteos y en `oportunidad_del_dia`/`plan_b`.
+
+**Probado**: sin regresión en el Ranking Score (demo 2026-07-30, XRX #1/
+NUWE #2 sin cambios) ni en ningún test existente; `test_live_integration.py`
+actualizado explícitamente para verificar que candidatos inelegibles
+(`DEBIL1`/`DEBIL2` en los datos sintéticos) nunca quedan sellados ni en
+el snapshot dinámico.

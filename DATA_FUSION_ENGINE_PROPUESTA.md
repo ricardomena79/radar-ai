@@ -589,3 +589,58 @@ regresiones). **El resto del documento (Etapas 1-3: segundo proveedor
 real, failover, discrepancias) sigue sin implementarse**, todavía
 gated a varios días de evidencia real, sin cambios respecto a lo ya
 acordado.
+
+---
+
+# SESIÓN OVERNIGHT (requerimiento futuro, declarado 2026-08-02)
+
+**Hallazgo, con evidencia real**: al auditar SOXL/KC/PRPL contra
+TradingView (navegador real, no simulado), se confirmó que existe una
+**cuarta sesión de mercado** -- "Overnight", en un venue de trading
+nocturno real llamado **Blue Ocean ATS** ("BOATS"), que corre
+aproximadamente 20:00-04:00 ET, después del After-hours estándar. Esta
+sesión es visible en TradingView como un indicador secundario, siempre
+distinto del precio principal, y **ningún proveedor de Atlas la
+entrega** -- confirmado que Yahoo Finance (`.info`, `.fast_info`,
+`.history()`) no tiene ningún campo equivalente.
+
+**Decisión explícita del usuario**: no ocultar esta limitación ni
+explicarla con un párrafo largo -- exponerla como un dato más, con su
+propio lugar en la estructura, marcado honestamente como no disponible.
+"No quiero que Atlas solo tenga el dato correcto... quiero que Atlas sea
+completamente honesto respecto de qué información posee y cuál no."
+
+**Lo que ya quedó preparado (implementado 2026-08-02, sin fetch real
+todavía)**: `Quote.price_overnight: Optional[float] = None`
+(`atlas/data/models/quote.py`) -- campo aditivo, siempre `None` hoy
+porque ningún proveedor lo llena. Propagado de punta a punta, mismo
+camino que `price_regular`/`price_premarket`/`price_afterhours`:
+`explosive_engine.py` (metrics) → `demo_ranking.RankedCandidate` →
+`live_integration.serialize_ranked_candidate()` → Cabina del Piloto
+(fila "Overnight (Blue Ocean ATS)" en el desglose de precio, siempre
+visible, mostrando "No disponible con el proveedor actual" mientras el
+valor sea `None`).
+
+**Lo que falta (no implementado, fuera de alcance hasta que exista
+evidencia real y un proveedor)**: ningún proveedor de Atlas sabe
+consultar Blue Ocean ATS todavía. Cuando el Data Fusion Engine incorpore
+un proveedor que sí lo reporte (TradingView no tiene API oficial -- ver
+sección "INTERFACES DE DATA PROVIDERS" de este documento; sería más
+realista vía Alpaca, Polygon u otra fuente oficial que confirme cobertura
+de Blue Ocean ATS), ese proveedor solo necesita poblar
+`Quote.price_overnight` -- **ningún otro archivo debería requerir
+cambios**: ni `explosive_engine.py`, ni `demo_ranking.py`, ni
+`live_integration.py`, ni `cabina.js`/`cabina.css`, porque el campo ya
+viaja por toda la cadena y la fila de la Cabina ya sabe renderizar un
+valor real en cuanto deje de ser `None`. Esto es, en la práctica, la
+prueba de que la Etapa 0 dejó la arquitectura lista para incorporar
+sesiones nuevas sin romper el diseño actual -- el mismo principio que ya
+regía para agregar un segundo proveedor de precio Regular/Premarket/
+After-hours, aplicado ahora a una sesión completa nueva.
+
+**No se agrega `"overnight"` como valor posible de `price_type`** -- ese
+campo describe qué precio usa el Ranking Score, y el Ranking Score nunca
+podrá usar Overnight mientras no exista un proveedor real (no hay nada
+que seleccionar). `price_overnight` es deliberadamente un campo aparte,
+puramente informativo, para no mezclar "qué sesión decide el precio
+usado" con "qué sesiones adicionales existen para mostrar".
