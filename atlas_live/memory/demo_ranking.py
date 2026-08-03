@@ -93,6 +93,16 @@ class RankedCandidate:
     market_cap_bucket: str
     price: Optional[float]
     change_pct: Optional[float]
+    # Trazabilidad de precio (2026-08-02) -- pasante desde `metrics`, igual
+    # que `price`/`change_pct` de arriba: no participa en el cálculo del
+    # Ranking Score, solo se muestra en la Cabina del Piloto.
+    price_type: str
+    price_source: str
+    market_state: Optional[str]
+    price_regular: Optional[float]
+    price_premarket: Optional[float]
+    price_afterhours: Optional[float]
+    price_as_of: Optional[str]
     probability_pct: Optional[float]
     confidence: str
     semaforo: str
@@ -173,6 +183,13 @@ def build_ranked_candidate(
         market_cap_bucket=_market_cap_bucket(metrics.get("market_cap")),
         price=metrics.get("price"),
         change_pct=metrics.get("change_pct"),
+        price_type=metrics.get("price_type", "unknown"),
+        price_source=metrics.get("source", "yahoo_finance"),
+        market_state=metrics.get("market_state"),
+        price_regular=metrics.get("price_regular"),
+        price_premarket=metrics.get("price_premarket"),
+        price_afterhours=metrics.get("price_afterhours"),
+        price_as_of=metrics.get("price_as_of"),
         probability_pct=probability_pct,
         confidence=confidence,
         semaforo=semaforo,

@@ -45,6 +45,88 @@ function fmtMoney(value) {
   return "$" + value.toFixed(2);
 }
 
+/* Trazabilidad de precio (2026-08-02) -- ver DATA_FUSION_ENGINE_PROPUESTA.md.
+ * Regla permanente: Atlas nunca muestra un precio sin indicar de dónde
+ * salió, a qué sesión corresponde, y cuándo se actualizó. Comparar un
+ * precio Regular contra uno de After-hours de otra fuente NO es una
+ * discrepancia -- son sesiones distintas, por eso esta etiqueta siempre
+ * viaja junto al número. */
+const PRICE_TYPE_LABEL = { regular: "Regular", premarket: "Premarket", afterhours: "After-hours", unknown: "Sin clasificar" };
+const PRICE_SOURCE_LABEL = { yahoo_finance: "Yahoo Finance" };
+
+// Indicador visual del estado real de mercado (2026-08-02, UX) -- se lee
+// de `market_state` (el valor CRUDO del proveedor: REGULAR/PRE/POST/
+// CLOSED/PREPRE/POSTPOST), no de `price_type`. Son cosas distintas a
+// propósito: `price_type` describe qué precio se está USANDO (y por
+// diseño, CLOSED cae en price_type="regular", porque ese es el precio
+// correcto a mostrar) -- pero el badge visual debe seguir mostrando
+// "mercado cerrado" como su propio estado distinto, no disfrazarlo de
+// "Regular", o el usuario perdería justo la señal que pidió.
+const MARKET_STATE_VISUAL = {
+  REGULAR:  { emoji: "🟢", label: "REGULAR",     cls: "mstate-regular" },
+  PRE:      { emoji: "🟡", label: "PREMARKET",   cls: "mstate-premarket" },
+  PREPRE:   { emoji: "🟡", label: "PREMARKET",   cls: "mstate-premarket" },
+  POST:     { emoji: "🟣", label: "AFTER-HOURS", cls: "mstate-afterhours" },
+  POSTPOST: { emoji: "🟣", label: "AFTER-HOURS", cls: "mstate-afterhours" },
+  CLOSED:   { emoji: "⚫", label: "CLOSED",       cls: "mstate-closed" },
+};
+
+function marketStateVisual(marketState) {
+  return MARKET_STATE_VISUAL[marketState] || { emoji: "⚪", label: marketState || "SIN DATO", cls: "mstate-unknown" };
+}
+
+function marketStateBadgeHtml(marketState) {
+  const v = marketStateVisual(marketState);
+  return `<span class="mstate-badge ${v.cls}">${v.emoji} ${v.label}</span>`;
+}
+
+function priceSourceLabel(source) {
+  return PRICE_SOURCE_LABEL[source] || source || "Fuente desconocida";
+}
+
+function priceTypeLabel(priceType) {
+  return PRICE_TYPE_LABEL[priceType] || "Sin clasificar";
+}
+
+/* Línea compacta para usar junto a cualquier precio en tablas -- el badge
+ * visual del estado de mercado (punto 1, no depende de leer texto) más
+ * los tres datos obligatorios (fuente, tipo, hora), en el mínimo espacio. */
+function priceContextLine(c) {
+  if (!c || !c.price_type) return '<span class="dim">sin contexto de precio</span>';
+  return `<span class="price-context">${marketStateBadgeHtml(c.market_state)} ${priceSourceLabel(c.price_source)} · ${priceTypeLabel(c.price_type)} · ${fmtTime(c.price_as_of)} ET</span>`;
+}
+
+/* Desglose completo para Hero/Plan B -- muestra TODOS los precios que
+ * Yahoo entregó al mismo tiempo (Regular/Premarket/After-hours), nunca
+ * solo el usado, para que nunca parezca que Atlas "oculta" un valor.
+ * "Precio usado" queda visualmente destacado (punto 2) con una etiqueta
+ * "EN USO" explícita, para que quede claro cuál alimenta el Ranking Score
+ * sin tener que leer la fila de abajo. */
+function priceBreakdownHtml(c) {
+  if (!c || !c.price_type) return "";
+  const row = (label, value, isUsed) => `
+    <div class="price-row${isUsed ? " price-row--used" : ""}">
+      <span class="price-row-label">${label}${isUsed ? ' <span class="price-row-used-pill">EN USO</span>' : ""}</span>
+      <span class="price-row-value">${value !== null && value !== undefined ? fmtMoney(value) : '<span class="dim">--</span>'}</span>
+    </div>`;
+  return `
+    <div class="price-breakdown">
+      <div class="price-breakdown-header">${marketStateBadgeHtml(c.market_state)}<span class="price-breakdown-header-note">Estado de mercado detectado por ${priceSourceLabel(c.price_source)}</span></div>
+      <div class="price-breakdown-used">
+        <span class="price-row-label">Precio utilizado <span class="price-row-used-pill">EN USO -- Ranking Score</span></span>
+        <span class="price-breakdown-used-value">${fmtMoney(c.price)}</span>
+      </div>
+      <div class="price-breakdown-grid">
+        ${row("Regular", c.price_regular, c.price_type === "regular")}
+        ${row("Premarket", c.price_premarket, c.price_type === "premarket")}
+        ${row("After-hours", c.price_afterhours, c.price_type === "afterhours")}
+      </div>
+      <div class="price-row price-row--meta"><span class="price-row-label">Fuente</span><span class="price-row-value">${priceSourceLabel(c.price_source)}</span></div>
+      <div class="price-row price-row--meta"><span class="price-row-label">Actualizado</span><span class="price-row-value">${fmtTime(c.price_as_of)} ET</span></div>
+    </div>
+    <div class="price-note">Un precio Regular y uno de After-hours pueden diferir legítimamente -- son sesiones distintas del mercado, no un error.</div>`;
+}
+
 /* ---------------- Navegación ---------------- */
 
 function setupNav() {
@@ -274,12 +356,15 @@ async function fetchExitJournal() {
   renderExitJournal();
 }
 
+let _missionControlMarketStateHistory = [];
+
 async function fetchMissionControl() {
   try {
     const res = await fetch("/api/mission-control");
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     _missionControlProcesses = data.processes || [];
+    _missionControlMarketStateHistory = data.market_state_history || [];
   } catch (err) {
     console.error("fetchMissionControl:", err);
   }
@@ -394,6 +479,7 @@ function renderHero() {
       ${badgeHtml(o.market_cap_bucket === "micro" ? "MICROCAP" : (o.market_cap_bucket || "?").toUpperCase(), o.semaforo)}
       <span class="hero-price">${fmtMoney(o.price)}</span>
     </div>
+    <div class="hero-price-context">${priceContextLine(o)}</div>
     <div class="hero-metrics">
       <div><div class="hero-metric-label">Score Radar</div><div class="hero-metric-value">${o.eligible_radar ? fmtNum(o.score) : "N/A"}</div></div>
       <div><div class="hero-metric-label">Probabilidad</div><div class="hero-metric-value">${o.probability_pct !== null ? fmtNum(o.probability_pct) + "%" : '<span class="dim">sin evidencia</span>'}</div></div>
@@ -401,6 +487,7 @@ function renderHero() {
       <div><div class="hero-metric-label">Tiempo estimado al movimiento</div><div class="hero-metric-value dim" style="font-size:14px">sin cálculo real</div></div>
       <div><div class="hero-metric-label">Objetivo histórico</div><div class="hero-metric-value dim" style="font-size:14px">sin cálculo real</div></div>
     </div>
+    ${priceBreakdownHtml(o)}
     <div class="hero-explain">${o.explanation}</div>
     <a class="hero-link" data-view="oportunidad">Ver detalle completo de la oportunidad →</a>`;
 
@@ -424,6 +511,7 @@ function renderPlanB() {
       ${semaforoHtml(b.semaforo)}
       <span class="plan-b-price">${fmtMoney(b.price)}</span>
     </div>
+    <div class="plan-b-price-context">${priceContextLine(b)}</div>
     <div class="plan-b-metrics">
       <div><div class="plan-b-metric-label">Prob.</div><div class="plan-b-metric-value">${b.probability_pct !== null ? fmtNum(b.probability_pct) + "%" : "--"}</div></div>
       <div><div class="plan-b-metric-label">Confianza</div><div class="plan-b-metric-value">${b.confidence}</div></div>
@@ -536,6 +624,7 @@ function renderOportunidad() {
         ${badgeHtml(o.market_cap_bucket === "micro" ? "MICROCAP" : (o.market_cap_bucket || "?").toUpperCase(), o.semaforo)}
         <span class="dim">${fmtMoney(o.price)}</span>
       </div>
+      ${priceBreakdownHtml(o)}
 
       <div class="detail-grid">
         <div class="detail-metric">
@@ -594,7 +683,7 @@ function renderGenericTable(elementId, rows, columns) {
 function renderMicrocaps() {
   renderGenericTable("microcaps-table", _explosivasReal(), [
     { label: "Símbolo", render: r => `<span class="sym">${r.symbol}</span>` },
-    { label: "Precio", render: r => fmtMoney(r.price) },
+    { label: "Precio", render: r => `${fmtMoney(r.price)}<br>${priceContextLine(r)}` },
     { label: "Cambio", render: r => fmtPct(r.change_pct) },
     { label: "Score", render: r => fmtNum(r.score) },
     { label: "Probabilidad", render: r => fmtNum(r.probability_pct) + "%" },
@@ -607,7 +696,7 @@ function renderMicrocaps() {
 function renderMomentum() {
   renderGenericTable("momentum-table", _momentumReal(), [
     { label: "Símbolo", render: r => `<span class="sym">${r.symbol}</span>` },
-    { label: "Precio", render: r => fmtMoney(r.price) },
+    { label: "Precio", render: r => `${fmtMoney(r.price)}<br>${priceContextLine(r)}` },
     { label: "Cambio", render: r => fmtPct(r.change_pct) },
     { label: "Probabilidad", render: r => fmtNum(r.probability_pct) + "%" },
     { label: "Confianza", render: r => r.confidence },
@@ -619,7 +708,10 @@ function renderMomentum() {
 function renderEtf() {
   renderGenericTable("etf-table", MOCK.etfs, [
     { label: "Símbolo", render: r => `<span class="sym">${r.symbol}</span>` },
-    { label: "Precio", render: r => fmtMoney(r.price) },
+    // Panel ETF sigue en MOCK (fuera del orden de integración ya acordado)
+    // -- no tiene fuente/sesión/hora reales, así que se etiqueta como tal
+    // en vez de inventar un contexto que no existe (2026-08-02, punto 6).
+    { label: "Precio", render: r => `${fmtMoney(r.price)}<br><span class="dim">Dato simulado -- sin fuente real todavía</span>` },
     { label: "Cambio", render: r => fmtPct(r.changePct) },
     { label: "Categoría", render: r => r.category },
     { label: "Probabilidad", render: r => r.probabilityPct !== null ? fmtNum(r.probabilityPct) + "%" : '<span class="dim">sin evidencia</span>' },
@@ -630,7 +722,7 @@ function renderEtf() {
 function renderNoTocar() {
   renderGenericTable("no-tocar-table", _noTocarReal(), [
     { label: "Símbolo", render: r => `<span class="sym">${r.symbol}</span>` },
-    { label: "Precio", render: r => fmtMoney(r.price) },
+    { label: "Precio", render: r => `${fmtMoney(r.price)}<br>${priceContextLine(r)}` },
     { label: "Cambio", render: r => fmtPct(r.change_pct) },
     { label: "Motivo", render: r => r.explanation },
     { label: "Semáforo", render: r => semaforoHtml(r.semaforo) },
@@ -640,7 +732,7 @@ function renderNoTocar() {
 function renderRadarCompleto() {
   renderGenericTable("radar-completo-table", _memoryRanking.candidates, [
     { label: "Símbolo", render: r => `<span class="sym">${r.symbol}</span>` },
-    { label: "Precio", render: r => fmtMoney(r.price) },
+    { label: "Precio", render: r => `${fmtMoney(r.price)}<br>${priceContextLine(r)}` },
     { label: "Cambio", render: r => fmtPct(r.change_pct) },
     { label: "Score Radar", render: r => fmtNum(r.score) },
     { label: "Elegible", render: r => r.eligible_radar ? "Sí" : '<span class="dim">No</span>' },
@@ -662,6 +754,25 @@ function renderExitJournal() {
 }
 
 function renderMissionControl() {
+  // Historial de cambios de marketState (punto 5, 2026-08-02) -- hora
+  // exacta de cada transición detectada, para diagnóstico y para el
+  // futuro Learning Engine. Reutiliza el Timeline ya existente, no un
+  // mecanismo de registro nuevo.
+  const historyRows = _missionControlMarketStateHistory.map(h => `
+    <tr>
+      <td>${fmtTime(h.timestamp)} ET</td>
+      <td>${marketStateBadgeHtml(h.market_state)}</td>
+      <td>${h.previous_market_state ? marketStateBadgeHtml(h.previous_market_state) : '<span class="dim">-- (primer estado detectado)</span>'}</td>
+    </tr>`).join("");
+  document.getElementById("mission-control-market-state").innerHTML = `
+    <h3>Historial de sesión de mercado detectada</h3>
+    <div class="table-wrap">
+      <table class="data-table">
+        <thead><tr><th>Hora del cambio</th><th>Estado nuevo</th><th>Estado anterior</th></tr></thead>
+        <tbody>${historyRows || '<tr><td class="empty-state" colspan="3">Sin cambios de sesión detectados todavía.</td></tr>'}</tbody>
+      </table>
+    </div>`;
+
   renderGenericTable("mission-control-table", _missionControlProcesses, [
     { label: "Proceso", render: r => `${r.process_type} -- ${r.label}` },
     { label: "Estado", render: r => r.state },

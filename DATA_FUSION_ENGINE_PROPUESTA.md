@@ -11,6 +11,57 @@ rehacer cuando llegue el momento de retomarlo.
 
 ---
 
+## REGLA DE ARQUITECTURA (declarada oficialmente, 2026-08-02)
+
+> **`atlas_live/data_fusion/yahoo_finance_live_provider.py::YahooFinanceLiveProvider`
+> es el único punto autorizado para construir un `Quote` en vivo dentro de
+> `atlas_live`.** Ningún módulo nuevo puede llamar a `yfinance` directamente
+> ni instanciar `YahooFinanceProvider` (la clase base) por su cuenta para
+> obtener datos de mercado en vivo. Toda funcionalidad nueva debe obtener
+> su `Quote` exclusivamente a través de `DataCollector` (construido con
+> `YahooFinanceLiveProvider`, o el proveedor que el registro del Data
+> Fusion Engine determine cuando exista -- Etapas 1-3, todavía sin
+> implementar).
+
+Corolario directo del Principio 5 de `ATLAS_CONSTITUTION.md` ("el
+proveedor de datos nunca podrá estar acoplado al motor"), aplicado de
+forma concreta a `atlas_live`: si toda funcionalidad nueva pasa
+exclusivamente por `DataCollector` + `YahooFinanceLiveProvider`, agregar
+un proveedor nuevo en el futuro (Alpaca, Polygon, Finnhub) sigue
+requiriendo tocar un solo lugar (`atlas_live/data_fusion/`), nunca cada
+módulo consumidor.
+
+**Precisión técnica, para que no se malinterprete la regla**:
+`YahooFinanceLiveProvider` reutiliza internamente el parseo de
+`YahooFinanceProvider` (clase base, vía `super()._quote_from_info()`) --
+eso es composición interna válida, no una excepción a la regla. Lo que
+la regla prohíbe es que un módulo *consumidor* (Radar, Memory Engine,
+Prediction Journal, Exit Journal, Mission Control, Cabina, o cualquier
+funcionalidad futura) construya su propio `DataCollector(YahooFinanceProvider())`
+o llame a `yfinance` por fuera de `atlas_live/data_fusion/`.
+
+**Excepciones ya existentes, anteriores a esta regla, documentadas y sin
+resolver todavía** (la auditoría del 2026-08-02 las encontró; la regla
+aplica hacia adelante, no las reescribe retroactivamente sin una
+decisión aparte):
+- `atlas_live/memory/live_integration.py::_grade_pending()` -- construye
+  su propio `DataCollector(YahooFinanceProvider())` para calificar
+  predicciones al cierre, decisión explícita del usuario de no tocar
+  Prediction Journal durante la corrección de precio.
+- Los 5 motores de `/atlas` Core (`decision_engine.py`,
+  `market_context_engine.py`, `money_flow_engine.py`,
+  `momentum_radar.py`, `premarket.py`) tienen un fallback
+  `collector or DataCollector(YahooFinanceProvider())` -- dormido en el
+  flujo en vivo actual (siempre se les inyecta el collector correcto),
+  pero técnicamente fuera del alcance de esta regla porque viven en el
+  Core congelado, no en `atlas_live`.
+
+Ambas quedan fuera del alcance de esta regla (que rige `atlas_live` y
+"funcionalidad nueva"), pero registradas para que una futura limpieza no
+las redescubra de cero.
+
+---
+
 ## PROBLEMA
 
 Hoy, todo punto de `atlas_live/` que necesita datos de mercado
@@ -384,3 +435,157 @@ implementa nada de lo anterior hasta que Atlas Alpha 1.0 acumule varios
 días de evidencia real en mercado (ver
 [DECISION_LOG.md](DECISION_LOG.md) y
 [PRIMER_DIA_OPERACION_ATLAS_ALPHA.md](PRIMER_DIA_OPERACION_ATLAS_ALPHA.md)).
+
+---
+
+# ADDENDUM (2026-08-02) -- Trazabilidad de precio: fuente, tipo de sesión y hora
+
+**Sigue siendo diseño, no código.** Esta actualización extiende la
+propuesta original con un requisito nuevo, disparado por un hallazgo
+real, y queda documentada como parte permanente de esta arquitectura
+(será la base del Learning Engine y de la implementación futura del
+Data Fusion Engine, tal como se pidió).
+
+## Disparador
+
+Comparación real Atlas vs. TradingView, mismo símbolo, mismo momento:
+Atlas mostraba el precio de sesión regular (Yahoo Finance), TradingView
+mostraba el precio de after-hours. Ambos precios son correctos -- son
+mediciones de sesiones distintas -- pero mostrados sin ese contexto
+generan la apariencia de datos contradictorios.
+
+## Causa raíz -- confirmada con una consulta real, no una hipótesis
+
+Se verificó en vivo, en este entorno, con `yfinance` (`yf.Ticker("AAPL").info`):
+
+```
+regularMarketPrice -> 308.91
+postMarketPrice     -> 307.34
+postMarketChange    -> -1.57
+marketState         -> CLOSED
+postMarketTime      -> 1785542399
+preMarketPrice      -> <ausente ahora porque el mercado no está en premarket>
+```
+
+**Confirmado**: Yahoo Finance sí expone el precio de after-hours
+(`postMarketPrice`) y de premarket (`preMarketPrice`, cuando corresponde
+a la sesión actual), además de `marketState`. El problema **no es que
+a Yahoo le falte el dato** -- es que
+`atlas/data/providers/yahoo_finance.py::YahooFinanceProvider._quote_from_info()`
+**nunca lee esos campos**, solo `regularMarketPrice`/`currentPrice`.
+Atlas muestra siempre el precio de sesión regular sin importar en qué
+sesión de mercado esté ahora mismo. Esto explica el síntoma observado de
+punta a punta.
+
+## Qué exige esto del modelo de datos (`Quote`)
+
+`atlas/data/models/quote.py::Quote` no tiene ningún campo para expresar
+de qué proveedor vino el precio ni a qué sesión corresponde -- solo
+`timestamp`. Se agregan tres campos, **aditivos, con default, sin romper
+ningún consumidor existente** (mismo patrón ya usado para
+`market_context` en el Memory Store):
+
+```python
+price_type: Literal["regular", "premarket", "afterhours", "unknown"] = "unknown"
+source: str = "yahoo_finance"
+# `timestamp` ya existe -- se documenta formalmente como el "as of" oficial del precio.
+```
+
+Nota de arquitectura: `Quote` vive en `/atlas` Core (congelado).
+Agregar estos campos requiere pasar por el proceso de validación de la
+Constitución antes de tocar ese archivo -- se incorpora a la Etapa 0 del
+PLAN DE MIGRACIÓN ya definido en este documento (el refactor puro), no
+se hace todavía.
+
+## Regla de presentación obligatoria (Cabina del Piloto)
+
+Requisito explícito del usuario: *"Atlas nunca debe mostrar un precio
+sin indicar claramente fuente, tipo de precio y hora de la última
+actualización."* Esto se convierte en una regla de UI permanente: todo
+lugar de la Cabina que muestre un precio (Hero, Plan B, Explosivas,
+Momentum, Radar Completo, detalle de símbolo) debe mostrar, de forma
+visible (no solo en un tooltip), los tres datos juntos. Formato mínimo
+de referencia: `$4.82 · Yahoo · Regular · 15:42 ET`.
+
+Esto depende de que `price_type`/`source`/`timestamp` viajen desde
+`Quote` hasta `serialize_ranked_candidate()`
+(`atlas_live/memory/live_integration.py`) y de ahí al JSON que consume
+`cabina.js` -- por eso el orden de implementación futura es: modelo de
+datos → Fusion Engine → serialización → UI, nunca al revés.
+
+## Cuando dos fuentes reportan valores distintos
+
+Requisito explícito: *"Atlas no debe ocultarlo."* El Fusion Engine, al
+consultar más de una fuente para el mismo símbolo (mismo mecanismo ya
+diseñado en VALIDACIÓN ENTRE MÚLTIPLES FUENTES), expone -- no solo
+registra en un log -- una estructura completa y visible:
+
+```json
+{
+  "symbol": "...",
+  "quotes_by_source": [
+    {"source": "yahoo_finance", "price_type": "regular",    "price": 308.91, "as_of": "..."},
+    {"source": "tradingview",   "price_type": "afterhours", "price": 307.34, "as_of": "..."}
+  ],
+  "used_for_ranking": {"source": "yahoo_finance", "reason": "proveedor de mayor prioridad, sin fallo"},
+  "discrepancy_pct": null
+}
+```
+
+**Distinción que evita una falsa alarma, central a este addendum**:
+comparar el precio Regular de una fuente contra el After-hours de otra
+**no es una discrepancia** -- son dos mediciones legítimas de dos
+momentos distintos, exactamente el problema que disparó este addendum.
+El cálculo de `discrepancy_pct` (registro de discrepancias ya diseñado)
+solo tiene sentido **dentro del mismo `price_type`** (Regular vs.
+Regular, Premarket vs. Premarket). Cuando los `price_type` difieren, no
+se calcula ninguna discrepancia -- se muestran ambos valores como
+información complementaria, con su tipo, sin comparar peras con manzanas.
+
+`used_for_ranking` responde el cuarto punto pedido explícitamente
+("fuente utilizada para el cálculo del Ranking") -- el Ranking Score
+sigue usando exactamente un `Quote` (el del proveedor de mayor
+prioridad, o el de respaldo si hubo failover), nunca un promedio ni una
+fusión de valores; esta propuesta no cambia esa regla, solo la hace
+visible y trazable.
+
+## Failover visible en Mission Control
+
+Requisito explícito: *"registrando el cambio en Mission Control."* El
+mecanismo de failover (ya diseñado en MECANISMO DE FAILOVER) agrega, en
+cada conmutación real de proveedor -- no en cada consulta individual,
+solo cuando el proveedor de mayor prioridad efectivamente falla y se usa
+el siguiente -- un evento en el Timeline ya existente de Mission Control
+(`atlas_live/mission_control/timeline.py::record_event`), con un
+`event_type` nuevo (`"provider_failover"`, se agrega al catálogo de
+`ATLAS_MISSION_CONTROL.md` sección 4), severidad `WARNING`, y mensaje
+explícito de qué proveedor falló y a cuál se conmutó. No se inventa un
+mecanismo de registro nuevo -- se reutiliza el Timeline que ya
+construyó Mission Control (Entregable 2).
+
+## Alcance de este addendum sobre el plan ya existente
+
+No cambia nada de lo ya definido (arquitectura, `FusionProvider`,
+`DataProvider`, plan de migración por etapas). Agrega un requisito a la
+**Etapa 0** (el refactor puro, antes de agregar cualquier segundo
+proveedor real): `Quote` ya debe llevar `price_type`/`source`, y la
+Cabina ya debe mostrarlos. No se pospone a una etapa posterior, porque
+resuelve el problema real detectado hoy sin necesitar todavía un
+segundo proveedor -- Yahoo por sí solo, leyendo los campos que ya expone
+y que hoy se ignoran, ya alcanza para eliminar la confusión observada.
+
+**Actualización (2026-08-02, más tarde el mismo día)**: la Etapa 0 (la
+única independiente de un segundo proveedor real) **fue implementada**,
+por decisión explícita del usuario que adelantó específicamente esta
+parte antes del primer día de validación real -- ver
+[DECISION_LOG.md](DECISION_LOG.md), entrada "Implementada la Etapa 0 del
+addendum de trazabilidad de precio". `Quote` (`atlas/data/models/quote.py`)
+ya lleva `source`/`price_type`/`market_state`/`price_regular`/
+`price_premarket`/`price_afterhours`; `atlas_live/data_fusion/yahoo_finance_live_provider.py`
+ya selecciona el precio según sesión; la Cabina ya muestra el desglose
+completo en Hero/Plan B y el contexto compacto en las tablas. Verificado
+con datos reales (KC, PRPL, servidor real, 192 símbolos, sin
+regresiones). **El resto del documento (Etapas 1-3: segundo proveedor
+real, failover, discrepancias) sigue sin implementarse**, todavía
+gated a varios días de evidencia real, sin cambios respecto a lo ya
+acordado.

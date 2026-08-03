@@ -15,6 +15,8 @@
   --red: #d9534f;
   --red-bg: #331a19;
   --accent: #4a9eff;
+  --purple: #a259e6;
+  --purple-bg: #241a33;
   --mono: "Consolas", "SFMono-Regular", "Menlo", monospace;
 }
 
@@ -306,6 +308,79 @@ html, body {
 }
 .hero-link:hover { text-decoration: underline; }
 .hero-empty { color: var(--text-dim); font-size: 15px; }
+.hero-price-context { margin-top: -4px; }
+
+/* ---------- Trazabilidad de precio (2026-08-02) -- fuente, tipo de
+   sesión y hora, siempre visibles junto a cualquier precio ---------- */
+.price-context { font-size: 11px; color: var(--text-dim); letter-spacing: 0.01em; display: inline-flex; align-items: center; gap: 6px; }
+
+/* Badge visual del estado de mercado -- punto 1 (2026-08-02): no depender
+   de leer texto para saber qué sesión está usando Atlas. */
+.mstate-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+.mstate-regular    { background: var(--green-bg);  color: var(--green); }
+.mstate-premarket  { background: var(--amber-bg);  color: var(--amber); }
+.mstate-afterhours { background: var(--purple-bg); color: var(--purple); }
+.mstate-closed     { background: var(--panel-3);   color: var(--text-dim); }
+.mstate-unknown    { background: var(--panel-3);   color: var(--text-faint); }
+
+.price-breakdown {
+  margin-top: 18px;
+  padding: 14px 16px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  max-width: 900px;
+}
+.price-breakdown-header { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.price-breakdown-header-note { font-size: 11px; color: var(--text-faint); }
+
+/* "Precio utilizado" -- punto 2: destacado, con su propia sección arriba
+   del desglose Regular/Premarket/After-hours, no mezclado como una fila más. */
+.price-breakdown-used {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  background: rgba(74, 158, 255, 0.08);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+}
+.price-breakdown-used .price-row-label { font-size: 11px; color: var(--accent); text-transform: uppercase; letter-spacing: 0.03em; }
+.price-breakdown-used-value { font-family: var(--mono); font-size: 24px; font-weight: 800; color: var(--accent); }
+.price-row-used-pill {
+  display: inline-block;
+  font-size: 9px;
+  font-weight: 800;
+  color: var(--bg);
+  background: var(--accent);
+  padding: 1px 5px;
+  border-radius: 3px;
+  letter-spacing: 0.03em;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+
+.price-breakdown-grid { display: flex; flex-wrap: wrap; gap: 10px 24px; }
+.price-row { display: flex; flex-direction: column; gap: 2px; min-width: 90px; }
+.price-row-label { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.03em; }
+.price-row-value { font-family: var(--mono); font-size: 15px; font-weight: 700; color: var(--text); }
+.price-row--used .price-row-label { color: var(--accent); }
+.price-row--used .price-row-value { color: var(--accent); font-size: 17px; }
+.price-row--meta { margin-top: 10px; flex-direction: row; gap: 6px; align-items: baseline; }
+.price-row--meta .price-row-value { font-size: 13px; font-weight: 600; color: var(--text-dim); }
+.price-note { margin-top: 8px; font-size: 11px; color: var(--text-faint); max-width: 900px; }
 
 /* ---------- Plan B: segunda oportunidad, subordinada a la principal ---------- */
 .plan-b {
@@ -321,6 +396,7 @@ html, body {
 .plan-b-top { display: flex; align-items: baseline; gap: 10px; }
 .plan-b-symbol { font-family: var(--mono); font-size: 28px; font-weight: 800; }
 .plan-b-price { font-family: var(--mono); font-size: 14px; color: var(--text-dim); }
+.plan-b-price-context { margin-top: 2px; }
 .plan-b-metrics { display: flex; gap: 16px; margin-top: 12px; }
 .plan-b-metric-label { font-size: 10px; color: var(--text-dim); text-transform: uppercase; }
 .plan-b-metric-value { font-family: var(--mono); font-size: 16px; font-weight: 700; }

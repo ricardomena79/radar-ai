@@ -24,7 +24,6 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from atlas.data.collectors.data_collector import DataCollector
-from atlas.data.providers.yahoo_finance import YahooFinanceProvider
 from atlas.data.universe import Asset, get_equities, get_etfs
 from atlas.decision_journal import DecisionJournal
 from atlas.decision_recorder import DecisionRecorder
@@ -36,7 +35,9 @@ from atlas.engine.money_flow_engine import MoneyFlowEngine
 from atlas.knowledge import NORMAL, KnowledgeEngine
 
 from atlas_live import explosive_diagnostics, explosive_engine
+from atlas_live.data_fusion.yahoo_finance_live_provider import YahooFinanceLiveProvider
 from atlas_live.explosive_config import load_config as load_explosive_config
+from atlas_live.mission_control import timeline
 
 # --- Configuración, pensada para poder ajustarse sin tocar el resto del archivo ---
 WATCHLIST_EQUITIES = 150
@@ -136,6 +137,10 @@ class _State:
         # para no cambiar ese contrato ya en uso.
         self.memory_ranking: List[Dict[str, Any]] = []
         self.memory_ranking_generated_at: Optional[str] = None
+        # Trazabilidad de precio (2026-08-02): último `marketState` de
+        # Yahoo Finance detectado, para no duplicar el evento en el
+        # Timeline de Mission Control en cada ciclo si no cambió.
+        self.last_market_state: Optional[str] = None
 
     def snapshot(self) -> Dict[str, Any]:
         with self._lock:
@@ -236,7 +241,7 @@ def run_scan_once() -> None:
     start = time.monotonic()
 
     try:
-        collector = DataCollector(YahooFinanceProvider())
+        collector = DataCollector(YahooFinanceLiveProvider())
         watchlist = _build_watchlist()
         assets = list(watchlist.values())
 
@@ -330,6 +335,26 @@ def run_scan_once() -> None:
         except Exception:
             pass
 
+        # Trazabilidad de precio (2026-08-02): registra en el Timeline de
+        # Mission Control el `marketState` que Yahoo Finance reportó en
+        # este ciclo, solo si cambió respecto al último ciclo -- mismo
+        # criterio que heartbeat.py ("solo transiciones reales, no cada
+        # repetición del mismo estado"). Nunca debe tumbar el escaneo.
+        detected_market_state = next(
+            (r["explosive"]["metrics"].get("market_state") for r in results if r.get("explosive")), None,
+        )
+        if detected_market_state and detected_market_state != STATE.last_market_state:
+            try:
+                timeline.record_event(
+                    run_id="SCAN_WORKER", process_type="scan_worker", label="Escaneo en vivo",
+                    event_type="state_changed", severity="INFO",
+                    message=f"Sesión de mercado detectada por Yahoo Finance: {detected_market_state}",
+                    metadata={"market_state": detected_market_state, "previous_market_state": STATE.last_market_state},
+                )
+            except Exception:
+                pass
+            STATE.update(last_market_state=detected_market_state)
+
         STATE.update(
             context=context_payload,
             ranking=results[:TOP_N],
@@ -353,7 +378,7 @@ def get_symbol_detail(symbol: str) -> Dict[str, Any]:
     from atlas.engine.money_flow_engine import MoneyFlowEngine as _MoneyFlowEngine
     from atlas.knowledge.pattern_store import PatternStore
 
-    collector = DataCollector(YahooFinanceProvider())
+    collector = DataCollector(YahooFinanceLiveProvider())
     quote = collector.get_quote(symbol)
     atlas_score = _atlas_score(symbol, collector)
     momentum_result = calculate_momentum_score(symbol, collector)

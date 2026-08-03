@@ -14,7 +14,7 @@ from flask import Flask, jsonify, send_from_directory
 
 from atlas_live import scan_worker
 from atlas_live.memory import exit_journal, learning_status, live_integration, market_hours, prediction_journal
-from atlas_live.mission_control import heartbeat
+from atlas_live.mission_control import heartbeat, timeline
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -117,8 +117,26 @@ def api_exit_journal():
 @app.route("/api/mission-control")
 def api_mission_control():
     """Mission Control -- Cabina del Piloto, Panel 12. Todos los procesos
-    con archivo de estado (heartbeat) activo o reciente en esta máquina."""
-    return jsonify({"processes": heartbeat.list_active_processes()})
+    con archivo de estado (heartbeat) activo o reciente en esta máquina,
+    más el historial de cambios de `marketState` detectados por el
+    escaneo en vivo (2026-08-02, trazabilidad de precio) -- reutiliza
+    `timeline.get_recent_events()` ya existente, sin agregar ninguna
+    tabla ni mecanismo de lectura nuevo."""
+    market_state_events = [
+        e for e in timeline.get_recent_events(limit=100)
+        if e["event_type"] == "state_changed" and e["run_id"] == "SCAN_WORKER"
+    ]
+    return jsonify({
+        "processes": heartbeat.list_active_processes(),
+        "market_state_history": [
+            {
+                "timestamp": e["timestamp"],
+                "market_state": e["metadata"].get("market_state"),
+                "previous_market_state": e["metadata"].get("previous_market_state"),
+            }
+            for e in market_state_events
+        ],
+    })
 
 
 @app.route("/api/learning-status")

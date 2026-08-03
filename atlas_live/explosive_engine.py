@@ -139,7 +139,7 @@ def evaluate(
     # Se calculan siempre, pasen o no los filtros: el modo Diagnóstico los
     # necesita también para las descartadas (para mostrar "Gap +3%, RVOL
     # 1.4x" junto al motivo de exclusión).
-    metrics: Dict[str, Optional[float]] = {
+    metrics: Dict[str, Any] = {
         "price": quote.last_price,
         "gap_pct": gap_pct,
         "change_pct": change_pct,
@@ -147,6 +147,16 @@ def evaluate(
         "dollar_volume": dollar_volume,
         "volatility_score": volatility_score,
         "market_cap": market_cap,
+        # Trazabilidad de precio (2026-08-02, ver DATA_FUSION_ENGINE_PROPUESTA.md,
+        # addendum) -- puramente informativo para la Cabina del Piloto, no
+        # participa en ningún filtro de elegibilidad ni en el Ranking Score.
+        "price_type": quote.price_type,
+        "source": quote.source,
+        "market_state": quote.market_state,
+        "price_regular": quote.price_regular,
+        "price_premarket": quote.price_premarket,
+        "price_afterhours": quote.price_afterhours,
+        "price_as_of": quote.timestamp.isoformat() if quote.timestamp else None,
     }
 
     stage_trace: List[str] = []
