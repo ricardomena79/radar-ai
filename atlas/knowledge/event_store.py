@@ -82,6 +82,17 @@ REPLAY_COLUMNS = [
     ("scan_size", "INTEGER"),
 ]
 
+# La identidad del patrón de comportamiento (Pattern Registry) que este
+# evento exhibía en el momento de detectarse -- la misma combinación de
+# condiciones que atlas_live/scan_worker.py ya usa para identificar el
+# patrón. Se guarda acá porque el Motor de Evolución necesita, más tarde,
+# saber a qué patrón atribuirle el resultado real del evento, y ese cálculo
+# depende de las condiciones tal como eran en el momento del evento, no de
+# recalcularlas con datos de mercado ya distintos.
+EVOLUTION_COLUMNS = [
+    ("pattern_key", "TEXT"),
+]
+
 
 def ensure_columns(connection: sqlite3.Connection, table: str, columns) -> None:
     """Agrega a `table` las columnas de `columns` que todavía no existan (migración aditiva)."""
@@ -156,6 +167,9 @@ class MarketEvent:
     # Preparación para el futuro Market Replay Engine.
     rank_in_scan: Optional[int] = None
     scan_size: Optional[int] = None
+    # Identidad del patrón de comportamiento (Pattern Registry) al momento
+    # del evento. Ver EVOLUTION_COLUMNS.
+    pattern_key: Optional[str] = None
     id: Optional[int] = field(default=None, compare=False)
 
 
@@ -210,6 +224,7 @@ def _row_to_event(row: sqlite3.Row) -> MarketEvent:
         engine_versions=row["engine_versions"] if "engine_versions" in columns else None,
         rank_in_scan=row["rank_in_scan"] if "rank_in_scan" in columns else None,
         scan_size=row["scan_size"] if "scan_size" in columns else None,
+        pattern_key=row["pattern_key"] if "pattern_key" in columns else None,
     )
 
 
@@ -281,6 +296,12 @@ class EventStore:
         self._connection.execute("CREATE INDEX IF NOT EXISTS idx_events_rank_in_scan ON events(rank_in_scan)")
         self._connection.commit()
 
+        # Migración aditiva: identidad del patrón, para que el Motor de
+        # Evolución pueda atribuirle un resultado más tarde.
+        ensure_columns(self._connection, "events", EVOLUTION_COLUMNS)
+        self._connection.execute("CREATE INDEX IF NOT EXISTS idx_events_pattern_key ON events(pattern_key)")
+        self._connection.commit()
+
     def record_event(self, event: MarketEvent) -> int:
         """Guarda un evento y devuelve su id."""
         if event.event_type not in EVENT_TYPES:
@@ -301,7 +322,7 @@ class EventStore:
             "leading_sector", "leading_industry", "sector_money_flow_score",
             "day_of_week", "month", "earnings_season",
             "data_source", "captured_at", "data_status", "engine_versions",
-            "rank_in_scan", "scan_size",
+            "rank_in_scan", "scan_size", "pattern_key",
             "created_at",
         ]
         values = [
@@ -347,6 +368,7 @@ class EventStore:
             event.engine_versions,
             event.rank_in_scan,
             event.scan_size,
+            event.pattern_key,
             datetime.now(timezone.utc).isoformat(),
         ]
         assert len(columns) == len(values)
@@ -358,6 +380,24 @@ class EventStore:
         )
         self._connection.commit()
         return int(cursor.lastrowid)
+
+    def update_event_outcome(
+        self, event_id: int, max_result_percent: Optional[float], close_result_percent: Optional[float]
+    ) -> None:
+        """Completa el resultado de un evento ya registrado.
+
+        Estas dos columnas existen en el esquema desde el diseño original,
+        pensadas exactamente para esto ("para que pattern_store.py pueda
+        buscar patrones similares más adelante"), pero nunca se llenaban
+        porque nada revisitaba un evento después de crearlo. Las llama el
+        motor de evolución cuando completa el checkpoint de cierre de
+        sesión o del día siguiente de un evento.
+        """
+        self._connection.execute(
+            "UPDATE events SET max_result_percent = ?, close_result_percent = ? WHERE id = ?",
+            (max_result_percent, close_result_percent, event_id),
+        )
+        self._connection.commit()
 
     def get_event(self, event_id: int) -> Optional[MarketEvent]:
         """Devuelve el evento por id, o None si no existe."""
