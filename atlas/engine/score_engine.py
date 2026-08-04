@@ -7,6 +7,7 @@ conoce a los demás; solo mide un aspecto objetivo del instrumento.
 """
 
 import math
+import os
 from dataclasses import dataclass
 from typing import Optional
 
@@ -18,6 +19,17 @@ from atlas.indicators import ema
 from atlas.indicators import relative_volume as calc_relative_volume
 from atlas.indicators import rsi as calc_rsi
 from atlas.indicators import vwap as calc_vwap
+
+
+def env_float(name: str, default: float) -> float:
+    """Lee un umbral configurable desde el entorno (Railway/`.env`), con default fijo si falta o es inválido."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
 
 
 @dataclass(frozen=True)
@@ -131,19 +143,37 @@ def score_liquidity(price: float, volume: Optional[float]) -> ComponentScore:
     )
 
 
+MARKET_CAP_SWEET_SPOT_MIN = env_float("ATLAS_MARKET_CAP_SWEET_SPOT_MIN", 200_000_000)
+MARKET_CAP_SWEET_SPOT_MAX = env_float("ATLAS_MARKET_CAP_SWEET_SPOT_MAX", 5_000_000_000)
+MARKET_CAP_BASE_SCORE = env_float("ATLAS_MARKET_CAP_BASE_SCORE", 60.0)
+MARKET_CAP_SWEET_SPOT_BONUS = env_float("ATLAS_MARKET_CAP_SWEET_SPOT_BONUS", 15.0)
+
+
 def score_market_cap(market_cap: Optional[float]) -> ComponentScore:
-    """Capitalización de mercado, en escala logarítmica: $50M=0, $500,000M=100."""
+    """Capitalización de mercado como contexto, no como filtro.
+
+    No premia el tamaño en sí (una mega-cap estable rara vez se mueve 5-20%
+    en minutos) ni penaliza a las small/microcaps (que sí pueden hacerlo):
+    todo instrumento parte de un score neutro-positivo (`MARKET_CAP_BASE_SCORE`)
+    y solo recibe un bono moderado (`MARKET_CAP_SWEET_SPOT_BONUS`) si cae en el
+    "punto dulce" de liquidez real donde los movimientos explosivos son más
+    probables. Nada queda excluido ni fuertemente castigado por tamaño.
+    Umbrales configurables vía variables de entorno (ATLAS_MARKET_CAP_*) para
+    poder ajustarlos con evidencia real sin tocar código.
+    """
     if not market_cap:
         return ComponentScore(
             name="market_cap",
-            score=50.0,
+            score=MARKET_CAP_BASE_SCORE,
             explanation="Sin datos de capitalización disponibles (por ejemplo, en ETFs)",
         )
 
-    log_cap = math.log10(market_cap)
-    score = _clamp((log_cap - 7.7) / (11.7 - 7.7) * 100)
+    in_sweet_spot = MARKET_CAP_SWEET_SPOT_MIN <= market_cap <= MARKET_CAP_SWEET_SPOT_MAX
+    bonus = MARKET_CAP_SWEET_SPOT_BONUS if in_sweet_spot else 0.0
+    score = _clamp(MARKET_CAP_BASE_SCORE + bonus)
+    zone = "dentro del punto dulce de liquidez" if in_sweet_spot else "fuera del punto dulce (sin penalización)"
     return ComponentScore(
         name="market_cap",
         score=score,
-        explanation=f"Capitalización de mercado ~ ${market_cap:,.0f}",
+        explanation=f"Capitalización de mercado ~ ${market_cap:,.0f} ({zone})",
     )

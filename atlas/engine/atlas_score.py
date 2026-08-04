@@ -13,6 +13,7 @@ from atlas.data.collectors.data_collector import DataCollector
 from atlas.data.providers.base import ProviderError, QuoteNotFoundError
 from atlas.engine.score_engine import (
     ComponentScore,
+    env_float,
     score_atr,
     score_ema_trend,
     score_liquidity,
@@ -22,16 +23,31 @@ from atlas.engine.score_engine import (
     score_vwap_distance,
 )
 
-# Deben sumar 1.0; determinan cuánto pesa cada componente en el score final.
-WEIGHTS: Dict[str, float] = {
+# El tamaño de la empresa es contexto, no debe dominar el score (ver
+# score_market_cap): su peso es deliberadamente moderado y configurable vía
+# ATLAS_MARKET_CAP_WEIGHT. El resto de los pesos-base mantiene su proporción
+# relativa entre sí (momentum y relative_volume siguen siendo los más altos)
+# pero se reescala para que la suma total siga dando 1.0 sea cual sea el peso
+# de market_cap.
+MARKET_CAP_WEIGHT = env_float("ATLAS_MARKET_CAP_WEIGHT", 0.05)
+
+_BASE_WEIGHTS_EXCLUDING_CAP: Dict[str, float] = {
     "momentum": 0.20,
     "relative_volume": 0.20,
     "ema_trend": 0.15,
     "vwap_distance": 0.15,
     "atr": 0.10,
     "liquidity": 0.10,
-    "market_cap": 0.10,
 }
+_remaining = 1.0 - MARKET_CAP_WEIGHT
+_base_sum = sum(_BASE_WEIGHTS_EXCLUDING_CAP.values())
+
+# Deben sumar 1.0; determinan cuánto pesa cada componente en el score final.
+WEIGHTS: Dict[str, float] = {
+    name: (weight / _base_sum) * _remaining
+    for name, weight in _BASE_WEIGHTS_EXCLUDING_CAP.items()
+}
+WEIGHTS["market_cap"] = MARKET_CAP_WEIGHT
 
 
 @dataclass(frozen=True)
