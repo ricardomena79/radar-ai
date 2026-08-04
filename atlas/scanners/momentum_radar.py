@@ -18,7 +18,6 @@ from typing import Callable, Dict, List, Optional
 import pandas as pd
 
 from atlas.data.collectors.data_collector import DataCollector
-from atlas.data.providers.yahoo_finance import YahooFinanceProvider
 from atlas.data.universe import Asset, load_universe
 from atlas.engine.atlas_score import AtlasScore, calculate_atlas_score
 
@@ -58,7 +57,7 @@ class MomentumRadar:
         universe_provider: Optional[UniverseProvider] = None,
         max_workers: int = 8,
     ) -> None:
-        self._collector = collector or DataCollector(YahooFinanceProvider())
+        self._collector = collector or DataCollector()
         self._universe_provider = universe_provider or load_universe
         self._max_workers = max_workers
         self._results: List[MomentumRadarResult] = []

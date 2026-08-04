@@ -9,9 +9,50 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 import yfinance as yf
+from yfinance.exceptions import YFRateLimitError
 
-from atlas.data.models.quote import Quote
-from atlas.data.providers.base import DataProvider, ProviderError, QuoteNotFoundError
+from atlas.data.models.quote import (
+    SESSION_AFTERHOURS,
+    SESSION_CLOSED,
+    SESSION_PREMARKET,
+    SESSION_REGULAR,
+    Quote,
+)
+from atlas.data.providers.base import (
+    DataProvider,
+    ProviderError,
+    QuoteNotFoundError,
+    RateLimitError,
+)
+from atlas.data.providers.base import call_with_timeout as _shared_call_with_timeout
+
+# Yahoo Finance reporta el estado de la sesión en `marketState`. Fuera de
+# la sesión regular, `regularMarketPrice` queda congelado en el último
+# precio de la sesión regular anterior -- no se actualiza con el
+# premarket ni el afterhours. Este mapa normaliza esos valores crudos al
+# vocabulario propio de Atlas (ver atlas.data.models.quote).
+_MARKET_STATE_TO_SESSION = {
+    "PRE": SESSION_PREMARKET,
+    "PREPRE": SESSION_PREMARKET,
+    "REGULAR": SESSION_REGULAR,
+    "POST": SESSION_AFTERHOURS,
+    "POSTPOST": SESSION_AFTERHOURS,
+    "CLOSED": SESSION_CLOSED,
+}
+
+# Tiempo máximo de espera para una sola llamada de red a Yahoo Finance
+# (.info o .history). Bajo contención -- ej. el escaneo de fondo de Atlas
+# Live compitiendo con una consulta puntual -- Yahoo puede dejar una
+# conexión colgada sin devolver error ni éxito; sin este límite esa espera
+# es indefinida. Propio de este proveedor (independiente del de cualquier
+# otro), aunque reutiliza el mecanismo compartido de atlas.data.providers.base.
+NETWORK_TIMEOUT_SECONDS = 15.0
+
+
+def _call_with_timeout(func, symbol: str, what: str):
+    return _shared_call_with_timeout(
+        func, symbol, what, timeout_seconds=NETWORK_TIMEOUT_SECONDS, provider_name="Yahoo Finance"
+    )
 
 
 class YahooFinanceProvider(DataProvider):
@@ -39,22 +80,50 @@ class YahooFinanceProvider(DataProvider):
             if ticker is None:
                 continue
             try:
-                info = ticker.info
+                info = _call_with_timeout(lambda t=ticker: t.info, symbol, "cotización")
                 if not info:
                     continue
                 quotes.append(self._quote_from_info(symbol, info))
+            except YFRateLimitError as exc:
+                raise RateLimitError(f"Yahoo Finance limitó la tasa de consultas: {exc}") from exc
             except (ProviderError, QuoteNotFoundError):
                 continue
 
         return quotes
 
     def _quote_from_info(self, symbol: str, info: Dict[str, Any]) -> Quote:
-        """Normaliza el diccionario `info` de yfinance a un Quote."""
-        last_price = info.get("regularMarketPrice") or info.get("currentPrice")
+        """Normaliza el diccionario `info` de yfinance a un Quote.
+
+        Fuera de la sesión regular, `regularMarketPrice` queda congelado en
+        el cierre de la sesión regular anterior: usarlo tal cual durante el
+        premarket o el afterhours haría ver un precio y un cambio % que no
+        corresponden al momento actual. Por eso se elige el precio y la
+        base de comparación según `marketState`.
+
+        Importante: fuera de la sesión regular, `regularMarketPrice` ES el
+        cierre regular más reciente (el de "ayer" visto desde el
+        premarket). `regularMarketPreviousClose` es el cierre de la
+        sesión anterior a esa -- un día más atrás. Por eso el premarket se
+        compara contra `regularMarketPrice`, no contra
+        `regularMarketPreviousClose` (verificado contra el
+        `preMarketChangePercent` que reporta el propio Yahoo Finance).
+        """
+        regular_price = info.get("regularMarketPrice") or info.get("currentPrice")
         previous_close = info.get("regularMarketPreviousClose") or info.get("previousClose")
 
-        if last_price is None or previous_close is None:
+        if regular_price is None or previous_close is None:
             raise QuoteNotFoundError(symbol)
+
+        session = _MARKET_STATE_TO_SESSION.get(info.get("marketState"), SESSION_REGULAR)
+        last_price = regular_price
+        baseline_price = previous_close
+
+        if session == SESSION_PREMARKET and info.get("preMarketPrice") is not None:
+            last_price = info["preMarketPrice"]
+            baseline_price = regular_price  # el cierre regular más reciente
+        elif session == SESSION_AFTERHOURS and info.get("postMarketPrice") is not None:
+            last_price = info["postMarketPrice"]
+            baseline_price = regular_price  # el cierre oficial de hoy
 
         volume = info.get("regularMarketVolume") or info.get("volume")
         average_volume = info.get("averageVolume") or info.get("averageDailyVolume10Day")
@@ -63,7 +132,7 @@ class YahooFinanceProvider(DataProvider):
             symbol=symbol,
             name=info.get("longName") or info.get("shortName"),
             last_price=last_price,
-            change_percent=self._calculate_change_percent(last_price, previous_close),
+            change_percent=self._calculate_change_percent(last_price, baseline_price),
             volume=volume,
             open=info.get("regularMarketOpen"),
             high=info.get("regularMarketDayHigh"),
@@ -76,12 +145,21 @@ class YahooFinanceProvider(DataProvider):
             average_volume=average_volume,
             relative_volume=self._calculate_relative_volume(volume, average_volume),
             timestamp=self._resolve_timestamp(info),
+            session=session,
         )
 
     def get_history(self, symbol: str, period: str = "6mo", interval: str = "1d") -> pd.DataFrame:
         """Descarga barras OHLCV históricas de Yahoo Finance."""
         try:
-            history = yf.Ticker(symbol).history(period=period, interval=interval)
+            history = _call_with_timeout(
+                lambda: yf.Ticker(symbol).history(period=period, interval=interval),
+                symbol,
+                "historial",
+            )
+        except YFRateLimitError as exc:
+            raise RateLimitError(f"Yahoo Finance limitó la tasa de consultas: {exc}") from exc
+        except ProviderError:
+            raise
         except Exception as exc:
             raise ProviderError(f"Fallo al consultar historial de '{symbol}': {exc}") from exc
 
@@ -93,7 +171,11 @@ class YahooFinanceProvider(DataProvider):
     def _fetch_info(self, symbol: str) -> Dict[str, Any]:
         """Descarga el diccionario `info` de yfinance para un símbolo."""
         try:
-            info = yf.Ticker(symbol).info
+            info = _call_with_timeout(lambda: yf.Ticker(symbol).info, symbol, "cotización")
+        except YFRateLimitError as exc:
+            raise RateLimitError(f"Yahoo Finance limitó la tasa de consultas: {exc}") from exc
+        except ProviderError:
+            raise
         except Exception as exc:
             raise ProviderError(f"Fallo al consultar Yahoo Finance para '{symbol}': {exc}") from exc
 

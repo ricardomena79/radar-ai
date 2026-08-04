@@ -112,3 +112,24 @@ solo lectura (mismo ticker + misma fecha + hora más cercana). Es una
 solución honesta y funcional, pero no un enlace garantizado. Si en el
 futuro se vuelve un problema real (falsos emparejamientos), requerirá una
 decisión explícita de diseño -- no se resuelve dentro de esta congelación.
+
+### GlobalRadar: family-linkage ETF apalancado <-> subyacente, sin validación en vivo end-to-end
+
+`GlobalRadar._expand_families()` (ver `atlas/scanners/leveraged_etf_families.py`)
+está probado con pruebas deterministas sintéticas y adversariales -- ambas
+direcciones (ETF activo trae al subyacente, subyacente activo trae al ETF)
+confirmadas correctas, forzando explícitamente que el símbolo NO calificara
+por ningún otro criterio, para aislar que el link de familia era la única
+causa de inclusión.
+
+Lo que falta: un caso real, en vivo, donde el link de familia sea la razón
+DECISIVA de inclusión (no solo una entre varias). Se intentó dos veces
+contra Yahoo Finance con un universo reducido real (PLTR/PTIR/AAPL/NVDA/SOXL
+incluidos a propósito): en la primera corrida PTIR calificó por mérito
+propio (no aisló el link); en la segunda, Yahoo rechazó el 100% de las
+consultas (`HTTP 401 Invalid Crumb`), impidiendo cualquier lectura. Se
+decidió (2026-08-04) no seguir persiguiendo este caso específico hasta
+tener un segundo proveedor de datos real conectado vía `MultiProvider`,
+que dé un entorno de prueba más estable. La lógica en sí no está en duda
+-- las pruebas deterministas ya la cubren -- lo pendiente es únicamente la
+confirmación en vivo del caso "puro".

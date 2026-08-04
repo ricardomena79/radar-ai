@@ -25,7 +25,6 @@ from typing import Callable, Dict, List, Optional
 import pandas as pd
 
 from atlas.data.collectors.data_collector import DataCollector
-from atlas.data.providers.yahoo_finance import YahooFinanceProvider
 from atlas.data.universe import Asset, get_equities
 from atlas.engine.momentum_engine import calculate_momentum_score
 
@@ -83,7 +82,7 @@ class MoneyFlowEngine:
         universe_provider: Optional[UniverseProvider] = None,
         max_workers: int = 8,
     ) -> None:
-        self._collector = collector or DataCollector(YahooFinanceProvider())
+        self._collector = collector or DataCollector()
         self._universe_provider = universe_provider or _default_equity_universe
         self._max_workers = max_workers
         self._sector_results: List[GroupFlow] = []

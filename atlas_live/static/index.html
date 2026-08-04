@@ -6,24 +6,70 @@
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <header>
-    <h1>ATLAS</h1>
-    <div class="status">
-      <span id="scan-status">cargando...</span>
-      <button id="rescan-btn">Actualizar ahora</button>
+  <div class="app-shell">
+    <nav class="sidebar">
+      <div class="sidebar-title">ATLAS</div>
+      <button class="nav-item active" data-view="inicio">🏠 Inicio</button>
+      <button class="nav-item" data-view="oportunidad">⭐ Oportunidad del momento</button>
+      <button class="nav-item" data-view="ranking">📊 Ranking</button>
+      <button class="nav-item" data-view="mercado">📈 Mercado</button>
+      <button class="nav-item" data-view="aprendizaje">🧠 Aprendizaje</button>
+      <button class="nav-item" data-view="historial">📋 Historial</button>
+      <button class="nav-item" data-view="configuracion">⚙ Configuración</button>
+    </nav>
+
+    <div class="main-content">
+      <header>
+        <div class="status">
+          <span id="session-banner"></span>
+          <span id="scan-status">cargando...</span>
+          <button id="rescan-btn">Actualizar ahora</button>
+        </div>
+      </header>
+
+      <main>
+        <section class="view active" id="view-inicio">
+          <section id="hero-inicio"></section>
+          <h2 class="section-title">Las siguientes mejores oportunidades</h2>
+          <div id="ranking-list-inicio" class="ranking-list">
+            <div class="loading">Cargando...</div>
+          </div>
+          <div class="market-strip" id="context-bar-inicio"></div>
+        </section>
+
+        <section class="view" id="view-oportunidad">
+          <section id="hero-oportunidad"></section>
+        </section>
+
+        <section class="view" id="view-ranking">
+          <h2 class="section-title">Ranking completo</h2>
+          <div id="ranking-list-ranking" class="ranking-list">
+            <div class="loading">Cargando...</div>
+          </div>
+        </section>
+
+        <section class="view" id="view-mercado">
+          <h2 class="section-title">Estado del mercado</h2>
+          <div class="market-strip market-strip-large" id="context-bar-mercado"></div>
+        </section>
+
+        <section class="view" id="view-aprendizaje">
+          <h2 class="section-title">Aprendizaje</h2>
+          <div class="empty-note">Esta sección mostrará cómo Atlas ajusta su calibración con el tiempo (Learning Engine). Todavía no está conectada a Atlas Live — próximamente.</div>
+        </section>
+
+        <section class="view" id="view-historial">
+          <h2 class="section-title">Historial</h2>
+          <div class="empty-note">Esta sección mostrará el historial de decisiones registradas por Atlas. Todavía no está conectada a Atlas Live — próximamente.</div>
+        </section>
+
+        <section class="view" id="view-configuracion">
+          <h2 class="section-title">Configuración</h2>
+          <div class="empty-note">Próximamente.</div>
+        </section>
+      </main>
     </div>
-  </header>
-
-  <main>
-    <section id="hero"></section>
-
-    <h2 class="section-title">Las siguientes mejores oportunidades</h2>
-    <div id="ranking-list">
-      <div class="loading">Cargando...</div>
-    </div>
-
-    <div class="market-strip" id="context-bar"></div>
-  </main>
+  </div>
 
   <div id="detail-overlay">
     <div id="detail-panel">

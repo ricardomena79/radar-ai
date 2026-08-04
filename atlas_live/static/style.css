@@ -14,6 +14,10 @@
 
 * { box-sizing: border-box; }
 
+html, body {
+  height: 100%;
+}
+
 body {
   margin: 0;
   background: var(--bg);
@@ -22,19 +26,65 @@ body {
   font-size: 14px;
 }
 
+/* --- Navegación permanente ---
+   Siempre visible, en cualquier vista: un clic en "Inicio" siempre
+   vuelve al dashboard principal, sin depender de cerrar nada primero. */
+.app-shell {
+  display: flex;
+  min-height: 100vh;
+}
+
+.sidebar {
+  width: 220px;
+  flex-shrink: 0;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  padding: 16px 0;
+}
+
+.sidebar-title {
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  padding: 0 20px 16px;
+}
+
+.nav-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  color: var(--text-dim);
+  border: none;
+  border-left: 3px solid transparent;
+  padding: 12px 20px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  border-radius: 0;
+}
+.nav-item:hover { background: var(--panel-2); opacity: 1; color: var(--text); }
+.nav-item.active {
+  background: var(--panel-2);
+  color: var(--text);
+  border-left-color: var(--accent);
+  font-weight: 700;
+}
+
+.main-content {
+  flex: 1;
+  min-width: 0;
+}
+
 header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   padding: 14px 20px;
   border-bottom: 1px solid var(--border);
   background: var(--panel);
-}
-
-header h1 {
-  font-size: 18px;
-  margin: 0;
-  letter-spacing: 1px;
 }
 
 header .status {
@@ -61,6 +111,9 @@ main {
   max-width: 900px;
   margin: 0 auto;
 }
+
+.view { display: none; }
+.view.active { display: block; }
 
 .section-title {
   font-size: 13px;
@@ -89,19 +142,55 @@ main {
 .decision-SOLO_OBSERVARIA { background: rgba(217,126,38,0.18); color: var(--orange); }
 .decision-NO_COMPRARIA { background: rgba(217,83,79,0.18); color: var(--red); }
 
-/* --- Badges de riesgo --- */
-.risk-badge {
+/* --- Tipo de oportunidad ---
+   Color neutro a propósito: la señal de "ir / no ir" es el badge de
+   decisión de arriba. Esto solo describe el carácter del movimiento
+   (conservadora/moderada/agresiva), nunca debe leerse como una alarma. */
+.opportunity-tag {
   display: inline-block;
   padding: 3px 10px;
   border-radius: 3px;
   font-weight: 600;
+  font-size: 12px;
+  letter-spacing: 0.3px;
+  background: rgba(74,158,255,0.14);
+  color: var(--accent);
+}
+
+/* --- Sesión de mercado --- */
+.session-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  border-radius: 3px;
+  font-weight: 700;
   font-size: 11px;
   letter-spacing: 0.5px;
-  text-transform: uppercase;
 }
-.risk-BAJO { background: rgba(38,166,91,0.15); color: var(--green); }
-.risk-MEDIO { background: rgba(217,164,65,0.15); color: var(--amber); }
-.risk-ALTO { background: rgba(217,83,79,0.15); color: var(--red); }
+.session-PREMARKET { background: rgba(217,164,65,0.18); color: var(--amber); }
+.session-REGULAR { background: rgba(38,166,91,0.18); color: var(--green); }
+.session-AFTERHOURS { background: rgba(74,158,255,0.18); color: var(--accent); }
+.session-CLOSED { background: rgba(139,146,168,0.18); color: var(--text-dim); }
+
+/* --- Aviso de recomendación preliminar (solo premarket) --- */
+.preliminary-tag {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 3px;
+  font-weight: 700;
+  font-size: 11px;
+  letter-spacing: 0.5px;
+  background: rgba(139,146,168,0.18);
+  color: var(--text-dim);
+}
+.hero-preliminary-note {
+  margin-top: 14px;
+  font-size: 12px;
+  color: var(--text-dim);
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
 
 /* --- Hero: oportunidad del momento --- */
 #hero { margin-top: 8px; }
@@ -207,6 +296,11 @@ main {
   text-align: center;
 }
 
+#detail-retry-btn {
+  display: block;
+  margin: 0 auto;
+}
+
 /* --- Franja de mercado, discreta, al pie --- */
 .market-strip {
   margin-top: 30px;
@@ -219,6 +313,15 @@ main {
   color: var(--text-dim);
 }
 .market-strip .m-item strong { color: var(--text); }
+
+.market-strip-large {
+  margin-top: 4px;
+  border-top: none;
+  flex-direction: column;
+  gap: 14px;
+  font-size: 15px;
+}
+.market-strip-large .m-item { padding: 10px 0; border-bottom: 1px solid var(--border); }
 
 /* --- Panel de detalle --- */
 #detail-overlay {

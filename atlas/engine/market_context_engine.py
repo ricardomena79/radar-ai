@@ -16,7 +16,6 @@ from datetime import datetime
 from typing import Optional
 
 from atlas.data.collectors.data_collector import DataCollector
-from atlas.data.providers.yahoo_finance import YahooFinanceProvider
 from atlas.engine.money_flow_engine import MoneyFlowEngine
 
 SPY = "SPY"
@@ -82,7 +81,7 @@ class MarketContextEngine:
     """Calcula el contexto general de mercado; no persiste nada por sí mismo."""
 
     def __init__(self, collector: Optional[DataCollector] = None) -> None:
-        self._collector = collector or DataCollector(YahooFinanceProvider())
+        self._collector = collector or DataCollector()
 
     def _safe_quote(self, symbol: str):
         try:

@@ -28,7 +28,6 @@ from typing import Dict, List, NamedTuple, Optional, Tuple
 
 from atlas.data.collectors.data_collector import DataCollector
 from atlas.data.providers.base import ProviderError, QuoteNotFoundError
-from atlas.data.providers.yahoo_finance import YahooFinanceProvider
 from atlas.engine.atlas_score import calculate_atlas_score
 from atlas.engine.momentum_engine import calculate_momentum_score
 from atlas.engine.money_flow_engine import MoneyFlowEngine
@@ -125,7 +124,7 @@ class DecisionEngine:
         if mode not in WEIGHT_PROFILES:
             raise ValueError(f"mode desconocido: '{mode}'. Disponibles: {list(WEIGHT_PROFILES)}")
 
-        self._collector = collector or DataCollector(YahooFinanceProvider())
+        self._collector = collector or DataCollector()
         # El Money Flow Engine se escanea una vez, externamente, sobre el
         # universo que corresponda, y se inyecta ya calculado: recalcularlo
         # por cada símbolo sería carísimo y no es su responsabilidad.

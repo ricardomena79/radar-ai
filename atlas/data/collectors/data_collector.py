@@ -5,6 +5,7 @@ from typing import Dict, List, Optional
 import pandas as pd
 
 from atlas.data.models.quote import Quote
+from atlas.data.providers import get_default_provider
 from atlas.data.providers.base import DataProvider
 from atlas.storage import MemoryCache
 
@@ -13,18 +14,23 @@ class DataCollector:
     """Envuelve un DataProvider; el resto del sistema depende solo de esta clase.
 
     Cachea internamente en memoria (MemoryCache) para evitar volver a consultar
-    a Yahoo Finance el mismo símbolo dentro de la ventana de `cache_ttl`. La
+    al proveedor el mismo símbolo dentro de la ventana de `cache_ttl`. La
     API pública (get_quote, get_quotes, get_history) no cambia: el caché es
     un detalle de implementación transparente para quien la use.
+
+    Si no se pasa `provider`, se usa el proveedor por defecto configurado en
+    atlas.data.providers (registro + ATLAS_DATA_PROVIDER, hoy Yahoo
+    Finance). Ningún módulo que construya `DataCollector()` sin argumentos
+    necesita cambiar cuando se reemplace el proveedor.
     """
 
     def __init__(
         self,
-        provider: DataProvider,
+        provider: Optional[DataProvider] = None,
         cache: Optional[MemoryCache] = None,
         cache_ttl: float = 300.0,
     ) -> None:
-        self._provider = provider
+        self._provider = provider or get_default_provider()
         self._cache = cache if cache is not None else MemoryCache()
         self._cache_ttl = cache_ttl
 

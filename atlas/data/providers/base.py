@@ -1,7 +1,9 @@
 """Interfaz común que debe implementar cualquier proveedor de datos de mercado."""
 
 from abc import ABC, abstractmethod
-from typing import List
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
+from typing import Callable, List, TypeVar
 
 import pandas as pd
 
@@ -18,6 +20,56 @@ class QuoteNotFoundError(ProviderError):
     def __init__(self, symbol: str) -> None:
         super().__init__(f"No se encontró cotización para el símbolo '{symbol}'")
         self.symbol = symbol
+
+
+class RateLimitError(ProviderError):
+    """El proveedor rechazó la consulta por límite de tasa (HTTP 429 o equivalente).
+
+    Tipo específico (no un ProviderError genérico) para que capas por
+    encima -- como MultiProvider -- puedan distinguir "este proveedor está
+    limitando la tasa ahora mismo" de otros tipos de falla, sin depender
+    de comparar el texto del mensaje de error.
+    """
+
+
+class IncompleteDataError(ProviderError):
+    """El proveedor respondió, pero sin los campos mínimos que Atlas necesita."""
+
+
+# --- Timeout de red compartido por cualquier proveedor ---
+# Bajo contención (ej. un escaneo de fondo compitiendo con una consulta
+# puntual), una API puede dejar una conexión colgada sin devolver error ni
+# éxito. Sin este límite esa espera es indefinida. Un solo lugar, para que
+# YahooFinanceProvider y cualquier proveedor nuevo (Alpaca, Finnhub,
+# Twelve Data, Alpha Vantage, ...) lo reutilicen igual, con su propio
+# timeout independiente si lo necesitan.
+DEFAULT_NETWORK_TIMEOUT_SECONDS = 15.0
+
+_T = TypeVar("_T")
+_NETWORK_EXECUTOR = ThreadPoolExecutor(max_workers=40, thread_name_prefix="dataprovider-network")
+
+
+def call_with_timeout(
+    func: Callable[[], _T],
+    symbol: str,
+    what: str,
+    timeout_seconds: float = DEFAULT_NETWORK_TIMEOUT_SECONDS,
+    provider_name: str = "el proveedor",
+) -> _T:
+    """Ejecuta `func` con un límite duro de `timeout_seconds`.
+
+    Si el proveedor no responde a tiempo, levanta ProviderError -- el
+    mismo tipo de error que ya maneja cada símbolo individualmente en los
+    escaneos, así que un timeout no detiene el resto del trabajo.
+    """
+    future = _NETWORK_EXECUTOR.submit(func)
+    try:
+        return future.result(timeout=timeout_seconds)
+    except FutureTimeoutError:
+        raise ProviderError(
+            f"Tiempo de espera agotado ({timeout_seconds:.0f}s) "
+            f"consultando {what} de '{symbol}' en {provider_name}"
+        )
 
 
 class DataProvider(ABC):

@@ -91,15 +91,29 @@ function decisionBadge(displayDecision) {
   return `<span class="decision-badge decision-${displayDecision.code}">${displayDecision.emoji} ${displayDecision.label}</span>`;
 }
 
-function riskBadge(riskLevel) {
-  if (!riskLevel) return "";
-  return `<span class="risk-badge risk-${riskLevel}">Riesgo ${riskLevel}</span>`;
+function opportunityTag(opportunityType) {
+  if (!opportunityType) return "";
+  return `<span class="opportunity-tag">${opportunityType}</span>`;
+}
+
+function sessionBadge(sessionDisplay) {
+  if (!sessionDisplay) return "";
+  return `<span class="session-badge session-${sessionDisplay.code}">${sessionDisplay.emoji} ${sessionDisplay.label}</span>`;
+}
+
+function preliminaryTag(isPreliminary) {
+  if (!isPreliminary) return "";
+  return `<span class="preliminary-tag">PRELIMINAR</span>`;
+}
+
+function renderSessionBanner(marketSession) {
+  document.getElementById("session-banner").innerHTML = sessionBadge(marketSession);
 }
 
 // --- Hero: oportunidad del momento ---
 
-function renderHero(topPick) {
-  const hero = document.getElementById("hero");
+function renderHero(topPick, targetId) {
+  const hero = document.getElementById(targetId);
 
   if (!topPick) {
     hero.innerHTML = `
@@ -123,13 +137,11 @@ function renderHero(topPick) {
     <div class="hero-card" data-symbol="${topPick.symbol}">
       <div class="hero-label">⭐ La decisión de Atlas</div>
       <div class="hero-field">
-        <div class="label">Empresa</div>
         <div class="hero-symbol">${topPick.symbol}</div>
         <div class="hero-name">${topPick.name || ""}</div>
       </div>
       <div class="hero-field">
-        <div class="label">Recomendación</div>
-        ${decisionBadge(topPick.display_decision)}
+        ${decisionBadge(topPick.display_decision)} ${preliminaryTag(topPick.is_preliminary)}
       </div>
       <div class="hero-row">
         <div class="hero-metric">
@@ -137,10 +149,11 @@ function renderHero(topPick) {
           <div class="value">${fmt(topPick.confidence, 0)}%</div>
         </div>
         <div class="hero-metric">
-          <div class="label">Nivel de riesgo</div>
-          <div class="value">${riskBadge(topPick.risk_level)}</div>
+          <div class="label">Tipo de oportunidad</div>
+          <div class="value">${opportunityTag(topPick.opportunity_type)}</div>
         </div>
       </div>
+      ${topPick.is_preliminary ? `<div class="hero-preliminary-note">El mercado regular todavía no ha abierto: esta recomendación es preliminar y se recalculará automáticamente cuando abra.</div>` : ""}
     </div>
   `;
   hero.querySelector(".hero-card").addEventListener("click", () => openDetail(topPick.symbol));
@@ -148,8 +161,8 @@ function renderHero(topPick) {
 
 // --- Lista de oportunidades ---
 
-function renderRanking(ranking) {
-  const list = document.getElementById("ranking-list");
+function renderRanking(ranking, targetId) {
+  const list = document.getElementById(targetId);
   if (!ranking || ranking.length === 0) {
     list.innerHTML = `<div class="empty-note">Sin resultados todavía. El primer análisis puede tardar unos minutos.</div>`;
     return;
@@ -162,7 +175,8 @@ function renderRanking(ranking) {
       </div>
       <div class="opp-right">
         ${decisionBadge(row.display_decision)}
-        ${riskBadge(row.risk_level)}
+        ${preliminaryTag(row.is_preliminary)}
+        ${opportunityTag(row.opportunity_type)}
         <div class="opp-confidence">
           <div class="value">${fmt(row.confidence, 0)}%</div>
           <div class="label">Confianza</div>
@@ -176,8 +190,8 @@ function renderRanking(ranking) {
   });
 }
 
-function renderContextStrip(context) {
-  const bar = document.getElementById("context-bar");
+function renderContextStrip(context, targetId) {
+  const bar = document.getElementById(targetId);
   if (!context) {
     bar.innerHTML = `<div class="m-item">Estado del mercado: esperando primer análisis…</div>`;
     return;
@@ -195,15 +209,21 @@ function renderContextStrip(context) {
   bar.innerHTML = html;
 }
 
+let lastGeneratedAt = null;
+
 async function refreshRanking() {
   try {
     const res = await fetch("/api/ranking");
     const data = await res.json();
 
     const topPick = (data.ranking || []).find(r => r.is_top_pick) || (data.ranking || [])[0] || null;
-    renderHero(topPick);
-    renderRanking(data.ranking);
-    renderContextStrip(data.context);
+    renderSessionBanner(data.market_session);
+    renderHero(topPick, "hero-inicio");
+    renderHero(topPick, "hero-oportunidad");
+    renderRanking(data.ranking, "ranking-list-inicio");
+    renderRanking(data.ranking, "ranking-list-ranking");
+    renderContextStrip(data.context, "context-bar-inicio");
+    renderContextStrip(data.context, "context-bar-mercado");
 
     const statusEl = document.getElementById("scan-status");
     if (data.scanning) {
@@ -213,6 +233,18 @@ async function refreshRanking() {
       statusEl.textContent = `Actualizado ${when} · ${data.symbols_ok}/${data.symbols_scanned} analizados`;
     } else {
       statusEl.textContent = "Esperando primer análisis...";
+    }
+
+    // Si hay un análisis nuevo y el detalle de una acción sigue abierto,
+    // se refresca en silencio para que nunca quede mostrando datos viejos
+    // mientras el resto del dashboard ya avanzó.
+    if (data.generated_at && data.generated_at !== lastGeneratedAt) {
+      const isFirstLoad = lastGeneratedAt === null;
+      lastGeneratedAt = data.generated_at;
+      const overlayOpen = document.getElementById("detail-overlay").classList.contains("open");
+      if (!isFirstLoad && currentDetailSymbol && overlayOpen) {
+        loadDetail(currentDetailSymbol, { silent: true });
+      }
     }
   } catch (err) {
     document.getElementById("scan-status").textContent = "Error al conectar con el servidor";
@@ -240,45 +272,47 @@ function tradingViewSymbol(symbol) {
   return symbol; // TradingView resuelve el símbolo/exchange automáticamente en la mayoría de los casos
 }
 
-async function openDetail(symbol) {
-  const overlay = document.getElementById("detail-overlay");
+const DETAIL_TIMEOUT_MS = 10000;
+const detailCache = {}; // symbol -> última respuesta válida de /api/symbol/<ticker>
+let currentDetailSymbol = null;
+
+function renderDetailBody(d) {
+  document.getElementById("detail-title").textContent = `${d.symbol} — ${d.name || ""}`;
   const body = document.getElementById("detail-body");
-  document.getElementById("detail-title").textContent = symbol;
-  body.innerHTML = `<div class="loading">Calculando ${symbol}...</div>`;
-  overlay.classList.add("open");
 
-  try {
-    const res = await fetch(`/api/symbol/${encodeURIComponent(symbol)}`);
-    const d = await res.json();
-    if (d.error) {
-      body.innerHTML = `<div class="empty-note">No se pudo calcular: ${d.error}</div>`;
-      return;
-    }
-
-    document.getElementById("detail-title").textContent = `${d.symbol} — ${d.name || ""}`;
-
-    body.innerHTML = `
+  body.innerHTML = `
       <div class="detail-summary">
         ${decisionBadge(d.display_decision)}
+        ${preliminaryTag(d.is_preliminary)}
+        ${sessionBadge(d.session_display)}
         <div class="metric">
           <div class="label">Confianza de Atlas</div>
           <div class="value">${fmt(d.decision.confidence, 0)}%</div>
         </div>
         <div class="metric">
-          <div class="label">Nivel de riesgo</div>
-          <div class="value">${riskBadge(d.risk_level)}</div>
+          <div class="label">Tipo de oportunidad</div>
+          <div class="value">${opportunityTag(d.opportunity_type)}</div>
         </div>
         <div class="metric">
           <div class="label">Precio</div>
           <div class="value">${fmt(d.price)} <span class="${pctClass(d.change_pct)}">${fmtPct(d.change_pct)}</span></div>
         </div>
       </div>
+      ${d.is_preliminary ? `<div class="hero-preliminary-note">Recomendación preliminar: el mercado regular todavía no ha abierto.</div>` : ""}
 
       <div id="tv-container"></div>
 
       <button class="why-toggle" id="why-toggle">¿Por qué Atlas recomienda esto?</button>
 
       <div id="why-body">
+        <div class="detail-section">
+          <h3>Volatilidad y riesgo</h3>
+          <div class="component-row">
+            <span class="name">Nivel de riesgo</span>
+            <span class="explanation">${d.risk_level} — volatilidad del precio y nerviosismo del mercado (VIX) en el momento del análisis.</span>
+          </div>
+        </div>
+
         <div class="detail-section">
           <h3>Lo que respalda esta recomendación</h3>
           ${conditionList(d.decision.met_conditions, "met")}
@@ -350,20 +384,93 @@ async function openDetail(symbol) {
       });
     };
     document.getElementById("tv-container").appendChild(tvScript);
-  } catch (err) {
-    body.innerHTML = `<div class="empty-note">Error al calcular el detalle.</div>`;
+}
+
+function renderDetailError(symbol, message) {
+  document.getElementById("detail-title").textContent = symbol;
+  document.getElementById("detail-body").innerHTML = `
+    <div class="empty-note">${message}</div>
+    <button id="detail-retry-btn">Reintentar</button>
+  `;
+  document.getElementById("detail-retry-btn").addEventListener("click", () => {
+    loadDetail(symbol, { silent: false });
+  });
+}
+
+async function loadDetail(symbol, { silent = false } = {}) {
+  if (!silent) {
+    if (detailCache[symbol]) {
+      renderDetailBody(detailCache[symbol]);
+    } else {
+      document.getElementById("detail-title").textContent = symbol;
+      document.getElementById("detail-body").innerHTML = `<div class="loading">Calculando ${symbol}...</div>`;
+    }
   }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), DETAIL_TIMEOUT_MS);
+
+  try {
+    const res = await fetch(`/api/symbol/${encodeURIComponent(symbol)}`, { signal: controller.signal });
+    clearTimeout(timeoutId);
+    const d = await res.json();
+
+    if (d.error) {
+      if (!silent && currentDetailSymbol === symbol) {
+        renderDetailError(symbol, `No se pudo calcular: ${d.error}`);
+      }
+      return;
+    }
+
+    detailCache[symbol] = d;
+    // Solo pinta si el modal sigue mostrando este mismo símbolo (evita
+    // pisar la vista si el usuario ya cerró o abrió otra acción mientras
+    // esta respuesta silenciosa todavía estaba en camino).
+    if (currentDetailSymbol === symbol) {
+      renderDetailBody(d);
+    }
+  } catch (err) {
+    clearTimeout(timeoutId);
+    if (!silent && currentDetailSymbol === symbol) {
+      const message = err.name === "AbortError"
+        ? "Atlas está tardando más de lo normal en responder."
+        : "Error al conectar con Atlas.";
+      renderDetailError(symbol, message);
+    }
+  }
+}
+
+function openDetail(symbol) {
+  currentDetailSymbol = symbol;
+  document.getElementById("detail-overlay").classList.add("open");
+  loadDetail(symbol, { silent: false });
 }
 
 document.getElementById("detail-close").addEventListener("click", () => {
   document.getElementById("detail-overlay").classList.remove("open");
+  currentDetailSymbol = null;
 });
 document.getElementById("detail-overlay").addEventListener("click", (e) => {
-  if (e.target.id === "detail-overlay") e.target.classList.remove("open");
+  if (e.target.id === "detail-overlay") {
+    e.target.classList.remove("open");
+    currentDetailSymbol = null;
+  }
 });
 document.getElementById("rescan-btn").addEventListener("click", async () => {
   await fetch("/api/rescan", { method: "POST" });
   document.getElementById("scan-status").textContent = "Analizando el mercado...";
+});
+
+// --- Navegación permanente: un clic en cualquier ítem cambia de vista,
+// nunca cierra ni oculta el resto de la aplicación. "Inicio" siempre
+// está a un clic de distancia, sin importar dónde esté el usuario. ---
+document.querySelectorAll(".nav-item").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".nav-item").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    document.querySelectorAll(".view").forEach(v => v.classList.remove("active"));
+    document.getElementById(`view-${btn.dataset.view}`).classList.add("active");
+  });
 });
 
 refreshRanking();

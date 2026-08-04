@@ -10,3 +10,5 @@ atlas/logs/*
 
 atlas/cache/*
 !atlas/cache/.gitkeep
+
+atlas_live/last_scan_cache.json

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from atlas.knowledge.event_store import EventStore, MarketEvent
+from atlas.knowledge.learning_report_store import LearningReportStore
 from atlas.knowledge.pattern_store import PatternStore, SymbolDNA
 from atlas.knowledge.prediction_store import PredictionRecord, PredictionStore
 
@@ -33,6 +34,7 @@ class KnowledgeEngine:
         self.events = EventStore(db_path)
         self.predictions = PredictionStore(db_path)
         self.patterns = PatternStore(self.events)
+        self.learning_reports = LearningReportStore(db_path)
 
     def record_event(self, event: MarketEvent) -> int:
         """Registra un evento de mercado y devuelve su id."""
@@ -70,3 +72,4 @@ class KnowledgeEngine:
         """Cierra las conexiones a la base de datos."""
         self.events.close()
         self.predictions.close()
+        self.learning_reports.close()
