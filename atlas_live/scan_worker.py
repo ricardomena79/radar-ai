@@ -368,6 +368,7 @@ def get_symbol_detail(symbol: str) -> Dict[str, Any]:
 
 
 _background_thread: Optional[threading.Thread] = None
+_background_thread_lock = threading.Lock()
 
 
 def _refresh_loop() -> None:
@@ -377,9 +378,20 @@ def _refresh_loop() -> None:
 
 
 def start_background_refresh() -> None:
-    """Arranca el hilo de refresco periódico (una sola vez por proceso)."""
+    """Arranca el hilo de refresco periódico (una sola vez por proceso).
+
+    Protegido con lock porque `atlas_live.server` lo llama a nivel de
+    módulo: el import de un módulo ya es atómico dentro de un mismo
+    proceso, pero el lock evita una doble arrancada si en el futuro se
+    invoca también desde otro punto (p. ej. un endpoint). Cada proceso
+    worker de gunicorn ejecuta esto una sola vez de todas formas: por
+    diseño se despliega con `--workers 1`, porque `STATE` es un caché en
+    memoria de un solo proceso (con más de un worker cada uno escanearía
+    por separado y las respuestas serían inconsistentes entre requests).
+    """
     global _background_thread
-    if _background_thread is not None:
-        return
-    _background_thread = threading.Thread(target=_refresh_loop, daemon=True)
-    _background_thread.start()
+    with _background_thread_lock:
+        if _background_thread is not None:
+            return
+        _background_thread = threading.Thread(target=_refresh_loop, daemon=True)
+        _background_thread.start()

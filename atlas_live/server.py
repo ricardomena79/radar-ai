@@ -5,9 +5,13 @@ dashboard estático. No calcula nada por sí mismo: cada endpoint delega en
 `scan_worker`, que a su vez delega en Atlas Core. Cero lógica de negocio
 en esta capa.
 
-Uso: `python -m atlas_live.server` (arranca en http://localhost:5000).
+Uso local: `python -m atlas_live.server` (arranca en http://localhost:5000).
+En producción (Railway) el proceso lo levanta gunicorn apuntando a
+`atlas_live.server:app`, por lo que el refresco en segundo plano se arranca
+a nivel de módulo (más abajo), no dentro de `main()`.
 """
 
+import os
 from pathlib import Path
 
 from flask import Flask, jsonify, send_from_directory
@@ -17,6 +21,8 @@ from atlas_live import scan_worker
 STATIC_DIR = Path(__file__).parent / "static"
 
 app = Flask(__name__, static_folder=None)
+
+scan_worker.start_background_refresh()
 
 
 @app.route("/")
@@ -52,8 +58,8 @@ def api_rescan():
 
 
 def main() -> None:
-    scan_worker.start_background_refresh()
-    app.run(host="127.0.0.1", port=5000, debug=False, threaded=True)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
 
 
 if __name__ == "__main__":
