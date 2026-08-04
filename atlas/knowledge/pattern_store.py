@@ -291,6 +291,38 @@ class PatternRegistry:
         self._connection.commit()
         return self.get_pattern(pattern_key)
 
+    def record_observation(self, pattern_key: str, ticker: str, observed_at: str) -> Pattern:
+        """Enriquece un patrón ya registrado con una nueva observación real.
+
+        Incrementa `sample_size` y actualiza cuándo/en qué símbolo se vio por
+        última vez, además de una ventana acotada de los últimos tickers que
+        exhibieron este comportamiento (la base de la transferencia de
+        conocimiento entre símbolos: el patrón es el mismo sin importar el
+        ticker). No cambia `state` ni escribe en `pattern_transitions` -- eso
+        es exclusivo de `transition_state`, reservado para cuando Calibration
+        Manager aprueba un cambio real de estado. Este método es para
+        acumular evidencia en cada escaneo, no para decidir nada.
+        """
+        current = self.get_pattern(pattern_key)
+        if current is None:
+            raise KeyError(f"No existe un patrón registrado con pattern_key='{pattern_key}'")
+
+        evidence = dict(current.evidence)
+        evidence["sample_size"] = int(evidence.get("sample_size", 0)) + 1
+        evidence["last_seen_at"] = observed_at
+        evidence["last_seen_ticker"] = ticker
+        recent_tickers = list(evidence.get("recent_tickers", []))
+        recent_tickers.append(ticker)
+        evidence["recent_tickers"] = recent_tickers[-20:]  # ventana acotada, no crece sin límite
+
+        now = datetime.now(timezone.utc).isoformat()
+        self._connection.execute(
+            "UPDATE patterns SET evidence = ?, updated_at = ? WHERE pattern_key = ?",
+            (json.dumps(evidence), now, pattern_key),
+        )
+        self._connection.commit()
+        return self.get_pattern(pattern_key)
+
     def get_pattern(self, pattern_key: str) -> Optional[Pattern]:
         """Devuelve el patrón por su identidad, o None si nunca se registró."""
         row = self._connection.execute(
