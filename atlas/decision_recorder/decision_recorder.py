@@ -106,6 +106,7 @@ class DecisionRecorder:
         close_result_percent: Optional[float] = None,
         rank_in_scan: Optional[int] = None,
         scan_size: Optional[int] = None,
+        pattern_key: Optional[str] = None,
         data_status: str = STATUS_OK,
         date: Optional[str] = None,
         time: Optional[str] = None,
@@ -148,6 +149,7 @@ class DecisionRecorder:
             engine_versions=current_versions_json(),
             rank_in_scan=rank_in_scan,
             scan_size=scan_size,
+            pattern_key=pattern_key,
             **_context_kwargs(context),
         )
         return self._knowledge.record_event(event)

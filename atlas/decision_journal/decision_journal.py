@@ -19,7 +19,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
-DEFAULT_DB_PATH = Path(__file__).resolve().parents[1] / "cache" / "decision_journal.db"
+from atlas.config.config import data_dir
+
+DEFAULT_DB_PATH = data_dir() / "decision_journal.db"
 
 
 def _connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
