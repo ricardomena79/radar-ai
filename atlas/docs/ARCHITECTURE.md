@@ -133,3 +133,28 @@ tener un segundo proveedor de datos real conectado vía `MultiProvider`,
 que dé un entorno de prueba más estable. La lógica en sí no está en duda
 -- las pruebas deterministas ya la cubren -- lo pendiente es únicamente la
 confirmación en vivo del caso "puro".
+
+### Ciclo de aprendizaje automático: disparo 100% autónomo no observado end-to-end en producción
+
+`atlas_live/scan_worker.py:_maybe_run_learning_cycle()` se validó por
+partes, cada una con datos reales:
+- Guardián de sesión (solo corre en AFTERHOURS/CLOSED) -- confirmado.
+- Guardián de idempotencia (`LearningReportStore.has_report_for_date`,
+  no duplica si ya hay reporte hoy) -- confirmado.
+- `run_learning_cycle()` genera y persiste un reporte real, correctamente
+  marcado como `data_sufficient=False` cuando corresponde -- confirmado
+  (ejecución manual contra la Knowledge Base real, 2026-08-04).
+- El panel "Aprendizaje" del dashboard lee y muestra ese reporte real --
+  confirmado en navegador.
+
+Lo que no se observó (2026-08-04): las tres piezas disparándose en
+cadena, sin intervención manual, en una corrida de producción -- porque
+ya existía un reporte para hoy (el generado en la prueba manual) y el
+mercado seguía en sesión REGULAR al momento de la verificación, así que
+el guardián de sesión no había tenido oportunidad de activarse todavía.
+Se revisó el código que conecta las tres piezas y es correcto por
+inspección directa. Se decidió no bloquear el avance por esto: la
+evidencia reunida por partes se considera suficiente para cerrar esta
+etapa; la primera ejecución automática real en producción (el día que el
+mercado cierre sin que ya exista un reporte para esa fecha) sirve como
+confirmación adicional, no como requisito pendiente.

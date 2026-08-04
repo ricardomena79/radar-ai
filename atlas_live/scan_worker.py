@@ -36,8 +36,10 @@ from atlas.engine.market_context_engine import MarketContextEngine
 from atlas.engine.momentum_engine import calculate_momentum_score
 from atlas.engine.money_flow_engine import MoneyFlowEngine
 from atlas.knowledge import NORMAL, KnowledgeEngine
+from atlas.knowledge.learning_report_store import LearningReportStore
 from atlas.scanners.global_radar import GlobalRadar
 from atlas_live.coverage_tracker import CoverageTracker
+from atlas_live.learning_cycle import run_learning_cycle
 
 # --- Configuración, pensada para poder ajustarse sin tocar el resto del archivo ---
 # Etapa 1 (Radar Global): recorre el Universo Racional completo (~2.577
@@ -409,6 +411,33 @@ def _score_symbol(asset: Asset, collector: DataCollector, money_flow_engine: Mon
         return None
 
 
+def _maybe_run_learning_cycle(session_code: str) -> None:
+    """Dispara el ciclo de aprendizaje una vez por día, después del cierre de la sesión regular.
+
+    No corre durante PREMARKET ni REGULAR. Recién cuando la sesión pasa a
+    AFTERHOURS o CLOSED, y solo si todavía no hay un reporte para hoy --
+    así no se repite en cada ciclo de refresco de 5 minutos. El ciclo de
+    aprendizaje nunca debe tumbar el escaneo de mercado: cualquier falla
+    queda contenida acá.
+    """
+    if session_code not in ("AFTERHOURS", "CLOSED"):
+        return
+
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    store = LearningReportStore()
+    try:
+        already_ran = store.has_report_for_date(today)
+    finally:
+        store.close()
+    if already_ran:
+        return
+
+    try:
+        run_learning_cycle()
+    except Exception:
+        pass
+
+
 def run_scan_once() -> None:
     """Ejecuta un ciclo completo de escaneo (Radar Global + Atlas Core) y actualiza el estado cacheado."""
     STATE.update(scanning=True, last_error=None, timeout_errors=0)
@@ -518,6 +547,8 @@ def run_scan_once() -> None:
             scanning=False,
         )
         _save_cache(STATE.snapshot())
+
+        _maybe_run_learning_cycle(market_session["code"])
     except Exception as exc:
         STATE.update(scanning=False, last_error=f"{exc}\n{traceback.format_exc()}")
 
@@ -617,6 +648,48 @@ def get_symbol_detail(symbol: str) -> Dict[str, Any]:
             "Research Lab todavía no tiene lógica de descubrimiento de antipatrones "
             "implementada (interfaz declarada, sin datos suficientes acumulados todavía)."
         ),
+    }
+
+
+def _serialize_learning_report(record) -> Optional[Dict[str, Any]]:
+    if record is None:
+        return None
+    return {
+        "id": record.id,
+        "date": record.date,
+        "generated_at": record.generated_at,
+        "session_evaluated": record.session_evaluated,
+        "data_sufficient": record.data_sufficient,
+        "events_analyzed_count": record.events_analyzed_count,
+        "patterns_analyzed_count": record.patterns_analyzed_count,
+        "patterns_confirmed_count": record.patterns_confirmed_count,
+        "calibration_proposals_count": record.calibration_proposals_count,
+        "calibration_proposals": record.calibration_proposals,
+        "executive_summary": record.executive_summary,
+        "overall_accuracy": record.overall_accuracy,
+        "accuracy_by_decision": record.accuracy_by_decision,
+    }
+
+
+def get_learning_summary(history_limit: int = 30) -> Dict[str, Any]:
+    """Estado real del ciclo de aprendizaje, para el panel "Aprendizaje" del dashboard.
+
+    Lee exclusivamente de LearningReportStore (Knowledge Base) -- nada de
+    esto se calcula en memoria ni en el momento; es historial ya
+    persistido por atlas_live.learning_cycle.run_learning_cycle().
+    """
+    store = LearningReportStore()
+    try:
+        latest = store.get_latest()
+        history = store.get_reports(limit=history_limit)
+        total_reports = store.count()
+    finally:
+        store.close()
+
+    return {
+        "latest": _serialize_learning_report(latest),
+        "history": [_serialize_learning_report(r) for r in history],
+        "total_reports": total_reports,
     }
 
 

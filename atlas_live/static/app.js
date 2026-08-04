@@ -461,6 +461,108 @@ document.getElementById("rescan-btn").addEventListener("click", async () => {
   document.getElementById("scan-status").textContent = "Analizando el mercado...";
 });
 
+// --- Panel de Aprendizaje ---
+// Se lee de LearningReportStore (historial real, no un cálculo en memoria).
+// Se carga bajo demanda al entrar a la vista, no en cada refresco de 20s:
+// el ciclo de aprendizaje corre una vez por día, no tiene sentido pedirlo
+// más seguido que eso.
+
+function _learningAccuracyPct(accuracyReport) {
+  if (!accuracyReport || !accuracyReport.breakdown) return null;
+  const todas = accuracyReport.breakdown.todas;
+  if (!todas || todas.accuracy === null || todas.accuracy === undefined) return null;
+  return Math.round(todas.accuracy * 1000) / 10;
+}
+
+function renderLearningPanel(summary) {
+  const panel = document.getElementById("learning-panel");
+  if (!panel) return;
+
+  if (!summary || !summary.latest) {
+    panel.innerHTML = `<div class="empty-note">Todavía no se generó ningún reporte de aprendizaje. Atlas lo genera automáticamente una vez por día, después del cierre del mercado regular.</div>`;
+    return;
+  }
+
+  const latest = summary.latest;
+  const accuracyPct = _learningAccuracyPct(latest.overall_accuracy);
+  const accuracyTxt = accuracyPct !== null ? `${accuracyPct}%` : "sin datos suficientes todavía";
+
+  const sufficiencyBadge = latest.data_sufficient
+    ? `<span class="opportunity-tag">Datos suficientes</span>`
+    : `<span class="preliminary-tag">DATOS INSUFICIENTES (no es un error)</span>`;
+
+  const history = summary.history || [];
+  const historyRows = history.map(r => `
+    <div class="component-row">
+      <span class="name">${r.date}</span>
+      <span class="explanation">
+        ${r.data_sufficient ? "✓" : "⚠"} ${r.events_analyzed_count} eventos ·
+        ${r.patterns_analyzed_count} patrones (${r.patterns_confirmed_count} confirmados) ·
+        ${r.calibration_proposals_count} propuesta(s)
+      </span>
+    </div>
+  `).join("");
+
+  const proposals = latest.calibration_proposals || [];
+  const proposalsHtml = proposals.length === 0
+    ? `<div class="empty-note">Ninguna propuesta de calibración en el último reporte.</div>`
+    : proposals.map(p => `
+        <div class="component-row">
+          <span class="name">${p.title || p.recommendation_key}</span>
+          <span class="explanation">${p.description || ""} — estado al generarse: ${p.status_at_generation || "PENDIENTE"}</span>
+        </div>
+      `).join("");
+
+  panel.innerHTML = `
+    <div class="detail-summary">
+      ${sufficiencyBadge}
+      <div class="metric">
+        <div class="label">Último reporte</div>
+        <div class="value">${latest.date}</div>
+      </div>
+      <div class="metric">
+        <div class="label">Precisión general</div>
+        <div class="value">${accuracyTxt}</div>
+      </div>
+      <div class="metric">
+        <div class="label">Reportes históricos</div>
+        <div class="value">${summary.total_reports}</div>
+      </div>
+    </div>
+
+    <div class="detail-section">
+      <h3>Resumen ejecutivo del día</h3>
+      <div class="empty-note" style="text-align:left">${latest.executive_summary}</div>
+    </div>
+
+    <div class="detail-section">
+      <h3>Propuestas de calibración (revisión humana en Calibration Manager)</h3>
+      ${proposalsHtml}
+    </div>
+
+    <div class="detail-section">
+      <h3>Historial (últimos ${history.length})</h3>
+      ${historyRows || `<div class="empty-note">Sin historial todavía.</div>`}
+    </div>
+  `;
+}
+
+async function refreshLearningPanel() {
+  const panel = document.getElementById("learning-panel");
+  if (!panel) return;
+  try {
+    const res = await fetch("/api/learning");
+    const data = await res.json();
+    if (data.error) {
+      panel.innerHTML = `<div class="empty-note">No se pudo cargar: ${data.error}</div>`;
+      return;
+    }
+    renderLearningPanel(data);
+  } catch (err) {
+    panel.innerHTML = `<div class="empty-note">Error al conectar con Atlas.</div>`;
+  }
+}
+
 // --- Navegación permanente: un clic en cualquier ítem cambia de vista,
 // nunca cierra ni oculta el resto de la aplicación. "Inicio" siempre
 // está a un clic de distancia, sin importar dónde esté el usuario. ---
@@ -470,6 +572,9 @@ document.querySelectorAll(".nav-item").forEach(btn => {
     btn.classList.add("active");
     document.querySelectorAll(".view").forEach(v => v.classList.remove("active"));
     document.getElementById(`view-${btn.dataset.view}`).classList.add("active");
+    if (btn.dataset.view === "aprendizaje") {
+      refreshLearningPanel();
+    }
   });
 });
 

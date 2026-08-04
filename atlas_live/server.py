@@ -43,6 +43,14 @@ def api_symbol(symbol):
         return jsonify({"error": str(exc)}), 500
 
 
+@app.route("/api/learning")
+def api_learning():
+    try:
+        return jsonify(scan_worker.get_learning_summary())
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
 @app.route("/api/rescan", methods=["POST"])
 def api_rescan():
     """Fuerza un escaneo inmediato (además del refresco automático periódico)."""
