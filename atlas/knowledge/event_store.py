@@ -456,6 +456,39 @@ class EventStore:
         ).fetchall()
         return {row["event_type"]: row["n"] for row in rows}
 
+    def distinct_dates_count(self) -> int:
+        """Cantidad de fechas de calendario distintas con al menos un evento
+        registrado -- días reales de aprendizaje en vivo, no una estimación."""
+        row = self._connection.execute("SELECT COUNT(DISTINCT date) AS n FROM events").fetchone()
+        return int(row["n"])
+
+    def count_evaluated(self, event_type: Optional[str] = None) -> int:
+        """Eventos que ya tienen un resultado real conocido (close_result_percent
+        no nulo), opcionalmente filtrados por tipo. "Recomendaciones evaluadas"."""
+        if event_type is not None:
+            row = self._connection.execute(
+                "SELECT COUNT(*) AS n FROM events WHERE close_result_percent IS NOT NULL AND event_type = ?",
+                (event_type,),
+            ).fetchone()
+        else:
+            row = self._connection.execute(
+                "SELECT COUNT(*) AS n FROM events WHERE close_result_percent IS NOT NULL"
+            ).fetchone()
+        return int(row["n"])
+
+    def count_wins(self, event_type: Optional[str] = None) -> int:
+        """Eventos evaluados cuyo resultado fue positivo (close_result_percent > 0)."""
+        if event_type is not None:
+            row = self._connection.execute(
+                "SELECT COUNT(*) AS n FROM events WHERE close_result_percent > 0 AND event_type = ?",
+                (event_type,),
+            ).fetchone()
+        else:
+            row = self._connection.execute(
+                "SELECT COUNT(*) AS n FROM events WHERE close_result_percent > 0"
+            ).fetchone()
+        return int(row["n"])
+
     def count_by_sector(self, event_type: Optional[str] = None) -> dict:
         """Conteo de eventos por sector, opcionalmente filtrado por tipo (ej. EXPLOSION)."""
         if event_type is not None:

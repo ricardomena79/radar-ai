@@ -140,6 +140,74 @@ button:hover { opacity: 0.85; }
   background: var(--bg);
 }
 
+/* --- Panel Atlas Learning: siempre visible, arriba del ranking --- */
+#learning-panel {
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.learning-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+.learning-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 700;
+  color: var(--text);
+}
+.learning-status {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  padding: 3px 8px;
+  border-radius: 3px;
+}
+.learning-entrenando { background: rgba(217,164,65,0.18); color: var(--amber); }
+.learning-aprendiendo { background: rgba(74,158,255,0.18); color: var(--accent); }
+.learning-operativo { background: rgba(38,166,91,0.18); color: var(--green); }
+
+.learning-bar-row { margin-bottom: 12px; }
+.learning-bar-label {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+}
+.learning-bar-label strong { color: var(--text); }
+.learning-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--panel-2);
+  overflow: hidden;
+}
+.learning-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 3px;
+}
+
+.learning-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 10px;
+}
+.learning-metric .label {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  color: var(--text-dim);
+}
+.learning-metric .value {
+  font-size: 13px;
+  font-weight: 700;
+  margin-top: 1px;
+}
+
 #ranking-list {
   display: flex;
   flex-direction: column;

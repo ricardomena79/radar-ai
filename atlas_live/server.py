@@ -16,7 +16,7 @@ from pathlib import Path
 
 from flask import Flask, jsonify, send_from_directory
 
-from atlas_live import scan_worker
+from atlas_live import learning_stats, scan_worker
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -45,6 +45,16 @@ def api_symbol(symbol):
     try:
         detail = scan_worker.get_symbol_detail(symbol.upper())
         return jsonify(detail)
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/api/learning")
+def api_learning():
+    try:
+        snapshot = scan_worker.STATE.snapshot()
+        stats = learning_stats.get_learning_stats(last_scan_generated_at=snapshot.get("generated_at"))
+        return jsonify(stats)
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 
