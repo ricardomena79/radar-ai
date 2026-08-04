@@ -30,7 +30,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-DEFAULT_DB_PATH = Path(__file__).resolve().parents[1] / "cache" / "calibration_manager.db"
+from atlas.config.config import data_dir
+
+DEFAULT_DB_PATH = data_dir() / "calibration_manager.db"
 
 # Categorías de recomendación.
 ENGINE_CALIBRATION = "engine_calibration"  # ej. ajustar un peso/umbral de un motor

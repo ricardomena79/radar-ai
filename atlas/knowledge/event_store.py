@@ -17,7 +17,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
-DEFAULT_DB_PATH = Path(__file__).resolve().parents[1] / "cache" / "atlas_knowledge.db"
+from atlas.config.config import data_dir
+
+DEFAULT_DB_PATH = data_dir() / "atlas_knowledge.db"
 
 EXPLOSION = "EXPLOSION"
 COLLAPSE = "COLLAPSE"
