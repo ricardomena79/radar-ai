@@ -382,6 +382,84 @@ async function refreshRanking() {
   }
 }
 
+// --- Atlas Learning: panel siempre visible con el progreso de aprendizaje ---
+
+const LEARNING_POLL_MS = 30000;
+const LEARNING_STATUS_CLASS = {
+  "Entrenando": "learning-entrenando",
+  "Aprendiendo": "learning-aprendiendo",
+  "Operativo": "learning-operativo",
+};
+
+function renderLearningPanel(stats) {
+  const panel = document.getElementById("learning-panel");
+  if (!stats || stats.error) {
+    panel.innerHTML = `<div class="empty-note">No se pudo cargar el aprendizaje de Atlas.</div>`;
+    return;
+  }
+
+  const statusClass = LEARNING_STATUS_CLASS[stats.status] || "";
+  const lastUpdated = stats.last_updated ? new Date(stats.last_updated).toLocaleTimeString() : "—";
+  const accuracy = stats.historical_accuracy === null || stats.historical_accuracy === undefined
+    ? "Sin datos todavía"
+    : `${stats.historical_accuracy}%`;
+
+  panel.innerHTML = `
+    <div class="learning-header">
+      <span class="learning-title">Atlas Learning</span>
+      <span class="learning-status ${statusClass}">${stats.status}</span>
+    </div>
+    <div class="learning-bar-row">
+      <div class="learning-bar-label">Aprendizaje <strong>${stats.learning_percent}%</strong></div>
+      <div class="learning-bar"><div class="learning-bar-fill" style="width:${stats.learning_percent}%"></div></div>
+    </div>
+    <div class="learning-grid">
+      <div class="learning-metric">
+        <div class="label">Base histórica</div>
+        <div class="value">${stats.baseline_days} días ✓</div>
+      </div>
+      <div class="learning-metric">
+        <div class="label">Días en vivo</div>
+        <div class="value">${stats.live_learning_days}</div>
+      </div>
+      <div class="learning-metric">
+        <div class="label">Eventos registrados</div>
+        <div class="value">${stats.events_registered.toLocaleString("es")}</div>
+      </div>
+      <div class="learning-metric">
+        <div class="label">Patrones detectados</div>
+        <div class="value">${stats.patterns_detected}</div>
+      </div>
+      <div class="learning-metric">
+        <div class="label">Patrones confirmados</div>
+        <div class="value">${stats.patterns_confirmed}</div>
+      </div>
+      <div class="learning-metric">
+        <div class="label">Recomendaciones evaluadas</div>
+        <div class="value">${stats.recommendations_evaluated}</div>
+      </div>
+      <div class="learning-metric">
+        <div class="label">Precisión histórica</div>
+        <div class="value">${accuracy}</div>
+      </div>
+      <div class="learning-metric">
+        <div class="label">Última actualización</div>
+        <div class="value">${lastUpdated}</div>
+      </div>
+    </div>
+  `;
+}
+
+async function refreshLearning() {
+  try {
+    const res = await fetch("/api/learning");
+    const data = await res.json();
+    renderLearningPanel(data);
+  } catch (err) {
+    renderLearningPanel(null);
+  }
+}
+
 document.getElementById("rescan-btn").addEventListener("click", async () => {
   await fetch("/api/rescan", { method: "POST" });
   document.getElementById("scan-status").textContent = "Analizando el mercado...";
@@ -389,3 +467,6 @@ document.getElementById("rescan-btn").addEventListener("click", async () => {
 
 refreshRanking();
 setInterval(refreshRanking, RANKING_POLL_MS);
+
+refreshLearning();
+setInterval(refreshLearning, LEARNING_POLL_MS);
