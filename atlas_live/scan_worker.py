@@ -3,8 +3,9 @@
 Recorre un watchlist tomado del Universo Racional, calcula el ranking
 completo usando exclusivamente Atlas Core (Data Collector, Atlas Score,
 Momentum Engine, Money Flow Engine, Market Context Engine, Decision
-Engine), registra cada decisión real en la Knowledge Base vía Decision
-Recorder, y cachea el resultado en memoria para que `server.py` lo sirva.
+Engine), registra cada decisión, evento de mercado y patrón de
+comportamiento real en la Knowledge Base vía Decision Recorder / Pattern
+Registry, y cachea el resultado en memoria para que `server.py` lo sirva.
 
 Esta es la primera vez que Decision Recorder se usa en un flujo real (no
 de prueba): las bases que escribe son las reales por defecto
@@ -20,20 +21,22 @@ import threading
 import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from atlas.data.collectors.data_collector import DataCollector
+from atlas.data.models.quote import Quote
 from atlas.data.providers.yahoo_finance import YahooFinanceProvider
 from atlas.data.universe import Asset, get_equities, get_etfs
 from atlas.decision_journal import DecisionJournal
 from atlas.decision_recorder import DecisionRecorder
-from atlas.engine.atlas_score import calculate_atlas_score
-from atlas.engine.decision_engine import COMPRAR, DESCARTAR, VIGILAR, DecisionEngine
+from atlas.engine.atlas_score import AtlasScore, calculate_atlas_score
+from atlas.engine.decision_engine import COMPRAR, DESCARTAR, VIGILAR, DecisionEngine, DecisionResult
 from atlas.engine.market_context_engine import MarketContextEngine
-from atlas.engine.momentum_engine import calculate_momentum_score
+from atlas.engine.momentum_engine import MomentumResult, calculate_momentum_score
 from atlas.engine.money_flow_engine import MoneyFlowEngine
-from atlas.knowledge import NORMAL, KnowledgeEngine
+from atlas.knowledge import EXPLOSION, NORMAL, KnowledgeEngine, PatternRegistry
 
 # --- Configuración, pensada para poder ajustarse sin tocar el resto del archivo ---
 WATCHLIST_EQUITIES = 150
@@ -148,8 +151,27 @@ class _State:
 STATE = _State()
 
 
+@dataclass
+class _ScoredSymbol:
+    """Resultado de puntuar un símbolo: la fila lista para servir por la API,
+    más los objetos crudos que el registro de conocimiento necesita después.
+
+    Separado del dict de la fila a propósito: la fila se serializa a JSON tal
+    cual (no puede llevar objetos de Atlas Core adentro), y el registro de
+    conocimiento pasa a un loop secuencial fuera del ThreadPoolExecutor (ver
+    `run_scan_once`), así que estos objetos viajan aparte hasta ese punto.
+    """
+
+    row: Dict[str, Any]
+    quote: Quote
+    atlas_score: AtlasScore
+    momentum_result: MomentumResult
+    money_flow_score: Optional[float]
+    decision_result: DecisionResult
+
+
 def _score_symbol(asset: Asset, collector: DataCollector, money_flow_engine: MoneyFlowEngine,
-                   recorder: DecisionRecorder, context) -> Optional[Dict[str, Any]]:
+                   context) -> Optional[_ScoredSymbol]:
     try:
         quote = collector.get_quote(asset.symbol)
         atlas_score = calculate_atlas_score(asset.symbol, collector)
@@ -164,15 +186,10 @@ def _score_symbol(asset: Asset, collector: DataCollector, money_flow_engine: Mon
         decision_engine = DecisionEngine(collector=collector, money_flow_engine=money_flow_engine)
         decision_result = decision_engine.decide(asset.symbol)
 
-        try:
-            recorder.record_decision(quote=quote, decision_result=decision_result, context=context)
-        except Exception:
-            pass  # el registro nunca debe tumbar el escaneo
-
         atr_component = atlas_score.component("atr")
         atr_score = atr_component.score if atr_component else None
 
-        return {
+        row = {
             "symbol": asset.symbol,
             "name": asset.name,
             "asset_type": asset.type,
@@ -191,8 +208,48 @@ def _score_symbol(asset: Asset, collector: DataCollector, money_flow_engine: Mon
             # una nueva explicación generada aparte.
             "reason": decision_result.met_conditions[0] if decision_result.met_conditions else None,
         }
+        return _ScoredSymbol(
+            row=row,
+            quote=quote,
+            atlas_score=atlas_score,
+            momentum_result=momentum_result,
+            money_flow_score=money_flow_score,
+            decision_result=decision_result,
+        )
     except Exception:
         return None
+
+
+def _event_type_for(decision: str) -> str:
+    """Clasifica el evento a registrar a partir, exclusivamente, de la propia
+    decisión de Decision Engine (que ya integra momentum, RVOL, gap, VWAP,
+    liquidez, Atlas Score, money flow y ruptura intradía en una sola
+    confianza). COMPRAR es la señal alcista de mayor convicción que Atlas ya
+    calcula, así que se registra como EXPLOSION. El resto se registra como
+    NORMAL: clasificar colapsos o falsas rupturas requeriría una señal de
+    agotamiento que todavía no existe (motor de agotamiento, pendiente) --
+    no hay que inventar un umbral nuevo para eso acá.
+    """
+    return EXPLOSION if decision == COMPRAR else NORMAL
+
+
+def _pattern_identity(decision_result: DecisionResult) -> Optional[Tuple[str, str, str]]:
+    """Deriva la identidad de un patrón de comportamiento a partir de las
+    condiciones que Decision Engine ya evaluó como cumplidas para este
+    símbolo en este escaneo. La combinación ordenada de condiciones (no el
+    ticker) es la identidad del patrón: la misma combinación en dos símbolos
+    distintos es, por diseño, el mismo patrón -- es lo que permite que una
+    microcap y una acción de Racional enriquezcan el mismo comportamiento.
+    Devuelve None si no hay ninguna condición destacada (nada distintivo que
+    registrar).
+    """
+    met = sorted(decision_result.met_conditions)
+    if not met:
+        return None
+    pattern_key = "|".join(met)
+    name = " + ".join(met)
+    category = decision_result.decision
+    return pattern_key, name, category
 
 
 def run_scan_once() -> None:
@@ -241,22 +298,58 @@ def run_scan_once() -> None:
         knowledge = KnowledgeEngine()
         journal = DecisionJournal()
         recorder = DecisionRecorder(knowledge_engine=knowledge, decision_journal=journal)
+        pattern_registry = PatternRegistry()
 
         results: List[Dict[str, Any]] = []
+        scored_symbols: List[_ScoredSymbol] = []
         errors = 0
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
             futures = [
-                executor.submit(_score_symbol, asset, collector, money_flow_engine, recorder, market_context)
+                executor.submit(_score_symbol, asset, collector, money_flow_engine, market_context)
                 for asset in assets
             ]
             for future in as_completed(futures):
-                row = future.result()
-                if row is None:
+                scored = future.result()
+                if scored is None:
                     errors += 1
                 else:
-                    results.append(row)
+                    scored_symbols.append(scored)
+                    results.append(scored.row)
+
+        # Registro de conocimiento: secuencial y fuera del ThreadPoolExecutor
+        # a propósito. sqlite3 no permite compartir una misma conexión entre
+        # hilos (el registro dentro del pool fallaba en silencio por esto:
+        # cada llamada disparaba un error tragado por el try/except de más
+        # abajo, así que en la práctica nunca se guardaba nada). Lo que pesa
+        # en el tiempo de escaneo son las llamadas de red de arriba, que
+        # siguen 100% paralelas; este loop son solo inserts locales rápidos.
+        observed_at = datetime.now(timezone.utc).isoformat()
+        for scored in scored_symbols:
+            try:
+                recorder.record_decision(
+                    quote=scored.quote, decision_result=scored.decision_result, context=market_context
+                )
+                recorder.record_market_event(
+                    quote=scored.quote,
+                    event_type=_event_type_for(scored.decision_result.decision),
+                    atlas_score=scored.atlas_score,
+                    momentum_result=scored.momentum_result,
+                    money_flow_score=scored.money_flow_score,
+                    decision_result=scored.decision_result,
+                    context=market_context,
+                )
+                identity = _pattern_identity(scored.decision_result)
+                if identity is not None:
+                    pattern_key, name, category = identity
+                    pattern_registry.register_pattern(pattern_key=pattern_key, name=name, category=category)
+                    pattern_registry.record_observation(
+                        pattern_key=pattern_key, ticker=scored.quote.symbol, observed_at=observed_at
+                    )
+            except Exception:
+                pass  # el registro nunca debe tumbar el escaneo
 
         recorder.close()
+        pattern_registry.close()
 
         # La "mejor oportunidad disponible" es la de mayor confianza
         # acumulada (el número que Decision Engine ya diseñó para resumir
