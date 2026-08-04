@@ -37,6 +37,7 @@ from atlas.engine.market_context_engine import MarketContextEngine
 from atlas.engine.momentum_engine import MomentumResult, calculate_momentum_score
 from atlas.engine.money_flow_engine import MoneyFlowEngine
 from atlas.knowledge import EXPLOSION, NORMAL, KnowledgeEngine, PatternRegistry
+from atlas_live import evolution_worker
 
 # --- Configuración, pensada para poder ajustarse sin tocar el resto del archivo ---
 WATCHLIST_EQUITIES = 150
@@ -329,6 +330,8 @@ def run_scan_once() -> None:
                 recorder.record_decision(
                     quote=scored.quote, decision_result=scored.decision_result, context=market_context
                 )
+                identity = _pattern_identity(scored.decision_result)
+                pattern_key = identity[0] if identity is not None else None
                 recorder.record_market_event(
                     quote=scored.quote,
                     event_type=_event_type_for(scored.decision_result.decision),
@@ -337,10 +340,10 @@ def run_scan_once() -> None:
                     money_flow_score=scored.money_flow_score,
                     decision_result=scored.decision_result,
                     context=market_context,
+                    pattern_key=pattern_key,
                 )
-                identity = _pattern_identity(scored.decision_result)
                 if identity is not None:
-                    pattern_key, name, category = identity
+                    _, name, category = identity
                     pattern_registry.register_pattern(pattern_key=pattern_key, name=name, category=category)
                     pattern_registry.record_observation(
                         pattern_key=pattern_key, ticker=scored.quote.symbol, observed_at=observed_at
@@ -350,6 +353,15 @@ def run_scan_once() -> None:
 
         recorder.close()
         pattern_registry.close()
+
+        # Motor de Evolución: revisita eventos ya registrados en sus
+        # checkpoints (+5m/+15m/+30m/+60m/cierre/día siguiente) y genera el
+        # informe diario al cierre de sesión. Misma cadencia de 5 minutos,
+        # mismo hilo, sin infraestructura nueva.
+        try:
+            evolution_worker.process_due_evolutions()
+        except Exception:
+            pass  # el motor de evolución nunca debe tumbar el escaneo
 
         # La "mejor oportunidad disponible" es la de mayor confianza
         # acumulada (el número que Decision Engine ya diseñó para resumir

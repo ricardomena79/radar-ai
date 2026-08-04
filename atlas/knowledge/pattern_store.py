@@ -323,6 +323,47 @@ class PatternRegistry:
         self._connection.commit()
         return self.get_pattern(pattern_key)
 
+    def record_outcome(self, pattern_key: str, won: bool, return_percent: float) -> Pattern:
+        """Acumula el resultado real de una observación ya cerrada (checkpoint
+        final: cierre de sesión o día siguiente) en la evidencia del patrón.
+
+        Responde directamente "¿cuántas veces funcionó?" (`wins`/`losses`/
+        `win_rate`), "¿cuál fue su recorrido promedio?" (`avg_return_percent`)
+        y "¿cuál fue su máximo recorrido?" (`max_return_percent`, el mejor
+        retorno individual observado, no un promedio). `outcomes` cuenta solo
+        las observaciones con resultado ya conocido -- puede ser menor que
+        `sample_size`, que cuenta toda vez que se vio el patrón, resultado
+        conocido o no. Igual que record_observation, no cambia `state` ni
+        escribe en `pattern_transitions`.
+        """
+        current = self.get_pattern(pattern_key)
+        if current is None:
+            raise KeyError(f"No existe un patrón registrado con pattern_key='{pattern_key}'")
+
+        evidence = dict(current.evidence)
+        wins = int(evidence.get("wins", 0)) + (1 if won else 0)
+        losses = int(evidence.get("losses", 0)) + (0 if won else 1)
+        outcomes = wins + losses
+        total_return = float(evidence.get("total_return_percent", 0.0)) + return_percent
+        best_return = evidence.get("max_return_percent")
+        best_return = return_percent if best_return is None else max(best_return, return_percent)
+
+        evidence["wins"] = wins
+        evidence["losses"] = losses
+        evidence["outcomes"] = outcomes
+        evidence["win_rate"] = round(wins / outcomes * 100, 1)
+        evidence["total_return_percent"] = round(total_return, 4)
+        evidence["avg_return_percent"] = round(total_return / outcomes, 2)
+        evidence["max_return_percent"] = round(best_return, 2)
+
+        now = datetime.now(timezone.utc).isoformat()
+        self._connection.execute(
+            "UPDATE patterns SET evidence = ?, updated_at = ? WHERE pattern_key = ?",
+            (json.dumps(evidence), now, pattern_key),
+        )
+        self._connection.commit()
+        return self.get_pattern(pattern_key)
+
     def get_pattern(self, pattern_key: str) -> Optional[Pattern]:
         """Devuelve el patrón por su identidad, o None si nunca se registró."""
         row = self._connection.execute(
