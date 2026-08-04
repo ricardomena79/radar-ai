@@ -178,6 +178,7 @@ def _score_symbol(asset: Asset, collector: DataCollector, money_flow_engine: Mon
             "asset_type": asset.type,
             "price": quote.last_price,
             "change_pct": quote.change_percent,
+            "relative_volume": quote.relative_volume,
             "atlas_score": atlas_score.total,
             "momentum_score": momentum_result.momentum_score,
             "money_flow_score": money_flow_score,
@@ -185,6 +186,10 @@ def _score_symbol(asset: Asset, collector: DataCollector, money_flow_engine: Mon
             "confidence": decision_result.confidence,
             "display_decision": _display_decision(decision_result.decision, decision_result.confidence),
             "risk_level": _risk_level(atr_score, context.vix_price if context else None),
+            # Motivo corto para la fila del ranking sin tener que seleccionar el
+            # símbolo: la misma condición ya calculada por Decision Engine, no
+            # una nueva explicación generada aparte.
+            "reason": decision_result.met_conditions[0] if decision_result.met_conditions else None,
         }
     except Exception:
         return None
@@ -324,6 +329,16 @@ def get_symbol_detail(symbol: str) -> Dict[str, Any]:
         "change_pct": quote.change_percent,
         "sector": quote.sector,
         "industry": quote.industry,
+        "relative_volume": quote.relative_volume,
+        "volume": quote.volume,
+        # Niveles reales del día tal como los reporta el proveedor de datos,
+        # sin ningún cálculo propio de soporte/resistencia.
+        "levels": {
+            "open": quote.open,
+            "high": quote.high,
+            "low": quote.low,
+            "previous_close": quote.previous_close,
+        },
         "atlas_score": {
             "total": atlas_score.total,
             "components": [
