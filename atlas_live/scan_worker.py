@@ -21,6 +21,7 @@ import threading
 import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -39,7 +40,11 @@ from atlas.knowledge import NORMAL, KnowledgeEngine
 from atlas.knowledge.learning_report_store import LearningReportStore
 from atlas.scanners.global_radar import GlobalRadar
 from atlas_live.coverage_tracker import CoverageTracker
+from atlas_live.explosive_diagnostics import build_diagnostics as build_explosive_diagnostics
+from atlas_live.explosive_engine import evaluate as evaluate_explosive
 from atlas_live.learning_cycle import run_learning_cycle
+from atlas_live.memory.live_integration import get_memory_engine_summary as get_memory_engine_cycle_summary
+from atlas_live.memory.live_integration import run_live_cycle as run_memory_engine_cycle
 
 # --- Configuración, pensada para poder ajustarse sin tocar el resto del archivo ---
 # Etapa 1 (Radar Global): recorre el Universo Racional completo (~2.577
@@ -316,6 +321,14 @@ class _State:
         # Cache interna (no forma parte del snapshot JSON): el Money Flow
         # Engine ya escaneado, para que get_symbol_detail() lo reutilice.
         self.money_flow_engine: Optional[MoneyFlowEngine] = None
+        # Cache interna (no forma parte del snapshot JSON, se pediría aparte
+        # vía /api/explosive-diagnostics): diagnóstico del Radar Explosivo
+        # sobre el universo completo del último ciclo, no solo el TOP_N.
+        self.explosive_diagnostics: Optional[Dict[str, Any]] = None
+        # Cache interna: resultado del último ciclo de Memory Engine
+        # (session/fecha/acción tomada/error) -- diagnóstico, no se expone
+        # en /api/ranking. Ver atlas_live.memory.live_integration.
+        self.memory_engine_cycle: Optional[Dict[str, Any]] = None
 
         # Precarga el último escaneo válido guardado en disco, para que un
         # reinicio del proceso no muestre una pantalla vacía.
@@ -385,6 +398,15 @@ def _score_symbol(asset: Asset, collector: DataCollector, money_flow_engine: Mon
         atr_score = atr_component.score if atr_component else None
         risk_level = _risk_level(atr_score, context.vix_price if context else None)
 
+        try:
+            explosive_result = evaluate_explosive(quote, momentum_result, money_flow_score)
+            explosive = asdict(explosive_result)
+        except Exception:
+            # Radar Explosivo es una señal adicional, no una dependencia
+            # del escaneo principal: una falla acá nunca debe tumbarlo
+            # (mismo principio que ya aplica a recorder.record_decision).
+            explosive = None
+
         return {
             "symbol": asset.symbol,
             "name": asset.name,
@@ -402,6 +424,7 @@ def _score_symbol(asset: Asset, collector: DataCollector, money_flow_engine: Mon
             "session": quote.session,
             "session_display": _session_display(quote.session),
             "is_preliminary": quote.session == "PREMARKET",
+            "explosive": explosive,
         }
     except ProviderError as exc:
         if "Tiempo de espera agotado" in str(exc):
@@ -526,6 +549,26 @@ def run_scan_once() -> None:
 
         market_session = _session_display(results[0]["session"]) if results else SESSION_DISPLAY["REGULAR"]
 
+        try:
+            explosive_rows = [row for row in results if row.get("explosive") is not None]
+            explosive_diagnostics = build_explosive_diagnostics(explosive_rows, errors)
+        except Exception:
+            # Mismo principio que el resto de Radar Explosivo: es una señal
+            # adicional, nunca debe tumbar el escaneo principal.
+            explosive_diagnostics = None
+
+        try:
+            # Memory Engine: snapshot/sellado en premarket, trayectoria en
+            # regular, calificación en afterhours/closed -- según la sesión
+            # real del momento (ver live_integration.run_live_cycle). Reusa
+            # el mismo collector del ciclo (mismo proveedor configurado,
+            # misma caché) en vez de crear uno nuevo. Nunca debe tumbar el
+            # escaneo principal -- run_live_cycle ya atrapa sus propios
+            # errores, este try/except es una segunda red de seguridad.
+            memory_engine_cycle = run_memory_engine_cycle(results, collector=collector)
+        except Exception as exc:
+            memory_engine_cycle = {"session": None, "date": None, "accion": "error", "error": str(exc)}
+
         stage2_duration = round(time.monotonic() - stage2_start, 1)
 
         STATE.update(
@@ -545,6 +588,8 @@ def run_scan_once() -> None:
             errors=errors,
             market_session=market_session,
             scanning=False,
+            explosive_diagnostics=explosive_diagnostics,
+            memory_engine_cycle=memory_engine_cycle,
         )
         _save_cache(STATE.snapshot())
 
@@ -691,6 +736,51 @@ def get_learning_summary(history_limit: int = 30) -> Dict[str, Any]:
         "history": [_serialize_learning_report(r) for r in history],
         "total_reports": total_reports,
     }
+
+
+def get_memory_engine_summary() -> Dict[str, Any]:
+    """Tasas base reales del Memory Engine sobre TODO el histórico
+    observado -- no solo las explosiones. Cada condición confiable ya pasó
+    las tres pruebas de `base_rates.compute_base_rate` (muestra,
+    significancia de Wilson, consistencia temporal); ninguna se aplica
+    sola, son candidatas para revisión humana, mismo espíritu que
+    Calibration Manager.
+
+    Delega en `live_integration.get_memory_engine_summary()`, que cachea
+    la evidencia por día de mercado (recalcularla en cada request sería
+    caro sobre decenas de miles de observaciones) -- la misma evidencia
+    que usa `run_live_cycle()` en cada ciclo de escaneo, para que el panel
+    nunca muestre un número distinto al que realmente está usando el
+    motor en vivo."""
+    summary = get_memory_engine_cycle_summary()
+    return {
+        "observation_count": summary.get("observation_count"),
+        "distinct_dates": summary.get("days_backed"),
+        "baseline_win_rate_pct": round(summary["baseline_win_rate_pct"], 2),
+        "reliable_condition_count": summary.get("reliable_condition_count"),
+        "reliable_conditions": [
+            {
+                "label": c["label"],
+                "sample_size": c["sample_size"],
+                "win_rate_pct": round(c["win_rate_pct"], 2) if c["win_rate_pct"] is not None else None,
+                "wilson_lower_bound_pct": round(c["wilson_lower_bound_pct"], 2)
+                if c["wilson_lower_bound_pct"] is not None else None,
+                "lift": round(c["lift"], 2) if c["lift"] is not None else None,
+            }
+            for c in summary.get("reliable_conditions", [])
+        ],
+        "last_recalibrated_on": summary.get("last_recalibrated_on"),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def get_explosive_diagnostics() -> Optional[Dict[str, Any]]:
+    """Diagnóstico del Radar Explosivo sobre el universo completo del
+    último ciclo (no solo el TOP_N del ranking). `None` si todavía no
+    corrió ningún ciclo, o si el diagnóstico falló ese ciclo (ver
+    run_scan_once) -- en ningún caso repite el escaneo."""
+    with STATE._lock:
+        return STATE.explosive_diagnostics
 
 
 _background_thread: Optional[threading.Thread] = None
