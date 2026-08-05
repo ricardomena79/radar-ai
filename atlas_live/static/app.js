@@ -110,6 +110,31 @@ function renderSessionBanner(marketSession) {
   document.getElementById("session-banner").innerHTML = sessionBadge(marketSession);
 }
 
+// --- Radar Explosivo: señal adicional de momentum intradía, no
+// reemplaza la decisión de Atlas -- se muestra debajo, nunca en lugar
+// de "Sí compraría/Esperaría". "Eligible" traducido a Sí/No en vez de
+// mostrar el nombre técnico del campo. ---
+
+function explosiveInfo(explosive) {
+  if (!explosive) return "";
+  const eligible = !!explosive.eligible;
+  const eligibleTag = eligible
+    ? `<span class="opportunity-tag">Radar Explosivo: Sí</span>`
+    : `<span class="preliminary-tag">Radar Explosivo: No</span>`;
+  const scoreTag = explosive.score != null
+    ? `<span class="explosive-score">Score ${fmt(explosive.score, 1)}</span>`
+    : "";
+  const reasons = eligible
+    ? (explosive.reasons || []).slice(0, 2).join(" · ")
+    : (explosive.excluded_reason || "");
+  return `
+    <div class="explosive-info">
+      ${eligibleTag} ${scoreTag}
+      ${reasons ? `<div class="explosive-reasons">${reasons}</div>` : ""}
+    </div>
+  `;
+}
+
 // --- Hero: oportunidad del momento ---
 
 function renderHero(topPick, targetId) {
@@ -153,6 +178,7 @@ function renderHero(topPick, targetId) {
           <div class="value">${opportunityTag(topPick.opportunity_type)}</div>
         </div>
       </div>
+      ${explosiveInfo(topPick.explosive)}
       ${topPick.is_preliminary ? `<div class="hero-preliminary-note">El mercado regular todavía no ha abierto: esta recomendación es preliminar y se recalculará automáticamente cuando abra.</div>` : ""}
     </div>
   `;
@@ -172,6 +198,7 @@ function renderRanking(ranking, targetId) {
       <div class="opp-id">
         <span class="opp-symbol">${row.symbol}</span>
         <span class="opp-name">${row.name || ""}</span>
+        ${explosiveInfo(row.explosive)}
       </div>
       <div class="opp-right">
         ${decisionBadge(row.display_decision)}
@@ -625,6 +652,79 @@ function renderMemoryEnginePanel(summary) {
   `;
 }
 
+// --- Diagnóstico del Radar Explosivo: embudo de filtros + tabla de
+// auditoría del último ciclo completo (no solo el TOP_N que se muestra
+// en Inicio/Ranking). Solo lectura, se pide al abrir la vista. ---
+
+function renderDiagnosticoPanel(data) {
+  const panel = document.getElementById("diagnostico-panel");
+  if (!panel) return;
+
+  if (!data || !data.available) {
+    panel.innerHTML = `<div class="empty-note">Todavía no hay un diagnóstico calculado. Se genera en cada ciclo de escaneo.</div>`;
+    return;
+  }
+
+  const funnelRows = (data.funnel || []).map(f => `
+    <div class="component-row">
+      <span class="name">${f.label}</span>
+      <span class="explanation">${f.count} de ${data.total_universe} símbolos</span>
+    </div>
+  `).join("");
+
+  const tableRows = (data.table || []).map(r => `
+    <div class="component-row">
+      <span class="name">${r.symbol} ${r.status === "Aprobada" ? "🟢" : "🔴"}</span>
+      <span class="explanation">
+        ${r.status}${r.score != null ? ` · Score ${fmt(r.score, 1)}` : ""} · ${r.reason || ""}
+      </span>
+    </div>
+  `).join("");
+
+  panel.innerHTML = `
+    <div class="detail-summary">
+      <div class="metric">
+        <div class="label">Universo revisado</div>
+        <div class="value">${data.total_universe}</div>
+      </div>
+      <div class="metric">
+        <div class="label">Elegibles (pasaron los 6 filtros)</div>
+        <div class="value">${data.final_eligible_count}</div>
+      </div>
+      <div class="metric">
+        <div class="label">Errores de datos</div>
+        <div class="value">${data.data_errors}</div>
+      </div>
+    </div>
+
+    <div class="detail-section">
+      <h3>Embudo de filtros (acumulado)</h3>
+      ${funnelRows || `<div class="empty-note">Sin datos de embudo.</div>`}
+    </div>
+
+    <div class="detail-section">
+      <h3>Aprobadas y descartadas más cercanas a calificar</h3>
+      ${tableRows || `<div class="empty-note">Sin filas para mostrar.</div>`}
+    </div>
+  `;
+}
+
+async function refreshDiagnosticoPanel() {
+  const panel = document.getElementById("diagnostico-panel");
+  if (!panel) return;
+  try {
+    const res = await fetch("/api/explosive-diagnostics");
+    const data = await res.json();
+    if (data.error) {
+      panel.innerHTML = `<div class="empty-note">No se pudo cargar: ${data.error}</div>`;
+      return;
+    }
+    renderDiagnosticoPanel(data);
+  } catch (err) {
+    panel.innerHTML = `<div class="empty-note">Error al conectar con Atlas.</div>`;
+  }
+}
+
 async function refreshMemoryEnginePanel() {
   const panel = document.getElementById("memory-engine-panel");
   if (!panel) return;
@@ -653,6 +753,9 @@ document.querySelectorAll(".nav-item").forEach(btn => {
     if (btn.dataset.view === "aprendizaje") {
       refreshLearningPanel();
       refreshMemoryEnginePanel();
+    }
+    if (btn.dataset.view === "diagnostico") {
+      refreshDiagnosticoPanel();
     }
   });
 });

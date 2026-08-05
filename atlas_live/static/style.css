@@ -192,6 +192,33 @@ main {
   padding-top: 12px;
 }
 
+/* --- Radar Explosivo: señal adicional, discreta -- nunca compite
+   visualmente con el badge de decisión de Atlas. --- */
+.explosive-info {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.explosive-score {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 3px;
+  font-weight: 600;
+  font-size: 12px;
+  background: rgba(139,146,168,0.14);
+  color: var(--text-dim);
+}
+.explosive-reasons {
+  flex-basis: 100%;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.opp-card .opp-id .explosive-info {
+  margin-top: 4px;
+}
+
 /* --- Hero: oportunidad del momento --- */
 #hero { margin-top: 8px; }
 .hero-card {
