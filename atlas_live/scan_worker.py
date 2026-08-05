@@ -21,7 +21,9 @@ import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+
+import yfinance as yf
 
 from atlas.data.collectors.data_collector import DataCollector
 from atlas.data.universe import Asset, get_equities, get_etfs
@@ -42,10 +44,47 @@ from atlas_live.mission_control import timeline
 # --- Configuración, pensada para poder ajustarse sin tocar el resto del archivo ---
 WATCHLIST_EQUITIES = 150
 WATCHLIST_ETFS = 50
-REQUIRED_SYMBOLS = ["AAPL", "NVDA", "PLTR", "SOXL"]
+# Piso fijo, siempre escaneado. Ampliado (2026-08-05) tras confirmar en vivo
+# el 2026-08-04 que movers reales (AMD, TSLA, MSTR, COIN) quedaban fuera del
+# muestreo estratificado y nunca eran vistos por Atlas, sin importar cuánto
+# se movieran -- ver _prefilter_movers() más abajo para el resto del arreglo.
+REQUIRED_SYMBOLS = ["AAPL", "NVDA", "PLTR", "SOXL", "AMD", "TSLA", "MSTR", "COIN"]
 MAX_WORKERS = 10
 REFRESH_INTERVAL_SECONDS = 300  # 5 minutos
 TOP_N = 20
+
+# --- Pre-filtro dinámico de movimiento real (2026-08-05) ---
+#
+# Problema que resuelve: _stratified_sample() (más abajo) siempre elegía las
+# mismas posiciones fijas del universo (cada símbolo N), sin relación con
+# quién se estaba moviendo hoy -- un mover real fuera de esas posiciones era
+# invisible para Atlas indefinidamente, sin importar su volumen o su gap.
+#
+# Diagnóstico previo a este cambio (no se adivinó el diseño): consultar el
+# universo completo (2575 símbolos) con datos reales cada ciclo es caro --
+# se midió en vivo entre ~270s y ~700s según el método, comparable o peor
+# que el escaneo completo actual (~266s). Por eso el pre-filtro NO evalúa
+# el universo completo en cada ciclo: evalúa un bloque rotativo (ver
+# _next_prefilter_chunk), así el costo agregado por ciclo es acotado
+# (~40s medidos) y, a lo largo de varios ciclos, termina recorriendo el
+# universo completo -- mismo criterio de "rotación para cobertura" ya
+# discutido antes de este cambio.
+#
+# _lightweight_change_pct() usa yf.Ticker().fast_info directamente, NO
+# collector.get_quote()/MultiProvider: es una consulta deliberadamente más
+# barata (precio + cierre anterior, nada más) solo para RANKEAR qué
+# símbolos merecen un lugar en el watchlist real. No construye ningún
+# Quote -- el precio/volumen que Atlas termina reportando para un símbolo
+# siempre sigue viniendo exclusivamente de _score_symbol() vía el Data
+# Fusion Engine, sin excepción. Esto no reabre la regla de arquitectura ya
+# declarada (YahooFinanceLiveProvider como único punto autorizado para
+# construir un Quote) porque este pre-filtro nunca construye uno.
+PREFILTER_CHUNK_SIZE = 400
+PREFILTER_WORKERS = 30
+TOP_MOVERS_EQUITIES = 30
+TOP_MOVERS_ETFS = 10
+
+_prefilter_cursor = 0
 
 # --- Traducción de la decisión de Atlas Core a lenguaje de presentación ---
 # Esto NO reclasifica nada: toma la misma decisión y confianza que ya
@@ -98,13 +137,91 @@ def _stratified_sample(assets: List[Asset], count: int) -> List[Asset]:
     return assets[::step][:count]
 
 
-def _build_watchlist() -> Dict[str, Asset]:
+def _next_prefilter_chunk() -> List[Asset]:
+    """Bloque rotativo del universo completo para el pre-filtro de movimiento.
+
+    Avanza un cursor global en cada llamada (una por ciclo de escaneo real,
+    ver run_scan_once) para que, a lo largo de varios ciclos, el pre-filtro
+    termine cubriendo el universo completo en vez de evaluar siempre el
+    mismo subconjunto -- ver el comentario de PREFILTER_CHUNK_SIZE arriba
+    para el motivo de por qué no se evalúa todo junto en un solo ciclo.
+    """
+    global _prefilter_cursor
+    universe = get_equities() + get_etfs()
+    if not universe:
+        return []
+    start = _prefilter_cursor % len(universe)
+    end = start + PREFILTER_CHUNK_SIZE
+    chunk = universe[start:end] if end <= len(universe) else universe[start:] + universe[: end - len(universe)]
+    _prefilter_cursor = end % len(universe)
+    return chunk
+
+
+def _lightweight_change_pct(asset: Asset) -> Optional[Tuple[Asset, float]]:
+    """Consulta liviana de movimiento -- ver el comentario junto a
+    PREFILTER_CHUNK_SIZE: deliberadamente no construye un Quote ni pasa por
+    el Data Fusion Engine, solo pide precio + cierre anterior para rankear
+    candidatos a entrar al watchlist real."""
+    try:
+        fast_info = yf.Ticker(asset.symbol).fast_info
+        last_price = fast_info.get("lastPrice")
+        previous_close = fast_info.get("previousClose")
+        if not last_price or not previous_close:
+            return None
+        change_pct = (last_price - previous_close) / previous_close * 100
+        return asset, change_pct
+    except Exception:
+        return None
+
+
+def _prefilter_movers(chunk: List[Asset]) -> List[Asset]:
+    """Evalúa el bloque rotativo actual y devuelve los símbolos con mayor
+    movimiento real (|% cambio|) de hoy, separados por tipo. Un símbolo sin
+    datos (fallo de red, delisted, etc.) simplemente no compite -- no
+    interrumpe al resto ni tumba el ciclo."""
+    if not chunk:
+        return []
+    results: List[Tuple[Asset, float]] = []
+    with ThreadPoolExecutor(max_workers=PREFILTER_WORKERS) as executor:
+        futures = [executor.submit(_lightweight_change_pct, asset) for asset in chunk]
+        for future in as_completed(futures):
+            result = future.result()
+            if result is not None:
+                results.append(result)
+
+    equities = sorted((r for r in results if r[0].type == "EQUITY"), key=lambda r: abs(r[1]), reverse=True)
+    etfs = sorted((r for r in results if r[0].type == "ETF"), key=lambda r: abs(r[1]), reverse=True)
+    return [a for a, _ in equities[:TOP_MOVERS_EQUITIES]] + [a for a, _ in etfs[:TOP_MOVERS_ETFS]]
+
+
+def _build_watchlist(include_dynamic_movers: bool = True) -> Dict[str, Asset]:
+    """Arma el watchlist real que se escanea cada ciclo, en tres capas:
+
+    1. Muestreo estratificado de siempre (base de diversidad, sin cambios).
+    2. Movers reales detectados por el pre-filtro rotativo -- lo nuevo de
+       este cambio, ver PREFILTER_CHUNK_SIZE arriba.
+    3. REQUIRED_SYMBOLS -- piso fijo, exactamente igual que antes.
+
+    `include_dynamic_movers=False` se usa desde el único call site que no
+    necesita la detección de movers (get_symbol_detail(), fallback de Money
+    Flow Engine cuando todavía no hay ningún escaneo en caché) para no
+    pagar el costo del pre-filtro en un camino que no lo necesita.
+    """
     equities = _stratified_sample(get_equities(), WATCHLIST_EQUITIES)
     etfs = _stratified_sample(get_etfs(), WATCHLIST_ETFS)
     watchlist = {asset.symbol: asset for asset in equities + etfs}
+
+    if include_dynamic_movers:
+        for asset in _prefilter_movers(_next_prefilter_chunk()):
+            watchlist[asset.symbol] = asset
+
     for symbol in REQUIRED_SYMBOLS:
         if symbol not in watchlist:
-            for asset in get_equities():
+            # Busca en equities y ETFs -- SOXL (ya en REQUIRED_SYMBOLS antes
+            # de este cambio) es un ETF apalancado, no una acción: buscar
+            # solo en get_equities() lo dejaba sin garantía real pese a
+            # figurar en la lista (bug preexistente, corregido acá).
+            for asset in get_equities() + get_etfs():
                 if asset.symbol == symbol:
                     watchlist[symbol] = asset
                     break
@@ -393,7 +510,7 @@ def get_symbol_detail(symbol: str) -> Dict[str, Any]:
     # recalcula desde cero si todavía no hay ningún escaneo en caché.
     money_flow_engine = STATE.money_flow_engine
     if money_flow_engine is None:
-        watchlist = _build_watchlist()
+        watchlist = _build_watchlist(include_dynamic_movers=False)
         money_flow_engine = _MoneyFlowEngine(collector=collector, universe_provider=lambda: watchlist)
         money_flow_engine.scan()
 
