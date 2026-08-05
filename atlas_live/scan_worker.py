@@ -35,7 +35,7 @@ from atlas.engine.money_flow_engine import MoneyFlowEngine
 from atlas.knowledge import NORMAL, KnowledgeEngine
 
 from atlas_live import explosive_diagnostics, explosive_engine
-from atlas_live.data_fusion.yahoo_finance_live_provider import YahooFinanceLiveProvider
+from atlas_live.data_fusion.registry import get_default_provider
 from atlas_live.explosive_config import load_config as load_explosive_config
 from atlas_live.mission_control import timeline
 
@@ -241,7 +241,12 @@ def run_scan_once() -> None:
     start = time.monotonic()
 
     try:
-        collector = DataCollector(YahooFinanceLiveProvider())
+        # Etapa 0 de la unificación de interfaz (2026-08-05): Atlas Live
+        # ya no depende directamente de Yahoo -- get_default_provider()
+        # arma Yahoo + Finnhub de respaldo (MultiProvider), con
+        # degradación segura si Finnhub no está configurado. Ver
+        # atlas_live/data_fusion/registry.py.
+        collector = DataCollector(get_default_provider())
         watchlist = _build_watchlist()
         assets = list(watchlist.values())
 
@@ -378,7 +383,7 @@ def get_symbol_detail(symbol: str) -> Dict[str, Any]:
     from atlas.engine.money_flow_engine import MoneyFlowEngine as _MoneyFlowEngine
     from atlas.knowledge.pattern_store import PatternStore
 
-    collector = DataCollector(YahooFinanceLiveProvider())
+    collector = DataCollector(get_default_provider())
     quote = collector.get_quote(symbol)
     atlas_score = _atlas_score(symbol, collector)
     momentum_result = calculate_momentum_score(symbol, collector)
