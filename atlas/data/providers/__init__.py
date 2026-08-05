@@ -3,14 +3,25 @@
 import os
 from typing import Dict, List, Type
 
+from dotenv import load_dotenv
+
 from atlas.data.providers.base import DataProvider
+from atlas.data.providers.finnhub import FinnhubProvider
 from atlas.data.providers.multi_provider import MultiProvider
 from atlas.data.providers.yahoo_finance import YahooFinanceProvider
 
+# Carga .env (FINNHUB_API_KEY, ATLAS_DATA_PROVIDERS, etc.) apenas se
+# importa este módulo -- antes, solo se cargaba a mano en scripts sueltos,
+# así que el proceso real de Atlas Live nunca veía las variables del
+# archivo. No pisa variables ya seteadas en el entorno real (override
+# implícito en False, default de python-dotenv).
+load_dotenv()
+
 _PROVIDERS: Dict[str, Type[DataProvider]] = {
     "yahoo_finance": YahooFinanceProvider,
+    "finnhub": FinnhubProvider,
     # Agregar acá cada proveedor nuevo a medida que se conecte
-    # (Alpaca, Finnhub, Twelve Data, Alpha Vantage, ...).
+    # (Alpaca, Twelve Data, Alpha Vantage, ...).
 }
 
 DEFAULT_PROVIDER_NAME = "yahoo_finance"

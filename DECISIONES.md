@@ -129,3 +129,45 @@ El seed es de solo lectura desde la app: nunca se regenera solo. Se
 vuelve a exportar (`seed.export_seed()`) y re-comitear a mano únicamente
 si en el futuro se corre un backtest nuevo mucho más grande -- una
 decisión deliberada, no un efecto secundario de correr Atlas.
+
+---
+
+## Ticket 1: MultiProvider — CERRADO (2026-08-05)
+
+**Decisión:** Atlas opera con dos proveedores de datos reales, Yahoo
+Finance (primario) y Finnhub (respaldo), a través de `MultiProvider` con
+failover automático. `TwelveDataProvider` quedó escrito y validado en un
+momento intermedio de este ticket, pero **no se registró** -- el plan
+volvió a Yahoo + Finnhub por decisión explícita; el código de Twelve Data
+queda preparado sin activar, mismo tratamiento que Alpaca.
+
+Camino real hasta acá (no ocultado): Finnhub falló varias veces con
+`401 Invalid API key` durante el diagnóstico. Se auditó exhaustivamente
+el entorno (ruta del `.env`, orden de `load_dotenv()`, variables del
+sistema operativo, variable exacta leída por el código) y se descartó a
+Atlas como causa en los siete puntos pedidos. La causa real: la nueva key
+de Finnhub tiene **40 caracteres**, no 20 como todas las anteriores --
+una suposición incorrecta de longitud fija llevó a interpretar mal el
+valor al principio. Confirmado probando cada mitad de 20 caracteres por
+separado (ambas inválidas) contra el valor completo de 40 (válido).
+Lección para el código: los proveedores no deben asumir un largo fijo de
+key al diagnosticar fallas de autenticación.
+
+Validado con datos reales, sin fabricar nada:
+- `get_quote`/`get_quotes` de Finnhub: 4/4 símbolos reales (AAPL, MSFT,
+  TSLA, SPY).
+- `get_history` de Finnhub: falla con `403` -- confirma que el nivel
+  gratuito no incluye históricos para acciones (ya sospechado en el
+  código desde que se escribió, ahora confirmado con evidencia real).
+  `MultiProvider` hace failover a Yahoo para este caso automáticamente.
+- Failover forzado: Yahoo deshabilitado en memoria (sin tocar ningún
+  archivo de código), `MultiProvider` pasó a Finnhub automáticamente,
+  un ciclo de escaneo real de Atlas Live completó y actualizó el
+  ranking (57 símbolos vía Finnhub, de 300 escaneados, el resto
+  limitado por el techo de 60 llamadas/minuto de Finnhub). Yahoo
+  reactivado, volvió a ser el proveedor preferido sin intervención.
+- Bug real encontrado y corregido en el camino: un ciclo de escaneo sin
+  ningún símbolo puntuado pisaba el ranking visible con una lista vacía
+  -- corregido en `scan_worker.py` para conservar el último ranking
+  válido y dejarlo registrado en `last_error`, en vez de vaciar la
+  pantalla.

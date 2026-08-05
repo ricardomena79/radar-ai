@@ -571,29 +571,62 @@ def run_scan_once() -> None:
 
         stage2_duration = round(time.monotonic() - stage2_start, 1)
 
-        STATE.update(
-            context=context_payload,
-            ranking=results[:TOP_N],
-            generated_at=datetime.now(timezone.utc).isoformat(),
-            scan_duration_seconds=round(time.monotonic() - cycle_start, 1),
-            stage1_duration_seconds=radar_stats["stage1_duration_seconds"],
-            stage2_duration_seconds=stage2_duration,
-            symbols_reviewed_stage1=radar_stats["symbols_reviewed_stage1"],
-            candidates_sent_stage2=radar_stats["candidates_sent_stage2"],
-            radar_candidates_count=radar_stats["radar_candidates_count"],
-            required_symbols_added=radar_stats["required_symbols_added"],
-            rotation_added=radar_stats["rotation_added"],
-            symbols_scanned=len(assets),
-            symbols_ok=len(results),
-            errors=errors,
-            market_session=market_session,
-            scanning=False,
-            explosive_diagnostics=explosive_diagnostics,
-            memory_engine_cycle=memory_engine_cycle,
-        )
-        _save_cache(STATE.snapshot())
+        # Métricas de diagnóstico del ciclo: se actualizan siempre, haya o
+        # no resultados -- son sobre el ciclo en sí, no sobre lo que se
+        # muestra en pantalla.
+        state_fields: Dict[str, Any] = {
+            "scan_duration_seconds": round(time.monotonic() - cycle_start, 1),
+            "stage1_duration_seconds": radar_stats["stage1_duration_seconds"],
+            "stage2_duration_seconds": stage2_duration,
+            "symbols_reviewed_stage1": radar_stats["symbols_reviewed_stage1"],
+            "candidates_sent_stage2": radar_stats["candidates_sent_stage2"],
+            "radar_candidates_count": radar_stats["radar_candidates_count"],
+            "required_symbols_added": radar_stats["required_symbols_added"],
+            "rotation_added": radar_stats["rotation_added"],
+            "symbols_scanned": len(assets),
+            "symbols_ok": len(results),
+            "errors": errors,
+            "scanning": False,
+            "explosive_diagnostics": explosive_diagnostics,
+            "memory_engine_cycle": memory_engine_cycle,
+        }
 
-        _maybe_run_learning_cycle(market_session["code"])
+        if results:
+            # Ciclo con al menos un símbolo puntuado: lo que se muestra en
+            # pantalla se actualiza con el resultado real de este ciclo.
+            state_fields.update(
+                context=context_payload,
+                ranking=results[:TOP_N],
+                generated_at=datetime.now(timezone.utc).isoformat(),
+                market_session=market_session,
+                last_error=None,
+            )
+        else:
+            # Ningún símbolo pudo puntuarse este ciclo -- ej. todos los
+            # proveedores de datos configurados fallaron a la vez (ver
+            # atlas.data.providers.verify_failover, hallazgo 2026-08-05).
+            # Se conserva el último ranking bueno en pantalla en vez de
+            # mostrar una lista vacía: un ciclo sin datos no es lo mismo
+            # que "no hay ninguna oportunidad hoy". El diagnóstico
+            # (symbols_ok=0, errors, scan_duration_seconds) sí se actualiza
+            # arriba, así que esto queda visible para quien lo audite.
+            state_fields["last_error"] = (
+                "Ningún símbolo pudo puntuarse en este ciclo -- probable falla simultánea "
+                "de todos los proveedores de datos configurados. Se conserva el último "
+                "ranking válido en pantalla."
+            )
+
+        STATE.update(**state_fields)
+
+        # El cache en disco tiene el mismo principio: nunca se pisa con un
+        # ciclo vacío, para que un reinicio del proceso no cargue "nada"
+        # en vez del último dato bueno.
+        if results:
+            _save_cache(STATE.snapshot())
+
+        _maybe_run_learning_cycle(
+            market_session["code"] if results else STATE.snapshot().get("market_session", {}).get("code", "REGULAR")
+        )
     except Exception as exc:
         STATE.update(scanning=False, last_error=f"{exc}\n{traceback.format_exc()}")
 
