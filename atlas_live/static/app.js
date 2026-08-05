@@ -563,6 +563,84 @@ async function refreshLearningPanel() {
   }
 }
 
+// --- Memory Engine: tasas base reales sobre todo el histórico observado
+// (no solo las recomendaciones de Atlas) -- misma disciplina que el panel
+// de Aprendizaje: cada condición muestra su muestra, su Win Rate y su
+// Wilson Score (el peor caso estadísticamente razonable, no solo el
+// promedio), nunca se aplica sola. ---
+
+function renderMemoryEnginePanel(summary) {
+  const panel = document.getElementById("memory-engine-panel");
+  if (!panel) return;
+
+  if (!summary || !summary.observation_count) {
+    panel.innerHTML = `<div class="empty-note">Todavía no hay observaciones en el Memory Engine.</div>`;
+    return;
+  }
+
+  const conditions = summary.reliable_conditions || [];
+  const conditionRows = conditions.length === 0
+    ? `<div class="empty-note">Ninguna condición con evidencia confiable todavía.</div>`
+    : conditions.map(c => `
+        <div class="component-row">
+          <span class="name">${c.label}</span>
+          <span class="explanation">
+            Win Rate ${c.win_rate_pct}% · Wilson Score ${c.wilson_lower_bound_pct}%
+            (peor caso estadísticamente razonable) · muestra n=${c.sample_size}
+            ${c.lift != null ? `· ${c.lift}x el promedio general` : ""}
+          </span>
+        </div>
+      `).join("");
+
+  panel.innerHTML = `
+    <div class="detail-summary">
+      <div class="metric">
+        <div class="label">Observaciones totales</div>
+        <div class="value">${summary.observation_count.toLocaleString("es")}</div>
+      </div>
+      <div class="metric">
+        <div class="label">Días con datos</div>
+        <div class="value">${summary.distinct_dates ?? "—"}</div>
+      </div>
+      <div class="metric">
+        <div class="label">Tasa base general</div>
+        <div class="value">${summary.baseline_win_rate_pct}%</div>
+      </div>
+      <div class="metric">
+        <div class="label">Última actualización</div>
+        <div class="value">${summary.last_recalibrated_on || "—"}</div>
+      </div>
+    </div>
+
+    <div class="detail-section">
+      <h3>Condiciones más confiables (${conditions.length})</h3>
+      <div class="empty-note" style="text-align:left">
+        Cada condición ya pasó tres pruebas estadísticas (muestra mínima, significancia de
+        Wilson por encima del promedio general, consistencia en más de un día) antes de
+        aparecer acá. Ninguna se aplica sola — son candidatas para revisión humana, mismo
+        principio que Calibration Manager.
+      </div>
+      ${conditionRows}
+    </div>
+  `;
+}
+
+async function refreshMemoryEnginePanel() {
+  const panel = document.getElementById("memory-engine-panel");
+  if (!panel) return;
+  try {
+    const res = await fetch("/api/memory-engine");
+    const data = await res.json();
+    if (data.error) {
+      panel.innerHTML = `<div class="empty-note">No se pudo cargar: ${data.error}</div>`;
+      return;
+    }
+    renderMemoryEnginePanel(data);
+  } catch (err) {
+    panel.innerHTML = `<div class="empty-note">Error al conectar con Atlas.</div>`;
+  }
+}
+
 // --- Navegación permanente: un clic en cualquier ítem cambia de vista,
 // nunca cierra ni oculta el resto de la aplicación. "Inicio" siempre
 // está a un clic de distancia, sin importar dónde esté el usuario. ---
@@ -574,6 +652,7 @@ document.querySelectorAll(".nav-item").forEach(btn => {
     document.getElementById(`view-${btn.dataset.view}`).classList.add("active");
     if (btn.dataset.view === "aprendizaje") {
       refreshLearningPanel();
+      refreshMemoryEnginePanel();
     }
   });
 });
