@@ -28,7 +28,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-DB_PATH = Path(__file__).parent / "memory_store.db"
+from atlas.config.config import data_dir
+
+DB_PATH = data_dir(default=Path(__file__).parent) / "memory_store.db"
 
 # Las 5 categorías de resultado del Clasificador (Entregable 2). Se validan
 # acá también porque el Memory Store es la última línea de defensa contra
