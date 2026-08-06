@@ -14,7 +14,7 @@ a nivel de módulo (más abajo), no dentro de `main()`.
 import os
 from pathlib import Path
 
-from flask import Flask, jsonify, send_from_directory
+from flask import Flask, jsonify, request, send_from_directory
 
 from atlas_live import scan_worker
 from atlas_live.memory.seed import ensure_seeded
@@ -142,6 +142,85 @@ def api_diagnostics_providers():
         "finnhub_authentication": finnhub_authentication,
         "yahoo_provider_present": "yahoo_finance" in configured,
     })
+
+
+@app.route("/api/diagnostics/forced-failover-test")
+def api_diagnostics_forced_failover_test():
+    """TEMPORAL -- prueba controlada de failover real, pedida el 2026-08-06
+    (ver DECISIONES.md). Fuerza un RateLimitError como el que Yahoo devolvió
+    de verdad en producción (mismo texto, mismo tipo de excepción) desde un
+    proveedor de prueba que nunca toca la red -- no desactiva el Yahoo real
+    ni afecta el escaneo en curso -- y arma un MultiProvider con ese
+    proveedor forzado a fallar + FinnhubProvider real (la key configurada
+    en Railway). Si `get_quote`/`get_quotes` devuelven una cotización real,
+    solo puede haber venido de Finnhub -- el primer proveedor no puede
+    responder nunca.
+
+    Alcance deliberado: prueba el mecanismo de MultiProvider con datos
+    reales de Finnhub, no reemplaza el Yahoo real del escaneo en vivo --
+    hacer eso sería degradar a propósito el ranking en producción, fuera
+    del alcance de esta verificación."""
+    from atlas.data.providers.base import DataProvider, ProviderError, RateLimitError
+    from atlas.data.providers.finnhub import FinnhubProvider
+    from atlas.data.providers.multi_provider import MultiProvider
+
+    class _SimulatedYahooRateLimit(DataProvider):
+        def get_quote(self, symbol):
+            raise RateLimitError(
+                "Yahoo Finance limitó la tasa de consultas: Too Many Requests "
+                "(SIMULADO para esta prueba -- no es una falla real de Yahoo)"
+            )
+
+        def get_quotes(self, symbols):
+            raise RateLimitError(
+                "Yahoo Finance limitó la tasa de consultas: Too Many Requests "
+                "(SIMULADO para esta prueba -- no es una falla real de Yahoo)"
+            )
+
+        def get_history(self, symbol, period="6mo", interval="1d"):
+            raise ProviderError("simulado, no usado en esta prueba")
+
+    symbols = [s.strip().upper() for s in request.args.get("symbols", "AAPL,MSFT,TSLA").split(",") if s.strip()]
+    result = {
+        "symbols_requested": symbols,
+        "simulated_failure": "RateLimitError (Yahoo Finance) -- generado localmente, sin red",
+    }
+
+    if not os.environ.get("FINNHUB_API_KEY"):
+        result["error"] = "FINNHUB_API_KEY no está configurada -- no se puede probar failover real a Finnhub"
+        return jsonify(result), 400
+
+    provider = MultiProvider([_SimulatedYahooRateLimit(), FinnhubProvider()])
+
+    try:
+        quote = provider.get_quote(symbols[0])
+        result["get_quote"] = {
+            "ok": True,
+            "symbol": quote.symbol,
+            "served_by": "FinnhubProvider (el primer proveedor fue forzado a fallar -- no puede haber respondido)",
+            "last_price": quote.last_price,
+            "previous_close": quote.previous_close,
+            "change_percent": quote.change_percent,
+        }
+    except Exception as exc:
+        result["get_quote"] = {"ok": False, "error": str(exc)}
+
+    try:
+        quotes = provider.get_quotes(symbols)
+        result["get_quotes"] = {
+            "ok": len(quotes) > 0,
+            "requested_count": len(symbols),
+            "received_count": len(quotes),
+            "served_by": "FinnhubProvider (el primer proveedor fue forzado a fallar -- no puede haber respondido)",
+            "quotes": [
+                {"symbol": q.symbol, "last_price": q.last_price, "previous_close": q.previous_close}
+                for q in quotes
+            ],
+        }
+    except Exception as exc:
+        result["get_quotes"] = {"ok": False, "error": str(exc)}
+
+    return jsonify(result)
 
 
 def main() -> None:
