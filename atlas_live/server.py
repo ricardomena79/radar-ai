@@ -152,13 +152,25 @@ def api_predictive_engine():
     """Motor Predictivo -- verificación pública del Sprint 1 (Fase 1.1,
     2026-08-06, ver DECISIONES.md). Últimas predicciones registradas por
     cualquier capacidad (hoy solo `entry_window`), solo lectura sobre
-    `prediction_log.py`. Sin UI todavía (eso es el Sprint 4) -- este
-    endpoint existe para poder confirmar sobre la URL pública, sin acceso
-    a la base local, que cada predicción emitida se está registrando."""
+    `prediction_log.py`."""
     return jsonify({
         "total_predictions": prediction_log.count_predictions(),
         "recent": prediction_log.get_predictions(limit=20),
     })
+
+
+@app.route("/api/predictive-engine/<symbol>")
+def api_predictive_engine_symbol(symbol):
+    """Motor Predictivo -- Cabina del Piloto, Sprint 4 (2026-08-06):
+    última predicción de `entry_window` para un símbolo puntual (el Hero
+    del Dashboard y el detalle de Oportunidad del día). Solo lectura,
+    misma tabla que `/api/predictive-engine`. `available=False` es el
+    estado honesto cuando todavía no se registró ninguna predicción para
+    este símbolo hoy -- no se inventa un valor."""
+    recientes = prediction_log.get_predictions(symbol=symbol.upper(), capability="entry_window", limit=1)
+    if not recientes:
+        return jsonify({"available": False})
+    return jsonify({"available": True, **recientes[0]})
 
 
 @app.route("/api/learning-status")

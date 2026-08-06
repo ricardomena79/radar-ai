@@ -233,14 +233,17 @@ def _track_trajectory(date: str, now: datetime, results: List[Dict[str, Any]]) -
 
 
 def _predict_entries(date: str, now: datetime, results: List[Dict[str, Any]]) -> str:
-    """Motor Predictivo (Fase 1.1, Sprint 1) -- para cada candidato que
-    Radar Explosivo ya marcó `eligible=True` este ciclo, invoca la
-    capacidad `entry_window` y registra automáticamente la predicción
-    (`prediction_log.record_prediction`), aunque hoy sea honestamente
-    "sin datos suficientes" (el algoritmo real llega en el Sprint 3). No
-    repite ningún cálculo de Radar Explosivo -- solo lee `results`, igual
-    que `_track_trajectory`. Un candidato que falla no debe bloquear al
-    resto."""
+    """Motor Predictivo (Fase 1.1) -- para cada candidato que Radar
+    Explosivo ya marcó `eligible=True` este ciclo, invoca la capacidad
+    `entry_window` y registra automáticamente la predicción
+    (`prediction_log.record_prediction`). Sprint 3 (2026-08-06): pasa la
+    misma evidencia del Memory Engine que ya usa `build_live_ranking` (sin
+    recalcularla dos veces) para que `entry_window` pueda derivar la
+    `evidence_condition` de cada candidato y agregar sobre la base
+    histórica. No repite ningún cálculo de Radar Explosivo -- solo lee
+    `results`, igual que `_track_trajectory`. Un candidato que falla no
+    debe bloquear al resto."""
+    memory_evidence = _evidence(now)
     elegibles = [
         row for row in results
         if row.get("explosive") is not None and row["explosive"].get("eligible")
@@ -256,7 +259,7 @@ def _predict_entries(date: str, now: datetime, results: List[Dict[str, Any]]) ->
                 "eligible": True,
                 "metrics": metrics,
             }
-            evidence = entry_window.gather_evidence(candidate)
+            evidence = entry_window.gather_evidence(candidate, memory_evidence, now)
             result = _prediction_engine.compute("entry_window", candidate, evidence)
             prediction_log.record_prediction(
                 symbol=row["symbol"],

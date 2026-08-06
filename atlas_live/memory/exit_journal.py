@@ -114,6 +114,30 @@ def record_trajectory_sample(
         conn.commit()
 
 
+def get_all_symbol_dates() -> List[tuple]:
+    """Todos los pares (symbol, date) con al menos una muestra de
+    trayectoria -- para que capacidades del Motor Predictivo (ej.
+    `entry_window`, Fase 1.1, Sprint 3) puedan recorrer toda la base
+    histórica sin necesitar una función nueva por cada agrupación futura.
+    Solo lectura, no agrega tabla ni mecanismo nuevo."""
+    with closing(_connect()) as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT symbol, date FROM trajectory_samples ORDER BY date ASC, symbol ASC"
+        ).fetchall()
+    return [(r["symbol"], r["date"]) for r in rows]
+
+
+def count_trajectory_samples() -> int:
+    """Total de muestras guardadas -- usado como llave de invalidación de
+    caché por capacidades que agregan sobre toda la base histórica (ej.
+    `entry_window.gather_evidence`): cuando este número crece (reconstrucción
+    retroactiva en curso o nuevas trayectorias en vivo), la caché se
+    recalcula sola, sin ningún cambio de código."""
+    with closing(_connect()) as conn:
+        row = conn.execute("SELECT COUNT(*) AS n FROM trajectory_samples").fetchone()
+    return row["n"]
+
+
 def get_trajectory(symbol: str, date: str) -> List[Dict[str, Any]]:
     with closing(_connect()) as conn:
         rows = conn.execute(
@@ -225,6 +249,25 @@ def derive_movement_start(trajectory: List[Dict[str, Any]], movement_threshold_p
                 regla_aplicada=f"primer muestreo con |rendimiento| >= {movement_threshold_pct}%",
             )
     return ProvisionalExitPoint(timestamp=None, regla_aplicada=f"ningún muestreo superó {movement_threshold_pct}%")
+
+
+def derive_signal_start(trajectory: List[Dict[str, Any]]) -> ProvisionalExitPoint:
+    """Primer muestreo donde el símbolo cumplió la condición de elegibilidad
+    de Radar Explosivo (`eligible=1`) -- el momento en que Atlas ya lo
+    hubiera mostrado como candidato, no cuando el precio ya se movió (ver
+    `derive_movement_start`). Motor Predictivo, Fase 1.1 (2026-08-06, ver
+    DECISIONES.md): capacidad `entry_window` mide la ventana entre este
+    punto y `derive_movement_start`, no entre la detección y el movimiento
+    usando la misma marca de tiempo -- son dos hechos distintos.
+    Sin parámetro de umbral: `eligible` ya es un hecho binario grabado en
+    la trayectoria, no algo a derivar con un umbral elegido acá."""
+    for muestra in trajectory:
+        if muestra.get("eligible"):
+            return ProvisionalExitPoint(
+                timestamp=muestra["sampled_at"],
+                regla_aplicada="primer muestreo con eligible=1 (condición de Radar Explosivo cumplida)",
+            )
+    return ProvisionalExitPoint(timestamp=None, regla_aplicada="ningún muestreo tuvo eligible=1")
 
 
 def derive_weakness_point(trajectory: List[Dict[str, Any]], retracement_from_peak_pct: float) -> ProvisionalExitPoint:

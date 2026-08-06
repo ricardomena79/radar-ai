@@ -334,6 +334,64 @@ function renderWhyNot() {
 const MEMORY_POLL_MS = 30000;
 let _memoryRanking = { generated_at: null, candidates: [] };
 
+/* Motor Predictivo -- Cabina del Piloto, Sprint 4 (2026-08-06, ver
+ * DECISIONES.md). Última predicción de `entry_window` para el candidato
+ * #1 del Hero (mismo símbolo que ya decide `renderHero`/`renderOportunidad`,
+ * no un candidato distinto) -- `/api/predictive-engine/<symbol>`, solo
+ * lectura sobre atlas_live/predictive_engine/prediction_log.py. */
+let _entryWindow = null;
+
+async function fetchEntryWindow(symbol) {
+  if (!symbol) {
+    _entryWindow = null;
+    return;
+  }
+  try {
+    const res = await fetch(`/api/predictive-engine/${encodeURIComponent(symbol)}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    _entryWindow = await res.json();
+  } catch (err) {
+    console.error("fetchEntryWindow:", err);
+    _entryWindow = null;
+  }
+}
+
+const ENTRY_WINDOW_RECOMMENDATION_LABEL = {
+  esperar: "Esperar",
+  comprar_ahora: "Comprar ahora",
+  movimiento_pudo_haber_empezado: "La ventana ya pasó",
+};
+
+/* HTML de los metric-value de la ventana óptima de entrada, reutilizado
+ * tanto por el Hero del Dashboard como por el detalle de Oportunidad del
+ * día -- misma fuente (`_entryWindow`), mismo criterio: nunca un número
+ * inventado, "Evidencia insuficiente" es un estado honesto, no un error. */
+function entryWindowMetricsHtml(labelClass = "hero-metric-label", valueClass = "hero-metric-value", wrap = null) {
+  const p = _entryWindow;
+  const item = (label, value, dim) => {
+    const inner = `<div class="${labelClass}">${label}</div><div class="${valueClass}${dim ? " dim" : ""}"${dim ? ' style="font-size:14px"' : ""}>${value}</div>`;
+    return wrap ? `<div class="${wrap}">${inner}</div>` : `<div>${inner}</div>`;
+  };
+  if (!p || !p.available || p.confidence === "insuficiente") {
+    const detalle = p && p.available
+      ? `${p.sample_size} caso(s) histórico(s) -- se necesitan al menos 10 para estimar`
+      : "todavía no se registró ninguna predicción para este símbolo hoy";
+    return (
+      item("Ventana óptima de entrada", "Evidencia insuficiente", true) +
+      item("Condición de evidencia", p && p.evidence_condition ? p.evidence_condition : detalle, true)
+    );
+  }
+  const recomendacion = ENTRY_WINDOW_RECOMMENDATION_LABEL[p.recommendation] || p.recommendation || "sin recomendación";
+  return (
+    item("Ventana óptima de entrada", recomendacion, false) +
+    item("Mediana histórica", `${fmtNum(p.value)} min`, false) +
+    item("Rango P25-P75", `${fmtNum(p.range_low)}-${fmtNum(p.range_high)} min`, false) +
+    item("Casos similares", p.sample_size, false) +
+    item("Nivel de confianza", p.confidence, false) +
+    item("Condición de evidencia", p.evidence_condition || "sin condición confiable", false)
+  );
+}
+
 async function fetchMemoryRanking() {
   try {
     const res = await fetch("/api/memory-ranking");
@@ -342,6 +400,8 @@ async function fetchMemoryRanking() {
   } catch (err) {
     console.error("fetchMemoryRanking:", err);
   }
+  const top = _memoryRanking.candidates && _memoryRanking.candidates[0];
+  await fetchEntryWindow(top && top.eligible_radar ? top.symbol : null);
   renderHero();
   renderPlanB();
   renderTripleColumns();
@@ -547,8 +607,7 @@ function renderHero() {
       <div><div class="hero-metric-label">Score Radar</div><div class="hero-metric-value">${o.eligible_radar ? fmtNum(o.score) : "N/A"}</div></div>
       <div><div class="hero-metric-label">Probabilidad</div><div class="hero-metric-value">${o.probability_pct !== null ? fmtNum(o.probability_pct) + "%" : '<span class="dim">sin evidencia</span>'}</div></div>
       <div><div class="hero-metric-label">Confianza</div><div class="hero-metric-value">${o.confidence}</div></div>
-      <div><div class="hero-metric-label">Tiempo estimado al movimiento</div><div class="hero-metric-value dim" style="font-size:14px">sin cálculo real</div></div>
-      <div><div class="hero-metric-label">Objetivo histórico</div><div class="hero-metric-value dim" style="font-size:14px">sin cálculo real</div></div>
+      ${entryWindowMetricsHtml()}
     </div>
     ${priceBreakdownHtml(o)}
     <div class="hero-explain">${o.explanation}</div>
@@ -708,23 +767,15 @@ function renderOportunidad() {
           <div class="detail-metric-label">8. Confianza de Atlas</div>
           <div class="detail-metric-value">${o.confidence}</div>
         </div>
-        <div class="detail-metric">
-          <div class="detail-metric-label">6. Tiempo estimado hasta el movimiento</div>
-          <div class="detail-metric-value dim" style="font-size:14px">sin cálculo real todavía</div>
-        </div>
-        <div class="detail-metric">
-          <div class="detail-metric-label">7. Objetivo histórico esperado</div>
-          <div class="detail-metric-value dim" style="font-size:14px">sin cálculo real todavía</div>
-        </div>
+        ${entryWindowMetricsHtml("detail-metric-label", "detail-metric-value", "detail-metric")}
       </div>
 
       <div class="detail-explain">
         <b>5. Por qué Atlas la recomienda:</b><br>${o.explanation}
       </div>
       <div class="detail-note">
-        6-7. Tiempo estimado hasta el movimiento y objetivo histórico esperado: siguen sin tener ningún cálculo
-        real detrás (nunca lo tuvieron, ni siquiera sobre datos históricos) -- se muestran así, sin inventar un
-        número, hasta que se diseñe esa lógica como su propia decisión de arquitectura.
+        6-7. Ventana óptima de entrada -- Motor Predictivo, capacidad <code>entry_window</code>
+        (${_entryWindow && _entryWindow.available ? _entryWindow.explanation : "todavía sin evidencia suficiente para este símbolo"}).
       </div>
 
       <div class="detail-grid" style="margin-top:6px">
