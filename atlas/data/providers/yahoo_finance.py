@@ -12,6 +12,9 @@ import yfinance as yf
 
 from atlas.data.models.quote import Quote
 from atlas.data.providers.base import DataProvider, ProviderError, QuoteNotFoundError
+from atlas.data.providers.base import call_with_timeout as _call_with_timeout
+
+NETWORK_TIMEOUT_SECONDS = 15.0
 
 
 class YahooFinanceProvider(DataProvider):
@@ -39,7 +42,10 @@ class YahooFinanceProvider(DataProvider):
             if ticker is None:
                 continue
             try:
-                info = ticker.info
+                info = _call_with_timeout(
+                    lambda t=ticker: t.info, symbol, "cotización",
+                    timeout_seconds=NETWORK_TIMEOUT_SECONDS, provider_name="Yahoo Finance",
+                )
                 if not info:
                     continue
                 quotes.append(self._quote_from_info(symbol, info))
@@ -81,7 +87,12 @@ class YahooFinanceProvider(DataProvider):
     def get_history(self, symbol: str, period: str = "6mo", interval: str = "1d") -> pd.DataFrame:
         """Descarga barras OHLCV históricas de Yahoo Finance."""
         try:
-            history = yf.Ticker(symbol).history(period=period, interval=interval)
+            history = _call_with_timeout(
+                lambda: yf.Ticker(symbol).history(period=period, interval=interval),
+                symbol, "historial", timeout_seconds=NETWORK_TIMEOUT_SECONDS, provider_name="Yahoo Finance",
+            )
+        except ProviderError:
+            raise
         except Exception as exc:
             raise ProviderError(f"Fallo al consultar historial de '{symbol}': {exc}") from exc
 
@@ -93,7 +104,12 @@ class YahooFinanceProvider(DataProvider):
     def _fetch_info(self, symbol: str) -> Dict[str, Any]:
         """Descarga el diccionario `info` de yfinance para un símbolo."""
         try:
-            info = yf.Ticker(symbol).info
+            info = _call_with_timeout(
+                lambda: yf.Ticker(symbol).info, symbol, "cotización",
+                timeout_seconds=NETWORK_TIMEOUT_SECONDS, provider_name="Yahoo Finance",
+            )
+        except ProviderError:
+            raise
         except Exception as exc:
             raise ProviderError(f"Fallo al consultar Yahoo Finance para '{symbol}': {exc}") from exc
 

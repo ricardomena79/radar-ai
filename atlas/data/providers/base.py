@@ -1,7 +1,9 @@
 """Interfaz común que debe implementar cualquier proveedor de datos de mercado."""
 
 from abc import ABC, abstractmethod
-from typing import List
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
+from typing import Callable, List, TypeVar
 
 import pandas as pd
 
@@ -18,6 +20,43 @@ class QuoteNotFoundError(ProviderError):
     def __init__(self, symbol: str) -> None:
         super().__init__(f"No se encontró cotización para el símbolo '{symbol}'")
         self.symbol = symbol
+
+
+# --- Timeout de red compartido por cualquier proveedor ---
+# Bajo contención (ej. el escaneo de fondo de Atlas Live compitiendo con
+# una consulta puntual), yfinance puede dejar una conexión colgada sin
+# devolver error ni éxito -- sin este límite esa espera es indefinida.
+# `FinnhubProvider` ya pasa su propio `timeout=` a `requests.get()`
+# directamente (no lo necesita); esto es específicamente para
+# `YahooFinanceProvider`, cuya API (`yfinance`) no acepta un timeout
+# propio para `.info`/`.history()`.
+DEFAULT_NETWORK_TIMEOUT_SECONDS = 15.0
+
+_T = TypeVar("_T")
+_NETWORK_EXECUTOR = ThreadPoolExecutor(max_workers=40, thread_name_prefix="dataprovider-network")
+
+
+def call_with_timeout(
+    func: Callable[[], _T],
+    symbol: str,
+    what: str,
+    timeout_seconds: float = DEFAULT_NETWORK_TIMEOUT_SECONDS,
+    provider_name: str = "el proveedor",
+) -> _T:
+    """Ejecuta `func` con un límite duro de `timeout_seconds`.
+
+    Si el proveedor no responde a tiempo, levanta ProviderError -- el
+    mismo tipo de error que ya maneja cada símbolo individualmente en los
+    escaneos, así que un timeout no detiene el resto del trabajo.
+    """
+    future = _NETWORK_EXECUTOR.submit(func)
+    try:
+        return future.result(timeout=timeout_seconds)
+    except FutureTimeoutError:
+        raise ProviderError(
+            f"Tiempo de espera agotado ({timeout_seconds:.0f}s) "
+            f"consultando {what} de '{symbol}' en {provider_name}"
+        )
 
 
 class DataProvider(ABC):

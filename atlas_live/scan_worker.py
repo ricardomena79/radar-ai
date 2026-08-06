@@ -477,19 +477,47 @@ def run_scan_once() -> None:
                 pass
             STATE.update(last_market_state=detected_market_state)
 
-        STATE.update(
-            context=context_payload,
-            ranking=results[:TOP_N],
-            generated_at=datetime.now(timezone.utc).isoformat(),
-            scan_duration_seconds=round(time.monotonic() - start, 1),
-            symbols_scanned=len(assets),
-            symbols_ok=len(results),
-            errors=errors,
-            scanning=False,
-            explosive_diagnostics=diagnostics,
-            memory_ranking=memory_ranking_serialized,
-            memory_ranking_generated_at=datetime.now(timezone.utc).isoformat() if memory_ranking_serialized else STATE.memory_ranking_generated_at,
-        )
+        # El diagnóstico del ciclo (cuántos símbolos, cuántos errores, cuánto
+        # tardó) se actualiza siempre, haya o no resultados -- es sobre el
+        # ciclo en sí, no sobre lo que se muestra en pantalla.
+        state_fields: Dict[str, Any] = {
+            "scan_duration_seconds": round(time.monotonic() - start, 1),
+            "symbols_scanned": len(assets),
+            "symbols_ok": len(results),
+            "errors": errors,
+            "scanning": False,
+            "explosive_diagnostics": diagnostics,
+        }
+
+        if results:
+            # Ciclo con al menos un símbolo puntuado: lo que se muestra en
+            # pantalla se actualiza con el resultado real de este ciclo.
+            state_fields.update(
+                context=context_payload,
+                ranking=results[:TOP_N],
+                generated_at=datetime.now(timezone.utc).isoformat(),
+                memory_ranking=memory_ranking_serialized,
+                memory_ranking_generated_at=(
+                    datetime.now(timezone.utc).isoformat()
+                    if memory_ranking_serialized else STATE.memory_ranking_generated_at
+                ),
+                last_error=None,
+            )
+        else:
+            # Ningún símbolo pudo puntuarse este ciclo -- ej. todos los
+            # proveedores de datos configurados fallaron a la vez. Se
+            # conserva el último ranking bueno en pantalla en vez de
+            # mostrar una lista vacía: un ciclo sin datos no es lo mismo
+            # que "no hay ninguna oportunidad hoy". El diagnóstico
+            # (symbols_ok=0, errors, scan_duration_seconds) sí se actualiza
+            # arriba, así que esto queda visible para quien lo audite.
+            state_fields["last_error"] = (
+                "Ningún símbolo pudo puntuarse en este ciclo -- probable falla "
+                "simultánea de todos los proveedores de datos configurados. Se "
+                "conserva el último ranking válido en pantalla."
+            )
+
+        STATE.update(**state_fields)
     except Exception as exc:
         STATE.update(scanning=False, last_error=f"{exc}\n{traceback.format_exc()}")
 
