@@ -5,9 +5,14 @@ dashboard estático. No calcula nada por sí mismo: cada endpoint delega en
 `scan_worker`, que a su vez delega en Atlas Core. Cero lógica de negocio
 en esta capa.
 
-Uso: `python -m atlas_live.server` (arranca en http://localhost:5000).
+Uso local: `python -m atlas_live.server` (arranca en http://localhost:5000).
+En producción (Railway) el proceso lo levanta gunicorn apuntando a
+`atlas_live.server:app`, por lo que el refresco en segundo plano se arranca
+a nivel de módulo (más abajo), no solo dentro de `main()` -- gunicorn nunca
+llama a `main()`, solo importa `app`.
 """
 
+import os
 from pathlib import Path
 
 from flask import Flask, jsonify, send_from_directory
@@ -19,6 +24,8 @@ from atlas_live.mission_control import heartbeat, timeline
 STATIC_DIR = Path(__file__).parent / "static"
 
 app = Flask(__name__, static_folder=None)
+
+scan_worker.start_background_refresh()
 
 
 @app.route("/")
@@ -171,11 +178,16 @@ def main() -> None:
     # el estado en sí ya vive en SQLite con commit inmediato por escritura
     # (Memory Store, Prediction Journal); lo único que agrega este cierre
     # prolijo es no cortar un ciclo a mitad de una escritura en curso.
-    # No es un servicio 24/7 -- deja de correr en cuanto se cierra la app,
-    # a propósito, según lo decidido.
-    scan_worker.start_background_refresh()
+    # `start_background_refresh()` ya se llamó a nivel de módulo (ver
+    # arriba); acá no hace falta repetirlo (es idempotente igual).
+    #
+    # `host`/`port`: en Railway, gunicorn controla el bind directamente
+    # (`--bind 0.0.0.0:$PORT`) y nunca ejecuta `main()` -- esto solo
+    # importa para `python -m atlas_live.server` en local o en cualquier
+    # otro entorno que sí llame a `app.run()`.
+    port = int(os.environ.get("PORT", 5000))
     try:
-        app.run(host="127.0.0.1", port=5000, debug=False, threaded=True)
+        app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
     finally:
         scan_worker.request_stop()
         terminado = scan_worker.wait_until_stopped(timeout=SHUTDOWN_TIMEOUT_SECONDS)
