@@ -45,9 +45,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from atlas.config.config import data_dir
+from atlas.config.config import db_path
 
-DB_PATH = data_dir(default=Path(__file__).parent) / "exit_journal.db"
+DB_PATH = db_path("exit_journal.db", default=Path(__file__).parent)
 
 
 class AlreadyClosedError(Exception):

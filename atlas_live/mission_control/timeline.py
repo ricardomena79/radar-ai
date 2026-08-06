@@ -21,9 +21,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from atlas.config.config import data_dir
+from atlas.config.config import db_path
 
-DB_PATH = data_dir(default=Path(__file__).parent) / "timeline.db"
+DB_PATH = db_path("timeline.db", default=Path(__file__).parent)
 
 # Catálogo fijo (ATLAS_MISSION_CONTROL.md, sección 4).
 EVENT_TYPES = {
