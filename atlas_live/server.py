@@ -98,6 +98,52 @@ def api_rescan():
     return jsonify({"status": "escaneo iniciado"})
 
 
+@app.route("/api/diagnostics/providers")
+def api_diagnostics_providers():
+    """TEMPORAL -- verificación puntual de que Railway realmente arma un
+    MultiProvider Yahoo+Finnhub, pedida el 2026-08-06 para confirmar la
+    configuración real del deploy sin adivinar (ver DECISIONES.md).
+    Candidato a quedar protegido para diagnóstico interno en vez de
+    borrarse -- decisión pendiente hasta ver esta evidencia.
+
+    Nunca devuelve el valor de ningún secreto -- solo su presencia (bool),
+    el nombre de las clases de proveedor realmente activas, y el resultado
+    de una consulta real de prueba a Finnhub (ok/inválida/ausente),
+    reutilizando exactamente `verify_failover.check_finnhub_isolated()`
+    (no se inventa un chequeo nuevo)."""
+    from atlas.data.providers import _configured_provider_names, get_default_provider
+    from atlas.data.providers.multi_provider import MultiProvider
+    from atlas.data.providers.verify_failover import check_finnhub_isolated
+
+    configured = _configured_provider_names()
+    finnhub_key_present = bool(os.environ.get("FINNHUB_API_KEY"))
+
+    try:
+        provider = get_default_provider()
+        active_provider_class = type(provider).__name__
+        is_multi_provider = isinstance(provider, MultiProvider)
+        wrapped_provider_classes = provider.provider_names if is_multi_provider else None
+    except Exception:
+        active_provider_class = None
+        is_multi_provider = False
+        wrapped_provider_classes = None
+
+    if not finnhub_key_present:
+        finnhub_authentication = "missing"
+    else:
+        finnhub_authentication = "ok" if check_finnhub_isolated()["ok"] else "invalid"
+
+    return jsonify({
+        "active_provider_class": active_provider_class,
+        "is_multi_provider": is_multi_provider,
+        "wrapped_provider_classes": wrapped_provider_classes,
+        "configured_providers": configured,
+        "finnhub_key_present": finnhub_key_present,
+        "finnhub_authentication": finnhub_authentication,
+        "yahoo_provider_present": "yahoo_finance" in configured,
+    })
+
+
 def main() -> None:
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
