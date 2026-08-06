@@ -20,6 +20,7 @@ from flask import Flask, jsonify, send_from_directory
 from atlas_live import scan_worker
 from atlas_live.memory import exit_journal, learning_status, live_integration, market_hours, prediction_journal
 from atlas_live.mission_control import heartbeat, timeline
+from atlas_live.predictive_engine import prediction_log
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -143,6 +144,20 @@ def api_mission_control():
             }
             for e in market_state_events
         ],
+    })
+
+
+@app.route("/api/predictive-engine")
+def api_predictive_engine():
+    """Motor Predictivo -- verificación pública del Sprint 1 (Fase 1.1,
+    2026-08-06, ver DECISIONES.md). Últimas predicciones registradas por
+    cualquier capacidad (hoy solo `entry_window`), solo lectura sobre
+    `prediction_log.py`. Sin UI todavía (eso es el Sprint 4) -- este
+    endpoint existe para poder confirmar sobre la URL pública, sin acceso
+    a la base local, que cada predicción emitida se está registrando."""
+    return jsonify({
+        "total_predictions": prediction_log.count_predictions(),
+        "recent": prediction_log.get_predictions(limit=20),
     })
 
 
