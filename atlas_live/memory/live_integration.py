@@ -48,6 +48,17 @@ from atlas_live.memory import exit_journal as ej
 from atlas_live.memory import market_hours
 from atlas_live.memory import prediction_journal as pj
 from atlas_live.memory import ranking_score as rs
+from atlas_live.predictive_engine import prediction_log
+from atlas_live.predictive_engine.capabilities import entry_window
+from atlas_live.predictive_engine.capabilities.entry_window import EntryWindowCapability
+from atlas_live.predictive_engine.engine import PredictionEngine
+
+# Motor Predictivo (Fase 1.1, Sprint 1, 2026-08-06, ver DECISIONES.md) --
+# una sola instancia de proceso, igual que `_evidence_cache`: registrar
+# una capacidad nueva más adelante es una línea acá, no un rediseño de
+# este módulo.
+_prediction_engine = PredictionEngine()
+_prediction_engine.register(EntryWindowCapability())
 
 CATEGORY = "EXPLOSION"
 TOP_N_JOURNAL = 20  # mismo top_n que ya usa Radar Explosivo en explosive_config.json
@@ -221,6 +232,45 @@ def _track_trajectory(date: str, now: datetime, results: List[Dict[str, Any]]) -
     return f"trayectoria_muestreada={muestreados}/{len(sealed)}"
 
 
+def _predict_entries(date: str, now: datetime, results: List[Dict[str, Any]]) -> str:
+    """Motor Predictivo (Fase 1.1, Sprint 1) -- para cada candidato que
+    Radar Explosivo ya marcó `eligible=True` este ciclo, invoca la
+    capacidad `entry_window` y registra automáticamente la predicción
+    (`prediction_log.record_prediction`), aunque hoy sea honestamente
+    "sin datos suficientes" (el algoritmo real llega en el Sprint 3). No
+    repite ningún cálculo de Radar Explosivo -- solo lee `results`, igual
+    que `_track_trajectory`. Un candidato que falla no debe bloquear al
+    resto."""
+    elegibles = [
+        row for row in results
+        if row.get("explosive") is not None and row["explosive"].get("eligible")
+    ]
+    predichas = 0
+    for row in elegibles:
+        try:
+            metrics = row["explosive"]["metrics"]
+            candidate = {
+                "symbol": row["symbol"],
+                "date": date,
+                "score": row["explosive"].get("score"),
+                "eligible": True,
+                "metrics": metrics,
+            }
+            evidence = entry_window.gather_evidence(candidate)
+            result = _prediction_engine.compute("entry_window", candidate, evidence)
+            prediction_log.record_prediction(
+                symbol=row["symbol"],
+                date=date,
+                predicted_at=now.isoformat(),
+                result=result,
+                feature_snapshot=prediction_log.build_feature_snapshot(metrics, now),
+            )
+            predichas += 1
+        except Exception:
+            continue
+    return f"predicciones_registradas={predichas}/{len(elegibles)}"
+
+
 def _grade_pending(date: str, now: datetime) -> str:
     sealed = pj.get_sealed_predictions(date)
     pendientes = [row for row in sealed if row["graded_at"] is None]
@@ -265,6 +315,7 @@ def run_live_cycle(results: List[Dict[str, Any]], now: Optional[datetime] = None
     session = market_hours.get_session(now)
     date = market_hours.market_date(now)
     accion = "ninguna"
+    prediccion = "ninguna"
 
     try:
         if session == "premarket":
@@ -284,12 +335,21 @@ def run_live_cycle(results: List[Dict[str, Any]], now: Optional[datetime] = None
                 pj.seal_ranking(date, now.isoformat(), journaled)
                 accion = "snapshot_dinamico+sellado"
 
+            # Motor Predictivo (Fase 1.1, Sprint 1): "Atlas debe medir desde
+            # el primer momento en que detecta una oportunidad, no desde la
+            # apertura del mercado regular" -- se invoca ya en premarket,
+            # no solo durante la sesión regular. Campo nuevo y aparte de
+            # `accion` -- no se toca el contrato ya existente de ese string
+            # (varios tests lo comparan con `==`).
+            prediccion = _predict_entries(date, now, results)
+
         elif session == "regular":
             accion = _track_trajectory(date, now, results)
+            prediccion = _predict_entries(date, now, results)
 
         elif session in ("afterhours", "closed") and pj.is_sealed(date):
             accion = _grade_pending(date, now)
 
-        return {"session": session, "date": date, "accion": accion, "error": None}
+        return {"session": session, "date": date, "accion": accion, "prediccion": prediccion, "error": None}
     except Exception as exc:
-        return {"session": session, "date": date, "accion": "error", "error": str(exc)}
+        return {"session": session, "date": date, "accion": "error", "prediccion": "error", "error": str(exc)}
