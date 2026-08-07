@@ -566,6 +566,26 @@ html, body {
 .detail-metric { background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; padding: 10px 12px; }
 .detail-metric-label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.03em; margin-bottom: 4px; }
 .detail-metric-value { font-family: var(--mono); font-size: 18px; font-weight: 700; }
+
+/* ---------- Panel de Desempeño (2026-08-07) -- mismas variables y
+   patrón de tarjeta que .detail-metric, para no inventar un lenguaje
+   visual nuevo. Nivel 1 y Nivel 2 nunca comparten una tarjeta. ---------- */
+.perf-day-card {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+  padding: 16px 18px; margin-top: 10px;
+}
+.perf-summary-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 14px; margin-top: 10px;
+}
+.perf-two-col {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px;
+}
+.perf-block {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 14px 16px;
+}
+.perf-block h3 { margin: 0 0 10px; font-size: 14px; }
+@media (max-width: 1100px) { .perf-two-col { grid-template-columns: 1fr; } }
 .detail-explain {
   background: var(--panel-2);
   border-left: 3px solid var(--accent);

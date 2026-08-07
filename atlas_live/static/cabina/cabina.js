@@ -41,8 +41,13 @@ function fmtTime(isoString) {
 }
 
 function fmtMoney(value) {
+  // Corrección de interfaz (2026-08-07, ver DECISION_LOG.md): Atlas solo
+  // opera el mercado estadounidense hoy -- "US$" en vez del "$" genérico,
+  // para no dejar ambigua la moneda. Único punto de formato de precios de
+  // toda la Cabina -- cambiar acá alcanza, nunca se formatea "$" a mano
+  // en otro lugar (verificado).
   if (value === null || value === undefined) return '<span class="dim">--</span>';
-  return "$" + value.toFixed(2);
+  return "US$" + value.toFixed(2);
 }
 
 /* Trazabilidad de precio (2026-08-02) -- ver DATA_FUSION_ENGINE_PROPUESTA.md.
@@ -524,11 +529,13 @@ function startPanelStatusPolling() {
   fetchExitJournal();
   fetchMissionControl();
   fetchLearningStatus();
+  fetchPerformance();
   setInterval(fetchMemoryEngine, PANEL_STATUS_POLL_MS);
   setInterval(fetchPredictionJournal, PANEL_STATUS_POLL_MS);
   setInterval(fetchExitJournal, PANEL_STATUS_POLL_MS);
   setInterval(fetchMissionControl, PANEL_STATUS_POLL_MS);
   setInterval(fetchLearningStatus, PANEL_STATUS_POLL_MS);
+  setInterval(fetchPerformance, PANEL_STATUS_POLL_MS);
 }
 
 /* 📸 Guardar Estado del Día -- aprobado el 2026-08-02, último elemento
@@ -888,6 +895,108 @@ function renderExitJournal() {
     { label: "Rendimiento final", render: r => r.final_return_pct !== null ? fmtPct(r.final_return_pct) : '<span class="dim">--</span>' },
     { label: "Muestras", render: r => r.sample_count },
   ]);
+}
+
+/* Panel de Desempeño (2026-08-07, ver DECISION_LOG.md) -- Nivel 1
+ * (Oportunidad Oficial del Día, Prediction Journal) y Nivel 2
+ * (Rendimiento histórico, Exit Journal) nunca se mezclan en el mismo
+ * número: "acierto del modelo" (¿pasó lo que Atlas predijo?) y
+ * "rentabilidad" (¿fue rentable?) son dos conceptos separados, a
+ * pedido explícito del usuario. */
+let _performance = null;
+
+async function fetchPerformance() {
+  try {
+    const res = await fetch("/api/performance");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    _performance = await res.json();
+  } catch (err) {
+    console.error("fetchPerformance:", err);
+    _performance = null;
+  }
+  renderPerformance();
+}
+
+function renderPerformance() {
+  const dia = _performance ? _performance.oportunidad_del_dia : null;
+  const g = _performance ? _performance.rendimiento_global : null;
+
+  const diaEl = document.getElementById("desempeno-dia");
+  if (!dia || !dia.available) {
+    diaEl.innerHTML = `<div class="empty-state">Sin ranking sellado ese día -- nada que mostrar todavía.</div>`;
+  } else {
+    diaEl.innerHTML = `
+      <div class="detail-grid">
+        <div class="detail-metric"><div class="detail-metric-label">Símbolo</div><div class="detail-metric-value">${dia.symbol}</div></div>
+        <div class="detail-metric"><div class="detail-metric-label">Resultado</div><div class="detail-metric-value">${dia.graded ? (dia.resultado || '<span class="dim">--</span>') : '<span class="dim">Sin calificar todavía</span>'}</div></div>
+        <div class="detail-metric"><div class="detail-metric-label">Rentabilidad</div><div class="detail-metric-value">${fmtPct(dia.rentabilidad_pct)}</div></div>
+        <div class="detail-metric"><div class="detail-metric-label">Tiempo hasta el objetivo</div><div class="detail-metric-value">${dia.tiempo_hasta_objetivo_min !== null ? dia.tiempo_hasta_objetivo_min.toFixed(0) + " min" : '<span class="dim">--</span>'}</div></div>
+      </div>
+      <div class="detail-explain" style="margin-top:12px"><b>Motivo:</b> ${dia.motivo || '<span class="dim">--</span>'}</div>`;
+  }
+
+  if (!g) {
+    document.getElementById("desempeno-resumen").innerHTML = "";
+    document.getElementById("desempeno-precision").innerHTML = "";
+    document.getElementById("desempeno-financiero").innerHTML = "";
+    document.getElementById("desempeno-evolucion").innerHTML = "";
+    document.getElementById("desempeno-score").innerHTML = "";
+    return;
+  }
+
+  document.getElementById("desempeno-resumen").innerHTML = `
+    <div class="detail-metric"><div class="detail-metric-label">Recomendaciones hoy</div><div class="detail-metric-value">${g.recomendaciones_emitidas_hoy}</div></div>
+    <div class="detail-metric"><div class="detail-metric-label">Abiertas</div><div class="detail-metric-value">${g.operaciones_abiertas_hoy}</div></div>
+    <div class="detail-metric"><div class="detail-metric-label">Cerradas</div><div class="detail-metric-value">${g.operaciones_cerradas_hoy}</div></div>
+    <div class="detail-metric"><div class="detail-metric-label">Win Rate diario</div><div class="detail-metric-value">${g.win_rate_periodos.diario_pct !== null ? fmtNum(g.win_rate_periodos.diario_pct) + "%" : '<span class="dim">--</span>'}</div></div>
+    <div class="detail-metric"><div class="detail-metric-label">Win Rate semanal</div><div class="detail-metric-value">${g.win_rate_periodos.semanal_pct !== null ? fmtNum(g.win_rate_periodos.semanal_pct) + "%" : '<span class="dim">--</span>'}</div></div>
+    <div class="detail-metric"><div class="detail-metric-label">Win Rate mensual</div><div class="detail-metric-value">${g.win_rate_periodos.mensual_pct !== null ? fmtNum(g.win_rate_periodos.mensual_pct) + "%" : '<span class="dim">--</span>'}</div></div>`;
+
+  const p = g.precision_del_modelo;
+  const dva = p.detectadas_vs_acertadas;
+  document.getElementById("desempeno-precision").innerHTML = `
+    <div class="detail-grid">
+      <div class="detail-metric"><div class="detail-metric-label">Tasa de acierto</div><div class="detail-metric-value">${p.tasa_acierto_pct !== null ? fmtNum(p.tasa_acierto_pct) + "%" : '<span class="dim">--</span>'}</div></div>
+      <div class="detail-metric"><div class="detail-metric-label">Muestra (histórico)</div><div class="detail-metric-value">${p.muestra}</div></div>
+      <div class="detail-metric"><div class="detail-metric-label">Detectadas hoy</div><div class="detail-metric-value">${dva.detectadas}</div></div>
+      <div class="detail-metric"><div class="detail-metric-label">Acertadas hoy</div><div class="detail-metric-value">${dva.acertadas}</div></div>
+    </div>`;
+
+  const f = g.rendimiento_financiero;
+  document.getElementById("desempeno-financiero").innerHTML = `
+    <div class="detail-grid">
+      <div class="detail-metric"><div class="detail-metric-label">Win Rate (financiero)</div><div class="detail-metric-value">${f.win_rate_financiero_pct !== null ? fmtNum(f.win_rate_financiero_pct) + "%" : '<span class="dim">--</span>'}</div></div>
+      <div class="detail-metric"><div class="detail-metric-label">Profit Factor</div><div class="detail-metric-value">${f.profit_factor !== null ? fmtNum(f.profit_factor, 2) : '<span class="dim">--</span>'}</div></div>
+      <div class="detail-metric"><div class="detail-metric-label">Ganancia promedio</div><div class="detail-metric-value">${fmtPct(f.ganancia_promedio_pct)}</div></div>
+      <div class="detail-metric"><div class="detail-metric-label">Pérdida promedio</div><div class="detail-metric-value">${fmtPct(f.perdida_promedio_pct)}</div></div>
+      <div class="detail-metric"><div class="detail-metric-label">Expectativa matemática</div><div class="detail-metric-value">${fmtPct(f.expectativa_pct)}</div></div>
+      <div class="detail-metric"><div class="detail-metric-label">Máximo drawdown <span class="dim" style="font-size:10px">(hipotético)</span></div><div class="detail-metric-value">${f.drawdown_hipotetico_pct !== null ? fmtNum(f.drawdown_hipotetico_pct) + " pts" : '<span class="dim">--</span>'}</div></div>
+      <div class="detail-metric"><div class="detail-metric-label">Mejor operación hoy</div><div class="detail-metric-value">${fmtPct(f.mejor_operacion_hoy_pct)}</div></div>
+      <div class="detail-metric"><div class="detail-metric-label">Peor operación hoy</div><div class="detail-metric-value">${fmtPct(f.peor_operacion_hoy_pct)}</div></div>
+    </div>
+    <div class="detail-note" style="margin-top:10px">El drawdown es una curva de capital <b>hipotética</b> (una unidad fija por operación) -- no representa dinero real, Atlas no gestiona una cuenta.</div>`;
+
+  const evo = g.evolucion.slice(-30);
+  document.getElementById("desempeno-evolucion").innerHTML = `
+    <h3>Evolución del Win Rate (últimos ${evo.length} días con operaciones)</h3>
+    ${evo.length ? `<div class="table-wrap"><table class="data-table"><thead><tr><th>Fecha</th><th>Win Rate</th><th>Operaciones</th></tr></thead><tbody>
+      ${evo.map(e => `<tr><td>${e.fecha}</td><td>${e.win_rate_pct !== null ? fmtNum(e.win_rate_pct) + "%" : '<span class="dim">--</span>'}</td><td>${e.n}</td></tr>`).join("")}
+    </tbody></table></div>` : `<div class="empty-state">Sin operaciones cerradas todavía.</div>`}`;
+
+  const score = g.atlas_score;
+  document.getElementById("desempeno-score").innerHTML = `
+    <h3>Atlas Score</h3>
+    ${score.score !== null ? `
+      <div class="hero-metric-value" style="font-size:36px">${score.score} / 100</div>
+      <div class="detail-grid" style="margin-top:10px">
+        ${Object.entries(score.componentes).map(([k, v]) => `
+          <div class="detail-metric">
+            <div class="detail-metric-label">${k.replace(/_/g, " ")} (peso ${(score.pesos_usados[k] * 100).toFixed(0)}%)</div>
+            <div class="detail-metric-value">${v !== null ? v.toFixed(1) : '<span class="dim">sin dato</span>'}</div>
+          </div>`).join("")}
+      </div>
+      <div class="detail-note" style="margin-top:10px">Combinación configurable (<code>performance_config.json</code>) de los componentes de arriba -- nunca un juicio inventado. Cambiar los pesos queda registrado en <code>DECISION_LOG.md</code>.</div>
+    ` : `<div class="empty-state">Sin operaciones cerradas todavía -- el Atlas Score necesita evidencia real, no se fabrica.</div>`}`;
 }
 
 function renderMissionControl() {

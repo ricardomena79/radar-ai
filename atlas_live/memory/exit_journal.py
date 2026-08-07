@@ -219,6 +219,26 @@ def get_recent_summaries(limit: int = 20) -> List[Dict[str, Any]]:
     return [_row_to_dict(r) for r in rows]
 
 
+def get_summaries_between(start_date: Optional[str] = None, end_date: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Todos los resúmenes objetivos cerrados en un rango de fechas
+    (inclusive) -- Panel de Desempeño (2026-08-07, ver DECISION_LOG.md).
+    `None` en cualquiera de los dos extremos significa "sin límite" de ese
+    lado. Solo lectura, mismos campos objetivos de siempre -- no agrega
+    ningún umbral ni interpretación nueva."""
+    query = "SELECT * FROM exit_summary WHERE 1=1"
+    params: List[Any] = []
+    if start_date is not None:
+        query += " AND date >= ?"
+        params.append(start_date)
+    if end_date is not None:
+        query += " AND date <= ?"
+        params.append(end_date)
+    query += " ORDER BY date ASC, symbol ASC"
+    with closing(_connect()) as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [_row_to_dict(r) for r in rows]
+
+
 # ---------------------------------------------------------------------------
 # 3. NO se guarda -- funciones puras, umbral SIEMPRE explícito, nunca un
 #    default silencioso. Resultado siempre marcado como regla temporal.

@@ -1,8 +1,12 @@
 # ATLAS_STATUS.md
 
-Estado actual del proyecto, snapshot -- no reemplaza `ATLAS_ROADMAP.md` (hoja de ruta completa) ni `DECISION_LOG.md` (historial de decisiones); apunta a ellos para el detalle. Última actualización: 2026-08-07, cierre de la Investigación 4.
+Estado actual del proyecto, snapshot -- no reemplaza `ATLAS_ROADMAP.md` (hoja de ruta completa) ni `DECISION_LOG.md` (historial de decisiones); apunta a ellos para el detalle. Última actualización: 2026-08-07, Panel de Desempeño de Atlas implementado.
 
 ---
+
+## Panel de Desempeño de Atlas (nuevo, 2026-08-07)
+
+Vista "📊 Desempeño" en la Cabina -- dos niveles nunca mezclados: Nivel 1 (Oportunidad Oficial del Día, Prediction Journal) y Nivel 2 (rendimiento histórico sobre todo el top-20 sellado, Exit Journal). Acierto del modelo (`category==EXPLOSION`) y rentabilidad (`final_return_pct`) son conceptos separados en todo el panel, nunca la misma métrica. Atlas Score con pesos configurables (`performance_config.json`), gobernados por una regla explícita: todo cambio de pesos se registra en `DECISION_LOG.md`. Drawdown etiquetado como hipotético -- Atlas no gestiona una cuenta real. Ver `DECISION_LOG.md`, entrada "2026-08-07 -- Panel de Desempeño de Atlas".
 
 ## Fase 1.1 -- Motor Predictivo de Atlas
 

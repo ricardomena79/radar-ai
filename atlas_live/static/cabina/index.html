@@ -56,6 +56,7 @@
     <button class="nav-item nav-item--sub" data-view="memory-engine">🧠 Memory Engine</button>
     <button class="nav-item nav-item--sub" data-view="prediction-journal">📒 Prediction Journal</button>
     <button class="nav-item nav-item--sub" data-view="exit-journal">📉 Exit Journal</button>
+    <button class="nav-item nav-item--sub" data-view="desempeno">📊 Desempeño</button>
 
     <div class="nav-sep"></div>
     <button class="nav-item" data-view="radar-completo">📊 Radar Completo</button>
@@ -172,6 +173,35 @@
         <div class="header-meta">Memoria histórica de trayectoria -- sin recomendación de salida (fase pendiente)</div>
       </header>
       <div class="table-wrap"><table class="data-table" id="exit-journal-table"></table></div>
+    </section>
+
+    <!-- ---------- 9b. PANEL DE DESEMPEÑO ---------- -->
+    <section class="view" id="view-desempeno">
+      <header class="view-header"><h1>📊 Desempeño de Atlas</h1>
+        <div class="header-meta">Nivel 1: Oportunidad Oficial del Día · Nivel 2: rendimiento histórico sobre todo el top-20 sellado (Exit Journal) -- nunca se mezclan</div>
+      </header>
+
+      <h2 class="section-title">🎯 Oportunidad Oficial del Día</h2>
+      <div id="desempeno-dia" class="perf-day-card"></div>
+
+      <h2 class="section-title" style="margin-top:24px">📈 Rendimiento Global de Atlas</h2>
+
+      <div id="desempeno-resumen" class="perf-summary-grid"></div>
+
+      <div class="perf-two-col">
+        <div class="perf-block">
+          <h3>Precisión del modelo <span class="dim" style="font-size:12px">(¿el movimiento predicho ocurrió?)</span></h3>
+          <div id="desempeno-precision"></div>
+        </div>
+        <div class="perf-block">
+          <h3>Resultado financiero <span class="dim" style="font-size:12px">(¿fue rentable?)</span></h3>
+          <div id="desempeno-financiero"></div>
+        </div>
+      </div>
+
+      <div id="desempeno-evolucion" class="perf-block" style="margin-top:16px"></div>
+
+      <div id="desempeno-score" class="perf-block" style="margin-top:16px"></div>
     </section>
 
     <!-- ---------- 10. RADAR COMPLETO ---------- -->

@@ -17,7 +17,7 @@ from pathlib import Path
 
 from flask import Flask, jsonify, send_from_directory
 
-from atlas_live import scan_worker
+from atlas_live import performance_panel, scan_worker
 from atlas_live.backtest import seed_import
 from atlas_live.memory import exit_journal, learning_status, live_integration, market_hours, prediction_journal
 from atlas_live.mission_control import heartbeat, timeline
@@ -141,6 +141,18 @@ def api_exit_journal_inventory():
     escritura."""
     pares = exit_journal.get_all_symbol_dates()
     return jsonify({"pairs": pares, "count": len(pares)})
+
+
+@app.route("/api/performance")
+def api_performance():
+    """Panel de Desempeño de Atlas (2026-08-07, ver DECISION_LOG.md).
+    Nivel 1 (Oportunidad Oficial del Día, Prediction Journal) + Nivel 2
+    (Rendimiento histórico, Exit Journal) -- ver performance_panel.py
+    para el detalle de cada cálculo. Solo lectura."""
+    return jsonify({
+        "oportunidad_del_dia": performance_panel.get_daily_opportunity(),
+        "rendimiento_global": performance_panel.get_global_performance(),
+    })
 
 
 @app.route("/api/mission-control")

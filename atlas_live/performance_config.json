@@ -1,0 +1,10 @@
+{
+  "_gobernanza": "Toda modificación de estos pesos debe quedar registrada en DECISION_LOG.md con fecha, pesos anteriores, pesos nuevos y justificación -- decisión aprobada 2026-08-07, ver la entrada 'Panel de Desempeño de Atlas'.",
+  "atlas_score_weights": {
+    "tasa_acierto": 0.30,
+    "win_rate_financiero": 0.25,
+    "profit_factor": 0.25,
+    "expectativa": 0.10,
+    "drawdown": 0.10
+  }
+}
