@@ -1,6 +1,6 @@
 # ATLAS_STATUS.md
 
-Estado actual del proyecto, snapshot -- no reemplaza `ATLAS_ROADMAP.md` (hoja de ruta completa) ni `DECISION_LOG.md` (historial de decisiones); apunta a ellos para el detalle. Última actualización: 2026-08-06, cierre de la Investigación 3.
+Estado actual del proyecto, snapshot -- no reemplaza `ATLAS_ROADMAP.md` (hoja de ruta completa) ni `DECISION_LOG.md` (historial de decisiones); apunta a ellos para el detalle. Última actualización: 2026-08-06, cierre de la Investigación 3 y despliegue del commit `2e4d9a9`.
 
 ---
 
@@ -11,23 +11,30 @@ Objetivo: que Atlas responda, con evidencia y nunca con un número inventado, qu
 | Sprint | Contenido | Estado |
 |---|---|---|
 | 1 | Estructura del Predictive Engine, `prediction_log` append-only, capacidad `entry_window` (estructura) | Desplegado en Railway |
-| 2 | Reconstrucción histórica de trayectorias (30 días, `prepost=True`), Exit Journal poblado | Implementado localmente, reconstrucción validada (30/30 días, 638 trayectorias, 89.786 muestras); **pendiente desplegar** |
-| 3 | Algoritmo real de ventana óptima (mediana, P25/P75, confianza) | Implementado y validado con datos reales; **pendiente desplegar** |
+| 2 | Reconstrucción histórica de trayectorias (30 días, `prepost=True`), Exit Journal poblado | Código desplegado en Railway (commit `2e4d9a9`); reconstrucción validada localmente (30/30 días, 638 trayectorias, 89.786 muestras) -- base de datos real todavía no repoblada en producción, ver "Despliegue" |
+| 3 | Algoritmo real de ventana óptima (mediana, P25/P75, confianza) | Desplegado en Railway (commit `2e4d9a9`), validado con datos reales tras la corrección de la Investigación 3 |
 | 4 | Integración en la Cabina (Dashboard + Oportunidad del día) | Desplegado en Railway (commit `2e5f9d2`) |
-| 5 | `grading.py` -- calificación automática de predicciones | Implementado localmente; **pendiente desplegar** |
+| 5 | `grading.py` -- calificación automática de predicciones | Desplegado en Railway (commit `2e4d9a9`) |
 
 ## Investigaciones formales
 
+Tablero con evidencia verificable únicamente -- ningún estado se infiere ni se reconstruye de memoria. Ver criterio acordado 2026-08-06: no reabrir investigaciones cerradas por mejoras futuras; un problema nuevo de premarket se registra como investigación nueva, no como reapertura de la 3.
+
 | # | Tema | Estado |
 |---|---|---|
-| 3 | Gate de liquidez/RVOL bloqueaba elegibilidad en premarket (Volume=0 de Yahoo) | **CERRADA** 2026-08-06 -- ver `INVESTIGACIONES.md` / `DECISION_LOG.md` |
+| 1 | -- | Sin registro disponible |
+| 2 | -- | Sin registro disponible |
+| 3 | Gate de liquidez/RVOL bloqueaba elegibilidad en premarket (Volume=0 de Yahoo) | **CERRADA** 2026-08-06 (aprobada por el usuario) -- ver `INVESTIGACIONES.md` / `DECISION_LOG.md` |
+| 4 | -- | Sin registro disponible |
+| 5 | -- | Sin registro disponible |
+| 6 | -- | Sin registro disponible |
+| 7 | -- | Sin registro disponible |
 
 ## Despliegue
 
 - **Rama activa**: `claude/setup-atlas-live-env-a5425c`.
-- **Último commit desplegado en Railway**: `2e5f9d2` (Sprint 3+4).
-- **Pendiente de desplegar en este cierre de la Investigación 3**: Sprint 2 (reconstrucción), Sprint 3 (algoritmo, ya en código desde el commit anterior pero sin la base histórica real detrás), Sprint 5 (grading), y la corrección del gate de liquidez/RVOL premarket (`explosive_engine.py`, `historical_scan.py`).
-- **No desplegado**: el archivo `exit_journal.db` con las 89.786 muestras reales no viaja en el commit (convención del proyecto: nunca se commitean `.db`) -- se repuebla en producción corriendo `reconstruct_trajectories.py` contra Railway, o se deja que el Exit Journal en vivo lo acumule orgánicamente día a día.
+- **Último commit desplegado en Railway**: `2e4d9a9` (Investigación 3 + Sprint 5), verificado (`Last-Modified` coincide exacto con el timestamp del commit).
+- **No desplegado**: el archivo `exit_journal.db` con las 89.786 muestras reales no viaja en ningún commit (convención del proyecto: nunca se commitean `.db`) -- se repuebla en producción corriendo `reconstruct_trajectories.py` contra Railway, o se deja que el Exit Journal en vivo lo acumule orgánicamente día a día.
 
 ## Salud del sistema (verificado en esta sesión)
 
@@ -37,6 +44,6 @@ Objetivo: que Atlas responda, con evidencia y nunca con un número inventado, qu
 
 ## Pendientes conocidos
 
-- Desplegar Sprints 2, 3 (base real), 5 y el fix de Investigación 3 a Railway (siguiente paso inmediato tras este documento).
-- Repoblar `exit_journal.db` en producción tras el despliegue.
+- Repoblar `exit_journal.db` en producción (Railway) con la base histórica real de 30 días -- todavía no ejecutado contra producción.
 - Nivel 2 del Motor Predictivo (señales precursoras antes de la elegibilidad) y la inteligencia de atribución (`attribution.py`) -- arquitectura dejada preparada, explícitamente no implementadas todavía.
+- Investigaciones 1, 2, 4, 5, 6, 7 -- sin registro disponible; se documentan cuando se retomen, con evidencia real, no reconstruidas de memoria.
