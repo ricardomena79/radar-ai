@@ -57,6 +57,7 @@
     <button class="nav-item nav-item--sub" data-view="prediction-journal">📒 Prediction Journal</button>
     <button class="nav-item nav-item--sub" data-view="exit-journal">📉 Exit Journal</button>
     <button class="nav-item nav-item--sub" data-view="desempeno">📊 Desempeño</button>
+    <button class="nav-item nav-item--sub" data-view="evolucion">📈 Evolución</button>
 
     <div class="nav-sep"></div>
     <button class="nav-item" data-view="radar-completo">📊 Radar Completo</button>
@@ -202,6 +203,22 @@
       <div id="desempeno-evolucion" class="perf-block" style="margin-top:16px"></div>
 
       <div id="desempeno-score" class="perf-block" style="margin-top:16px"></div>
+    </section>
+
+    <!-- ---------- 9c. PANEL DE EVOLUCIÓN ---------- -->
+    <section class="view" id="view-evolucion">
+      <header class="view-header"><h1>📈 Evolución de Atlas</h1>
+        <div class="header-meta">Cómo evolucionan la precisión y el aprendizaje de Atlas con el tiempo -- tres conceptos separados, nunca mezclados. Todo con datos reales; lo que aún no tiene evidencia dice "No disponible".</div>
+      </header>
+
+      <h2 class="section-title">🎯 Precisión del modelo <span class="dim" style="font-size:12px">(¿el movimiento predicho ocurrió?)</span></h2>
+      <div id="evolucion-precision" class="perf-block"></div>
+
+      <h2 class="section-title" style="margin-top:24px">💰 Rendimiento financiero <span class="dim" style="font-size:12px">(¿fue rentable?)</span></h2>
+      <div id="evolucion-financiero" class="perf-block"></div>
+
+      <h2 class="section-title" style="margin-top:24px">🧠 Evolución del aprendizaje <span class="dim" style="font-size:12px">(¿cuánto sabe Atlas hoy?)</span></h2>
+      <div id="evolucion-aprendizaje" class="perf-block"></div>
     </section>
 
     <!-- ---------- 10. RADAR COMPLETO ---------- -->

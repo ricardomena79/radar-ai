@@ -543,6 +543,80 @@ async function fetchLearningStatus() {
   }
 }
 
+/* Panel de Evolución (2026-08-07, ver DECISION_LOG.md) -- precisión del
+ * modelo, rendimiento financiero y evolución del aprendizaje, cada uno
+ * desde datos reales ya existentes (reutiliza performance_panel para 1 y
+ * 2). Cualquier dato ausente se muestra "No disponible", nunca un número
+ * inventado. */
+let _evolution = null;
+
+async function fetchEvolution() {
+  try {
+    const res = await fetch("/api/evolution");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    _evolution = await res.json();
+  } catch (err) {
+    console.error("fetchEvolution:", err);
+    _evolution = null;
+  }
+  renderEvolution();
+}
+
+function renderEvolution() {
+  const nd = (v, suf = "") => (v === null || v === undefined) ? '<span class="dim">No disponible</span>' : (v + suf);
+  const ndPct = (v) => (v === null || v === undefined) ? '<span class="dim">No disponible</span>' : (fmtNum(v) + "%");
+  const precEl = document.getElementById("evolucion-precision");
+  const finEl = document.getElementById("evolucion-financiero");
+  const aprEl = document.getElementById("evolucion-aprendizaje");
+  if (!precEl || !finEl || !aprEl) return;
+
+  if (!_evolution) {
+    precEl.innerHTML = finEl.innerHTML = aprEl.innerHTML = `<div class="empty-state">No disponible.</div>`;
+    return;
+  }
+
+  const p = _evolution.precision_del_modelo;
+  precEl.innerHTML = `
+    <div class="detail-grid">
+      <div class="detail-metric"><div class="detail-metric-label">Aciertos hoy</div><div class="detail-metric-value">${nd(p.aciertos_hoy)}</div></div>
+      <div class="detail-metric"><div class="detail-metric-label">Aciertos de la semana</div><div class="detail-metric-value">${nd(p.aciertos_semana)}</div></div>
+      <div class="detail-metric"><div class="detail-metric-label">Aciertos del mes</div><div class="detail-metric-value">${nd(p.aciertos_mes)}</div></div>
+      <div class="detail-metric"><div class="detail-metric-label">Aciertos históricos</div><div class="detail-metric-value">${nd(p.aciertos_historico)}</div></div>
+      <div class="detail-metric"><div class="detail-metric-label">Precisión histórica</div><div class="detail-metric-value">${ndPct(p.precision_historica_pct)}</div></div>
+      <div class="detail-metric"><div class="detail-metric-label">Muestra</div><div class="detail-metric-value">${nd(p.muestra_historica)}</div></div>
+    </div>
+    <div class="detail-note" style="margin-top:8px">"Acierto" = el símbolo alcanzó una EXPLOSION real (misma definición del Clasificador del proyecto). No es lo mismo que rentabilidad.</div>`;
+
+  const f = _evolution.rendimiento_financiero;
+  finEl.innerHTML = `
+    <div class="detail-grid">
+      <div class="detail-metric"><div class="detail-metric-label">Win Rate (financiero)</div><div class="detail-metric-value">${ndPct(f.win_rate_financiero_pct)}</div></div>
+      <div class="detail-metric"><div class="detail-metric-label">Profit Factor</div><div class="detail-metric-value">${(f.profit_factor === null || f.profit_factor === undefined) ? '<span class="dim">No disponible</span>' : fmtNum(f.profit_factor, 2)}</div></div>
+      <div class="detail-metric"><div class="detail-metric-label">Ganancia promedio</div><div class="detail-metric-value">${ndPct(f.ganancia_promedio_pct)}</div></div>
+      <div class="detail-metric"><div class="detail-metric-label">Pérdida promedio</div><div class="detail-metric-value">${ndPct(f.perdida_promedio_pct)}</div></div>
+      <div class="detail-metric"><div class="detail-metric-label">Expectativa matemática</div><div class="detail-metric-value">${ndPct(f.expectativa_pct)}</div></div>
+      <div class="detail-metric"><div class="detail-metric-label">Drawdown <span class="dim" style="font-size:10px">(hipotético)</span></div><div class="detail-metric-value">${(f.drawdown_hipotetico_pct === null || f.drawdown_hipotetico_pct === undefined) ? '<span class="dim">No disponible</span>' : fmtNum(f.drawdown_hipotetico_pct) + " pts"}</div></div>
+      <div class="detail-metric"><div class="detail-metric-label">Mejor operación</div><div class="detail-metric-value">${ndPct(f.mejor_operacion_global_pct)}</div></div>
+      <div class="detail-metric"><div class="detail-metric-label">Peor operación</div><div class="detail-metric-value">${ndPct(f.peor_operacion_global_pct)}</div></div>
+    </div>
+    <div class="detail-note" style="margin-top:8px">El drawdown es una curva de capital <b>hipotética</b> -- no representa dinero real, Atlas no gestiona una cuenta.</div>`;
+
+  const a = _evolution.evolucion_aprendizaje;
+  const condiciones = (a.condiciones_evidencia_suficiente === null || a.condiciones_evidencia_suficiente === undefined)
+    ? '<span class="dim">No disponible</span>'
+    : `${a.condiciones_evidencia_suficiente} / ${a.condiciones_totales_evaluadas}`;
+  aprEl.innerHTML = `
+    <div class="detail-grid">
+      <div class="detail-metric"><div class="detail-metric-label">Trayectorias almacenadas</div><div class="detail-metric-value">${nd(a.trayectorias_almacenadas)}</div></div>
+      <div class="detail-metric"><div class="detail-metric-label">Muestras analizadas</div><div class="detail-metric-value">${nd(a.muestras_analizadas)}</div></div>
+      <div class="detail-metric"><div class="detail-metric-label">Casos similares acumulados</div><div class="detail-metric-value">${nd(a.casos_similares_acumulados)}</div></div>
+      <div class="detail-metric"><div class="detail-metric-label">Condiciones con evidencia</div><div class="detail-metric-value">${condiciones}</div></div>
+      <div class="detail-metric"><div class="detail-metric-label">Nivel de aprendizaje</div><div class="detail-metric-value">${ndPct(a.nivel_aprendizaje_pct)}</div></div>
+      <div class="detail-metric"><div class="detail-metric-label">Última actualización</div><div class="detail-metric-value">${nd(a.ultima_actualizacion)}</div></div>
+    </div>
+    <div class="detail-note" style="margin-top:8px">"Nivel de aprendizaje" = fracción de las condiciones evaluadas que ya alcanzaron confiabilidad estadística (límite de Wilson). Crece a medida que Atlas acumula evidencia real.</div>`;
+}
+
 function startPanelStatusPolling() {
   fetchMemoryEngine();
   fetchPredictionJournal();
@@ -550,12 +624,14 @@ function startPanelStatusPolling() {
   fetchMissionControl();
   fetchLearningStatus();
   fetchPerformance();
+  fetchEvolution();
   setInterval(fetchMemoryEngine, PANEL_STATUS_POLL_MS);
   setInterval(fetchPredictionJournal, PANEL_STATUS_POLL_MS);
   setInterval(fetchExitJournal, PANEL_STATUS_POLL_MS);
   setInterval(fetchMissionControl, PANEL_STATUS_POLL_MS);
   setInterval(fetchLearningStatus, PANEL_STATUS_POLL_MS);
   setInterval(fetchPerformance, PANEL_STATUS_POLL_MS);
+  setInterval(fetchEvolution, PANEL_STATUS_POLL_MS);
 }
 
 /* 📸 Guardar Estado del Día -- aprobado el 2026-08-02, último elemento

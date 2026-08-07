@@ -17,7 +17,7 @@ from pathlib import Path
 
 from flask import Flask, jsonify, send_from_directory
 
-from atlas_live import performance_panel, scan_worker
+from atlas_live import evolution_panel, performance_panel, scan_worker
 from atlas_live.backtest import seed_import
 from atlas_live.memory import exit_journal, learning_status, live_integration, market_hours, prediction_journal
 from atlas_live.mission_control import heartbeat, timeline
@@ -153,6 +153,15 @@ def api_performance():
         "oportunidad_del_dia": performance_panel.get_daily_opportunity(),
         "rendimiento_global": performance_panel.get_global_performance(),
     })
+
+
+@app.route("/api/evolution")
+def api_evolution():
+    """Panel de Evolución de Atlas (2026-08-07, ver DECISION_LOG.md).
+    Precisión del modelo + rendimiento financiero + evolución del
+    aprendizaje, todo desde datos reales ya existentes -- ver
+    evolution_panel.py. Solo lectura, aditivo, no toca /api/performance."""
+    return jsonify(evolution_panel.get_evolution())
 
 
 @app.route("/api/mission-control")

@@ -8,6 +8,10 @@ Estado actual del proyecto, snapshot -- no reemplaza `ATLAS_ROADMAP.md` (hoja de
 
 Vista "📊 Desempeño" en la Cabina -- dos niveles nunca mezclados: Nivel 1 (Oportunidad Oficial del Día, Prediction Journal) y Nivel 2 (rendimiento histórico sobre todo el top-20 sellado, Exit Journal). Acierto del modelo (`category==EXPLOSION`) y rentabilidad (`final_return_pct`) son conceptos separados en todo el panel, nunca la misma métrica. Atlas Score con pesos configurables (`performance_config.json`), gobernados por una regla explícita: todo cambio de pesos se registra en `DECISION_LOG.md`. Drawdown etiquetado como hipotético -- Atlas no gestiona una cuenta real. Ver `DECISION_LOG.md`, entrada "2026-08-07 -- Panel de Desempeño de Atlas".
 
+## Panel de Evolución de Atlas (nuevo, 2026-08-07)
+
+Vista "📈 Evolución" en la Cabina -- cómo evolucionan la precisión y el aprendizaje de Atlas con el tiempo, separando 3 conceptos que nunca se mezclan: precisión del modelo (aciertos hoy/semana/mes/histórico + precisión %), rendimiento financiero (win rate, profit factor, expectativa, drawdown, mejor/peor global) y evolución del aprendizaje (trayectorias, muestras, casos, condiciones con evidencia, nivel de aprendizaje %, última actualización). 100% aditivo y de solo lectura: reutiliza `performance_panel` para las dos primeras secciones y contadores reales del Exit Journal / Memory Store / Memory Engine para la tercera. Todo dato ausente dice "No disponible" -- ningún valor fabricado. Endpoint `/api/evolution`, módulo `atlas_live/evolution_panel.py`. Ver `DECISION_LOG.md`, entrada "2026-08-07 -- Panel de Evolución de Atlas".
+
 ## Fase 1.1 -- Motor Predictivo de Atlas
 
 Objetivo: que Atlas responda, con evidencia y nunca con un número inventado, qué comprar, cuándo entrar, por qué cree que subirá y qué retorno histórico es razonable esperar.
