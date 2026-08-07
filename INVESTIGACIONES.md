@@ -40,7 +40,7 @@ Este archivo se creó en la sesión del 2026-08-06, junto con el cierre de la In
 
 ## Investigación 4 -- Persistencia y sincronización del conocimiento de Atlas
 
-**Estado: ABIERTA** -- implementación completa y validada localmente; falta el despliegue y la primera sincronización real hacia producción antes de poder cerrarla (la metodología de este archivo exige evidencia de que el objetivo se cumplió, no solo que el código está escrito).
+**Estado: CERRADA** (2026-08-07, aprobada por el usuario)
 
 **Disparador**: la auditoría posterior al cierre de la Investigación 3 encontró que la base histórica real (89.786 muestras) nunca llegó a producción -- el objetivo de la Fase 1.1 seguía sin cumplirse para un usuario real, pese a todo el código ya desplegado.
 
@@ -52,6 +52,8 @@ Este archivo se creó en la sesión del 2026-08-06, junto con el cierre de la In
 
 **Validado**: 6 pruebas nuevas (`test_seed_sync.py`) más la suite completa del proyecto -- 86/86 en verde. Prueba funcional end-to-end con datos sintéticos superpuestos sobre la base real local (89.786 muestras reales, sin tocarlas), confirmando delta correcto, importación aditiva y reintento idempotente sin duplicados.
 
-**Pendiente para el cierre**: desplegar el endpoint nuevo, generar y comitear el primer seed real (el delta completo hacia una producción hoy vacía), verificar en la URL pública que la base oficial refleja las 89.786 muestras y que el Motor Predictivo produce una recomendación real, no "evidencia insuficiente". El commit de esta etapa se preparó sin `push`, a pedido explícito del usuario ("modo nocturno").
+**Validación operativa final (producción real)**: primer seed real generado y comiteado (638 pares, 89.786 filas, validado antes de enviarse). Desplegado, importado automáticamente al arrancar el servidor. Verificado en la URL pública: `/api/exit-journal/inventory` reporta 638 pares en producción -- coincide exacto con desarrollo. Sin regresión en `/api/memory-engine`, `/api/mission-control`, `/api/prediction-journal`, `/api/exit-journal`, `/api/ranking`. Mecanismo confirmado idempotente y aditivo tanto en pruebas como en la corrida real. Única salvedad, no un bloqueo: observar una predicción real *logueada* en vivo depende de que el reloj real del mercado entre en sesión premarket/regular -- no de ningún problema del sistema.
+
+**Cierre**: aprobado por el usuario 2026-08-07. No se reabre por mejoras futuras -- un comportamiento distinto al esperado en producción se registra como investigación nueva.
 
 **Entrada completa**: ver `DECISION_LOG.md`, sección "2026-08-06 -- Investigación 4".
