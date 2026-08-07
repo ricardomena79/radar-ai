@@ -120,7 +120,7 @@ const MOCK = {
   // atractivos (gran suba, alto volumen, nombre conocido) pero que Atlas
   // descartó, con el motivo exacto -- para no tener que preguntarlo.
   whyNot: [
-    { symbol: "ZAPP", apparentReason: "Subió +18.4% en premarket -- la mayor suba del universo hoy", excludedBecause: "No pasó el gate de liquidez mínima ($2M) -- volumen en dólares insuficiente para operar con seguridad." },
+    { symbol: "ZAPP", apparentReason: "Subió +18.4% en premarket -- la mayor suba del universo hoy", excludedBecause: "No pasó el gate de liquidez mínima (US$2M) -- volumen en dólares insuficiente para operar con seguridad." },
     { symbol: "TSLA", apparentReason: "Alto volumen y muy conocida", excludedBecause: "Market cap muy por encima del techo de microcap/mid -- penalización fuerte por tamaño, no es el perfil que busca Radar Explosivo." },
     { symbol: "KTRA", apparentReason: "RVOL de 22x -- parece explosiva a primera vista", excludedBecause: "Gap% y cambio% no superaron el umbral mínimo de movimiento -- volumen alto sin movimiento de precio correspondiente." },
   ],
@@ -179,6 +179,6 @@ const MOCK = {
     marketHours: "Premarket 04:00-09:30 · Regular 09:30-16:00 · Afterhours 16:00-20:00 (huso horario de Nueva York)",
     explosionThresholdPct: 10.0,
     falseBreakoutCeilingPct: 5.0,
-    microCapCeiling: "$300M",
+    microCapCeiling: "US$300M",
   },
 };
