@@ -1,5 +1,14 @@
 # INVESTIGACIONES.md
 
+> **Nota de reconciliación (2026-08-07):** este proyecto se trabajó en dos
+> sesiones paralelas de Claude Code sobre la misma rama, con numeraciones de
+> investigación independientes que coincidieron en número pero no en tema.
+> Este archivo unifica ambas líneas sin perder ningún registro: primero el
+> **registro formal** (Investigación 3 = gate de liquidez; Investigación 4 =
+> persistencia del conocimiento); después, la **línea paralela "Cabina /
+> Proveedores / Failover"** con su propia numeración. Ninguna reemplaza a la
+> otra.
+
 Registro oficial de investigaciones formales de Atlas -- metodología establecida 2026-08-06:
 
 ```
@@ -57,3 +66,60 @@ Este archivo se creó en la sesión del 2026-08-06, junto con el cierre de la In
 **Cierre**: aprobado por el usuario 2026-08-07. No se reabre por mejoras futuras -- un comportamiento distinto al esperado en producción se registra como investigación nueva.
 
 **Entrada completa**: ver `DECISION_LOG.md`, sección "2026-08-06 -- Investigación 4".
+
+---
+
+# Línea de trabajo paralela -- Cabina / Proveedores / Failover (sesión 2026-08-06/07)
+
+> Numeración propia de esta línea, independiente de la de arriba (se conserva
+> tal cual se llevó durante la sesión). No se mezcla con el registro formal:
+> los números que coinciden (3, 4) se refieren a temas distintos.
+
+## Estado
+
+| # | Investigación | Estado |
+|---|---|---|
+| 1 | Ramas / Repositorio | ✅ Cerrada |
+| 2 | Motor Predictivo | ✅ Cerrada |
+| 3 | Yahoo Premarket (mensaje honesto en la Cabina) | ✅ Cerrada |
+| 4 | Arquitectura del proveedor (separar precios/fundamentales) | ✅ Cerrada -- conclusión: no separar, no aporta beneficio con la arquitectura actual |
+| 5 | WebSocket Yahoo | ✅ Cerrada -- conclusión: descartado por ahora |
+| 6 | Radar / Failover (`YFRateLimitError` no activaba Finnhub) | ✅ Cerrada |
+| 7 | Cabina -- validación end-to-end post-failover | 🔄 Abierta -- optimización del ciclo Finnhub pendiente (diseño aprobado, sin implementar) |
+
+## Notas por investigación
+
+**3 -- Yahoo Premarket**: cerrada. Cuando Yahoo no reporta `preMarketPrice`, la
+fila Premarket de la Cabina muestra "No disponible / Proveedor: Yahoo Finance /
+Motivo: no reportó precio de premarket en esta consulta" en vez de un `--`
+desnudo. Se validó (opción C, failover a Finnhub para premarket) y se descartó
+con evidencia real: Finnhub no entrega premarket, devuelve el precio regular.
+Ver `DECISION_LOG.md`.
+
+**4 -- Arquitectura del proveedor**: cerrada. Se auditó si separar "precios" y
+"fundamentales" aportaba beneficio. Conclusión con evidencia: no -- Yahoo ya
+entrega ambos en una sola llamada `.info`; el cuello de botella real es la
+ausencia de caché entre ciclos, no la mezcla de campos.
+
+**5 -- WebSocket Yahoo**: cerrada. El WebSocket de Yahoo soporta streaming real
+(probado), pero no entrega fundamentales ni históricos, requiere una
+arquitectura push incompatible con el diseño pull actual, y depende de un
+endpoint no oficial sin reconexión garantizada. Descartado por ahora.
+
+**6 -- Radar / Failover**: **cerrada** (2026-08-06). Causa raíz: `YFRateLimitError`
+de `yfinance` no se convertía en `ProviderError` dentro de
+`YahooFinanceProvider.get_quotes()`, así que `MultiProvider` nunca llegaba a
+intentar Finnhub -- el ciclo completo de escaneo se caía en vez de activar el
+failover. Corregido: nueva `RateLimitError(ProviderError)` en `base.py`,
+`get_quotes()` la captura explícitamente (solo `YFRateLimitError`, sin
+`except Exception` genérico) y la relanza de inmediato. Validado con 7
+pruebas de evidencia real (forzada y natural, en producción, mercado
+abierto). Ver `DECISION_LOG.md`.
+
+**7 -- Cabina**: abierta. Se validó en vivo que la Cabina se actualiza por
+ciclo, el ranking/precios cambian, el reloj avanza, y Motor Predictivo y Radar
+Explosivo funcionan. Se encontró y corrigió un guard faltante en `/api/rescan`
+(evitaba dos escaneos concurrentes). Queda pendiente la optimización del ciclo
+cuando el failover completo cae a Finnhub (diagnóstico terminado: Finnhub
+soporta concurrencia y tiene techo de 60 req/min; diseño de la solución
+aprobado, implementación aún no hecha).

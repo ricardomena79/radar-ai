@@ -114,6 +114,26 @@ function priceBreakdownHtml(c) {
       <span class="price-row-label">${label}${isUsed ? ' <span class="price-row-used-pill">EN USO</span>' : ""}</span>
       <span class="price-row-value">${value !== null && value !== undefined ? fmtMoney(value) : '<span class="dim">--</span>'}</span>
     </div>`;
+
+  // Investigación 3 (2026-08-06): un "--" desnudo en Premarket dejaba al
+  // usuario sin saber si Atlas falló o si el proveedor simplemente no
+  // entregó el dato en esta consulta -- confirmado con evidencia real
+  // (yf.Ticker(...).info con preMarketPrice=None) que esto es una
+  // ausencia honesta del proveedor, no un bug de Atlas (ver
+  // DECISION_LOG.md). Esta fila hace esa causa explícita en vez de dejar
+  // que el usuario se pregunte por qué -- mismo patrón ya usado en la
+  // fila "Overnight" de abajo, con el agregado del motivo puntual.
+  const premarketRow = (() => {
+    if (c.price_premarket !== null && c.price_premarket !== undefined) {
+      return row("Premarket", c.price_premarket, c.price_type === "premarket");
+    }
+    return `
+    <div class="price-row price-row--unavailable price-row--explained">
+      <span class="price-row-label">Premarket</span>
+      <span class="price-row-value">No disponible</span>
+      <span class="price-row-reason">Proveedor: ${priceSourceLabel(c.price_source)} · Motivo: no reportó precio de premarket en esta consulta.</span>
+    </div>`;
+  })();
   // Cuarta sesión (Overnight / Blue Ocean ATS, 2026-08-02) -- Atlas no
   // tiene este dato con ningún proveedor actual. Se muestra la fila con
   // el mismo criterio que el resto de la Cabina: nunca ocultar una
@@ -135,7 +155,7 @@ function priceBreakdownHtml(c) {
       </div>
       <div class="price-breakdown-grid">
         ${row("Regular", c.price_regular, c.price_type === "regular")}
-        ${row("Premarket", c.price_premarket, c.price_type === "premarket")}
+        ${premarketRow}
         ${row("After-hours", c.price_afterhours, c.price_type === "afterhours")}
         ${overnightRow}
       </div>

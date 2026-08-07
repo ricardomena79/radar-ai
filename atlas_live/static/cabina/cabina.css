@@ -394,6 +394,14 @@ html, body {
 .price-row--unavailable .price-row-label { border-bottom: 1px dashed var(--text-faint); padding-bottom: 1px; width: fit-content; }
 .price-row--unavailable .price-row-value { font-size: 11px; font-weight: 500; font-style: italic; }
 .price-note { margin-top: 8px; font-size: 11px; color: var(--text-faint); max-width: 900px; }
+/* Investigación 3 (2026-08-06) -- Premarket sin dato explica su motivo en
+   vez de dejar un "--" desnudo (ver priceBreakdownHtml() en cabina.js).
+   flex-basis: 100% le da su propia línea en el grid, para que la
+   oración del motivo no se apriete en la columna de 90px del resto de
+   las filas. */
+.price-row--explained { flex-basis: 100%; opacity: 1; }
+.price-row--explained .price-row-value { font-style: normal; color: var(--text-dim); }
+.price-row-reason { display: block; font-size: 11px; font-style: normal; font-weight: 400; color: var(--text-faint); margin-top: 2px; }
 
 /* ---------- Plan B: segunda oportunidad, subordinada a la principal ---------- */
 .plan-b {

@@ -22,6 +22,17 @@ class QuoteNotFoundError(ProviderError):
         self.symbol = symbol
 
 
+class RateLimitError(ProviderError):
+    """El proveedor rechazó la consulta por exceso de solicitudes (rate-limit).
+
+    Es un fallo del proveedor completo, no de un símbolo puntual -- a
+    diferencia de QuoteNotFoundError, no tiene sentido seguir intentando
+    el resto de un lote contra el mismo proveedor. Al ser subclase de
+    ProviderError, MultiProvider ya la reconoce y hace failover al
+    siguiente proveedor sin necesitar ningún cambio propio (Investigación 6).
+    """
+
+
 # --- Timeout de red compartido por cualquier proveedor ---
 # Bajo contención (ej. el escaneo de fondo de Atlas Live compitiendo con
 # una consulta puntual), yfinance puede dejar una conexión colgada sin

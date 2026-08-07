@@ -240,7 +240,19 @@ def api_learning_status():
 
 @app.route("/api/rescan", methods=["POST"])
 def api_rescan():
-    """Fuerza un escaneo inmediato (además del refresco automático periódico)."""
+    """Fuerza un escaneo inmediato (además del refresco automático periódico).
+
+    Investigación 7 (2026-08-06): sin este guard, un clic en "Actualizar
+    ahora" mientras el ciclo de fondo ya está corriendo lanzaba un SEGUNDO
+    run_scan_once() en paralelo -- confirmado en vivo: dos ciclos compitiendo
+    por el mismo _NETWORK_EXECUTOR y el mismo _prefilter_cursor global
+    producían lotes de tamaño inconsistente entrelazados en el log y
+    disparaban el ciclo a varios minutos de duración. Un escaneo en curso
+    ahora se respeta -- no se decide nada nuevo del lado del failover
+    (Investigación 6), solo se evita solaparlo.
+    """
+    if scan_worker.STATE.snapshot()["scanning"]:
+        return jsonify({"status": "ya hay un escaneo en curso, se ignora esta solicitud"}), 409
     import threading
     threading.Thread(target=scan_worker.run_scan_once, daemon=True).start()
     return jsonify({"status": "escaneo iniciado"})

@@ -4,17 +4,21 @@ Responsabilidad única: obtener datos crudos de Yahoo Finance y normalizarlos
 a Quote. No calcula indicadores, no aplica scoring ni filtra símbolos.
 """
 
+import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
 import yfinance as yf
+from yfinance.exceptions import YFRateLimitError
 
 from atlas.data.models.quote import Quote
-from atlas.data.providers.base import DataProvider, ProviderError, QuoteNotFoundError
+from atlas.data.providers.base import DataProvider, ProviderError, QuoteNotFoundError, RateLimitError
 from atlas.data.providers.base import call_with_timeout as _call_with_timeout
 
 NETWORK_TIMEOUT_SECONDS = 15.0
+
+logger = logging.getLogger(__name__)
 
 
 class YahooFinanceProvider(DataProvider):
@@ -30,6 +34,14 @@ class YahooFinanceProvider(DataProvider):
 
         Pensado para escanear listas grandes de símbolos (el Universo Racional
         completo): un símbolo inválido o sin datos no interrumpe al resto.
+
+        Excepción: un rate-limit de Yahoo (YFRateLimitError) no es un
+        problema de ESE símbolo -- es del proveedor completo, y el resto
+        del lote fallaría igual. Se convierte en RateLimitError y se
+        relanza de inmediato (Investigación 6) en vez de seguir el lote,
+        para que MultiProvider pueda intentar con el siguiente proveedor
+        configurado. Ningún otro tipo de excepción cambia de
+        comportamiento: sigue absorbiéndose por símbolo, como siempre.
         """
         if not symbols:
             return []
@@ -49,7 +61,12 @@ class YahooFinanceProvider(DataProvider):
                 if not info:
                     continue
                 quotes.append(self._quote_from_info(symbol, info))
-            except (ProviderError, QuoteNotFoundError):
+            except YFRateLimitError as exc:
+                raise RateLimitError(
+                    f"Yahoo Finance devolvió rate-limit consultando '{symbol}': {exc}"
+                ) from exc
+            except (ProviderError, QuoteNotFoundError) as exc:
+                logger.warning("Yahoo Finance falló para '%s' (%s) -- se omite, continúa el resto del lote.", symbol, exc)
                 continue
 
         return quotes

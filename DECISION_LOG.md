@@ -372,3 +372,46 @@ Como siguiente prioridad, el usuario pidió reemplazar el panel "Calidad del Mer
 **Justificación**: decisión directa del usuario -- "No quiero mezclar 'rentabilidad positiva' con 'acierto de Atlas'... quiero dos conceptos separados" y "El Atlas Score no debe depender de pesos fijos elegidos arbitrariamente. Justifica técnicamente esos pesos o diseña el sistema para que sean configurables." Mismo principio ya establecido en el proyecto para "Calidad del Mercado" (2026-08-03): ningún juicio compuesto se fabrica sin evidencia o sin poder ajustarse.
 
 **Impacto esperado**: `atlas_live/memory/exit_journal.py` gana `get_summaries_between()` (solo lectura, sin cambios al esquema). Nuevo módulo `atlas_live/performance_panel.py` (100% de lectura sobre Prediction Journal, Exit Journal y Memory Store), `atlas_live/performance_config.json`, endpoint `/api/performance`, vista nueva "📊 Desempeño" en la Cabina. `test_performance_panel.py` (6 casos, incluyendo una prueba dedicada a que acierto y rentabilidad nunca se mezclen, y otra a que sin datos no se inventa ningún número). Suite completa del proyecto: 92/92 en verde, verificado a mano el cálculo de Win Rate/Profit Factor/expectativa/drawdown/Atlas Score sobre datos sintéticos. Corrección de interfaz en el mismo commit: `fmtMoney()` (único punto de formato de precios de toda la Cabina) pasa de "$" genérico a "US$" -- solo presentación, sin cambios de lógica.
+---
+
+## 2026-08-06 -- Investigación 3 (Cabina: mensaje honesto cuando Yahoo no entrega premarket) -- CERRADA
+
+**Problema**: la Cabina mostraba "Premarket: --" sin ninguna explicación cuando `preMarketPrice` de Yahoo venía `None`, dejando al usuario sin forma de distinguir una falla de Atlas de una ausencia real del dato en el proveedor.
+
+**Causa raíz, confirmada con evidencia real** (no supuesta): `YahooFinanceLiveProvider` copia `price_premarket=info.get("preMarketPrice")` de forma incondicional -- verificado campo por campo contra un `.info` real de GDX en premarket genuino, sin ninguna pérdida en el camino. Cuando el campo llega vacío, es porque Yahoo no lo reportó en esa consulta puntual, no porque Atlas lo descarte.
+
+**Alternativas evaluadas para resolverlo** (formato completo en la conversación de esta sesión): (A) reintentar Yahoo -- descartada, bajo valor, ya cubierto por el ciclo de refresco existente; (B) otro endpoint de Yahoo -- descartada, ya fusionado dentro de `.info`; (C) failover a Finnhub para premarket -- **validada y descartada con evidencia real**: muestra de 8 símbolos reales, Finnhub devolvió en el 100% de los casos el precio de cierre regular (mismo `t`/epoch que `regularMarketTime`), nunca el premarket -- confirmado además contra TradingView para GDX (82.65 real vs. 83.68 de Finnhub); (D) mostrar la ausencia honestamente, con el motivo explícito -- la única opción que sobrevivió a la validación.
+
+**Decisión tomada**: (D). `cabina.js`/`cabina.css`: cuando `price_premarket` es `null`, la fila Premarket del desglose de precio muestra "No disponible" + "Proveedor: Yahoo Finance" + "Motivo: no reportó precio de premarket en esta consulta." en vez de un `--` desnudo. Cambio exclusivamente de presentación -- cero archivos Python modificados (confirmado con `git diff --stat`), por lo tanto no puede haber afectado a Regular, After-hours, Radar Explosivo, Motor Predictivo ni al Ranking.
+
+**Validación**: función real (`priceBreakdownHtml()`) ejecutada en la Cabina real, contra datos reales de Yahoo capturados en vivo -- confirmado tanto el caso con premarket presente (no se rompe, sigue mostrando el precio y "EN USO") como el caso ausente (muestra el mensaje completo, exacto). Sin errores de consola.
+
+**Alcance explícitamente fuera de esta investigación** (aclarado por el usuario tras una validación previa que los mezclaba por error): verificar el caso "Yahoo sí entrega premarket" en vivo y la transición automática cuando el dato aparece después dependen de (1) que exista una ventana real de premarket (hoy el mercado ya estaba en sesión `REGULAR`, sin ningún caso real disponible) y (2) de que el ciclo del scanner no se caiga por el defecto de failover no relacionado, ya registrado aparte como **Investigación 6 (Radar/Failover)**. Ninguno de los dos es una dependencia de esta implementación.
+
+**Justificación**: decisión directa del usuario -- "Los puntos 2, 3 y 6 no pertenecen a esta investigación... No voy a mantener abierta una investigación por dependencias que pertenecen a otra." Aprobación explícita: "Apruebo la implementación de la Investigación 3. La Investigación 3 queda oficialmente CERRADA."
+
+**Observación pendiente registrada** (no bloquea el cierre): validación de la transición automática durante premarket real, pendiente de que la Investigación 6 restablezca el funcionamiento normal del scanner y exista una ventana real de premarket. Ver [INVESTIGACIONES.md](INVESTIGACIONES.md) para el estado vigente de todas las investigaciones abiertas.
+
+**Impacto esperado**: ninguno fuera de la Cabina -- mejora de honestidad/UX pura, sin cambio de datos ni de cálculo en ningún motor.
+
+---
+
+## 2026-08-06 -- Investigación 6 (Radar / Failover: `YFRateLimitError` no activaba Finnhub) -- CERRADA
+
+**Problema**: cuando Yahoo Finance rechazaba una consulta por exceso de solicitudes, el ciclo completo de escaneo se caía (`symbols_scanned=0`) en vez de continuar con Finnhub, el proveedor de respaldo ya configurado en `MultiProvider`.
+
+**Causa raíz, confirmada con evidencia de ejecución real** (instrumentando `FinnhubProvider` para contar invocaciones, no por lectura de código): `yfinance.exceptions.YFRateLimitError` no hereda de `ProviderError`. `YahooFinanceProvider.get_quotes()` (la ruta por lote, la que usa `scan_worker.py` en producción) solo atrapaba `(ProviderError, QuoteNotFoundError)` -- la excepción real escapaba sin conversión, cruzaba `MultiProvider.get_quotes()` de largo (su `except ProviderError` nunca la reconocía) y tumbaba el ciclo. Primera corrida de control: **Finnhub invocado 0 veces**. La ruta singular (`get_quote()`/`_fetch_info()`) no tenía este defecto -- ya envolvía cualquier excepción en `ProviderError` correctamente; el bug estaba aislado a la ruta por lote.
+
+**Alternativas evaluadas para la corrección** (formato completo en la conversación de esta sesión): captura amplia (`except Exception`) -- descartada explícitamente por el usuario ("no quiero ocultar errores reales de programación... el código debe ser explícito y trazable"); captura específica de `YFRateLimitError` -- aprobada.
+
+**Decisión tomada**: nueva clase `RateLimitError(ProviderError)` en `atlas/data/providers/base.py` (aditiva, subclase de `ProviderError`, `MultiProvider` la reconoce sin cambios propios). `YahooFinanceProvider.get_quotes()` captura únicamente `YFRateLimitError`, la envuelve en `RateLimitError` y la relanza de inmediato (corta el lote, no sigue símbolo por símbolo) -- un rate-limit es del proveedor completo, no de un símbolo puntual. Cualquier otro tipo de excepción sigue con el mismo comportamiento de siempre (`continue`, ahora con `logger.warning` para no quedar mudo). `multi_provider.py` no se tocó -- no apareció evidencia de defecto propio en él.
+
+**Validación** (7 pruebas, con evidencia real, no teórica):
+1. Prueba forzada y determinística (Yahoo real no estaba rate-limitado en el momento de probar): `YFRateLimitError` inyectado en el punto exacto de `yfinance.Ticker.info`, sin tocar ninguna línea de `yahoo_finance.py` -- MultiProvider logueó el failover, Finnhub fue invocado y devolvió 3/3 quotes reales (`source=finnhub`).
+2. Prueba natural, sin forzar nada, mismo *call site* exacto que `scan_worker.py:370` (200 símbolos reales): Yahoo rate-limitó de forma natural, MultiProvider logueó el failover con el mensaje nuevo exacto, Finnhub respondió **61/200 quotes reales, 100% `source=finnhub`**.
+3. Ciclo real completo contra el servidor en vivo (mercado abierto): `run_scan_once()` terminó limpio (`symbols_scanned=208, symbols_ok=178, errors=30, last_error=None`), ranking regenerado (`generated_at` avanzó, composición del top 20 cambió), precio real cambiado entre dos ciclos consecutivos (PAYC 219.02 → 215.0275), Radar Explosivo con 7/20 candidatos elegibles reales.
+4. Regresión: símbolo inválido (`ZZZINVALIDOXYZ`) mezclado con símbolos válidos -- se omite solo (`QuoteNotFoundError`, comportamiento sin cambios), sin activar failover, confirma que ningún otro tipo de excepción cambió de comportamiento.
+
+**Justificación**: decisión directa del usuario en cada etapa -- diagnóstico exigido con evidencia de ejecución real ("No acepto una explicación teórica"), diseño aprobado con la condición explícita de captura específica (no genérica), y aprobación final tras las 7 pruebas: "Las 7 pruebas quedaron demostradas con evidencia real... Queda oficialmente cerrada."
+
+**Impacto esperado**: el escaneo en vivo ya no queda en cero cuando Yahoo rate-limita -- Finnhub sostiene el ciclo con lo que puede cubrir (precio, sin fundamentales, ver limitación ya documentada en `finnhub_provider.py`). Sin cambio de comportamiento para ningún otro tipo de fallo. Ver [INVESTIGACIONES.md](INVESTIGACIONES.md) para el estado vigente de todas las investigaciones.
