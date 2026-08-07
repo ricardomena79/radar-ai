@@ -18,6 +18,7 @@ from pathlib import Path
 from flask import Flask, jsonify, send_from_directory
 
 from atlas_live import scan_worker
+from atlas_live.backtest import seed_import
 from atlas_live.memory import exit_journal, learning_status, live_integration, market_hours, prediction_journal
 from atlas_live.mission_control import heartbeat, timeline
 from atlas_live.predictive_engine import prediction_log
@@ -25,6 +26,14 @@ from atlas_live.predictive_engine import prediction_log
 STATIC_DIR = Path(__file__).parent / "static"
 
 app = Flask(__name__, static_folder=None)
+
+# Investigación 4 (2026-08-06, ver DECISION_LOG.md): recuperación
+# automática de la base oficial -- si el Volume se pierde por completo,
+# arrancar el proceso de nuevo la reconstruye sola, de forma acumulativa
+# e idempotente, a partir de todos los seeds JSONL ya comiteados. Antes
+# de start_background_refresh() para que el Exit Journal ya tenga la
+# base histórica cargada cuando arranque el primer ciclo de escaneo.
+seed_import.import_all_seeds()
 
 scan_worker.start_background_refresh()
 
@@ -120,6 +129,18 @@ def api_exit_journal():
     """Exit Journal -- Cabina del Piloto, Panel 11. Últimos resúmenes
     objetivos cerrados (sin ningún umbral de salida, ver exit_journal.py)."""
     return jsonify({"summaries": exit_journal.get_recent_summaries(limit=20)})
+
+
+@app.route("/api/exit-journal/inventory")
+def api_exit_journal_inventory():
+    """Investigación 4 -- Persistencia y sincronización del conocimiento de
+    Atlas (2026-08-06, ver DECISION_LOG.md). Solo lectura: pares
+    (symbol, date) que ya existen en la base oficial (este servidor), para
+    que `export_seed_delta.py` pueda calcular qué falta sincronizar sin
+    tener que traer la base completa. No participa de ningún flujo de
+    escritura."""
+    pares = exit_journal.get_all_symbol_dates()
+    return jsonify({"pairs": pares, "count": len(pares)})
 
 
 @app.route("/api/mission-control")

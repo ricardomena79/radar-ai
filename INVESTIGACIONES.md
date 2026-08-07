@@ -35,3 +35,23 @@ Este archivo se creó en la sesión del 2026-08-06, junto con el cierre de la In
 **Entrada completa**: ver `DECISION_LOG.md`, sección "2026-08-06 -- Investigación 3".
 
 **Aprobación**: aprobada por el usuario 2026-08-06, con corrección intermedia exigida (cobertura de `PREPRE`, no solo `PRE`) antes del cierre final.
+
+---
+
+## Investigación 4 -- Persistencia y sincronización del conocimiento de Atlas
+
+**Estado: ABIERTA** -- implementación completa y validada localmente; falta el despliegue y la primera sincronización real hacia producción antes de poder cerrarla (la metodología de este archivo exige evidencia de que el objetivo se cumplió, no solo que el código está escrito).
+
+**Disparador**: la auditoría posterior al cierre de la Investigación 3 encontró que la base histórica real (89.786 muestras) nunca llegó a producción -- el objetivo de la Fase 1.1 seguía sin cumplirse para un usuario real, pese a todo el código ya desplegado.
+
+**Decisión de arquitectura**: la fuente oficial de la verdad es la base SQLite persistente de Railway (no la base local, no la reconstrucción automática -- Yahoo Finance solo conserva ~60 días de historial de 5 minutos).
+
+**Diseño de la sincronización**: formato de intercambio JSONL (elegido sobre CSV y Parquet, con justificación técnica -- ver `DECISION_LOG.md`), exportación de solo el delta, importación estrictamente aditiva (solo `INSERT`, nunca sobrescribe una clave existente), repetible e idempotente, y capaz de reconstruir automáticamente la base oficial si se pierde, corriendo el mismo import al arrancar el servidor. El repositorio nunca almacena `.db` -- regla permanente confirmada explícitamente por el usuario durante esta investigación.
+
+**Implementado**: `atlas_live/backtest/export_seed_delta.py`, `atlas_live/backtest/seed_import.py`, endpoint de solo lectura `/api/exit-journal/inventory`, importación conectada al arranque de `server.py`.
+
+**Validado**: 6 pruebas nuevas (`test_seed_sync.py`) más la suite completa del proyecto -- 86/86 en verde. Prueba funcional end-to-end con datos sintéticos superpuestos sobre la base real local (89.786 muestras reales, sin tocarlas), confirmando delta correcto, importación aditiva y reintento idempotente sin duplicados.
+
+**Pendiente para el cierre**: desplegar el endpoint nuevo, generar y comitear el primer seed real (el delta completo hacia una producción hoy vacía), verificar en la URL pública que la base oficial refleja las 89.786 muestras y que el Motor Predictivo produce una recomendación real, no "evidencia insuficiente". El commit de esta etapa se preparó sin `push`, a pedido explícito del usuario ("modo nocturno").
+
+**Entrada completa**: ver `DECISION_LOG.md`, sección "2026-08-06 -- Investigación 4".
