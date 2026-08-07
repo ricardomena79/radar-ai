@@ -15,10 +15,12 @@ llama a `main()`, solo importa `app`.
 import os
 from pathlib import Path
 
-from flask import Flask, jsonify, send_from_directory
+from flask import Flask, jsonify, request, send_from_directory
 
-from atlas_live import evolution_panel, performance_panel, scan_worker
+from atlas.data.collectors.data_collector import DataCollector
+from atlas_live import evolution_panel, hot_quote, performance_panel, scan_worker
 from atlas_live.backtest import seed_import
+from atlas_live.data_fusion.registry import get_default_provider
 from atlas_live.memory import exit_journal, learning_status, live_integration, market_hours, prediction_journal
 from atlas_live.mission_control import heartbeat, timeline
 from atlas_live.predictive_engine import prediction_log
@@ -162,6 +164,31 @@ def api_evolution():
     aprendizaje, todo desde datos reales ya existentes -- ver
     evolution_panel.py. Solo lectura, aditivo, no toca /api/performance."""
     return jsonify(evolution_panel.get_evolution())
+
+
+@app.route("/api/hot-quote")
+def api_hot_quote():
+    """Canal de actualización rápida -- EXCLUSIVO para la Oportunidad del
+    Día (Plan A) y el Plan B (2026-08-07, ver DECISION_LOG.md "Optimización
+    de latencia"). Devuelve SOLO la cotización cruda con su timestamp de
+    los símbolos pedidos (máximo 2 -- cualquier exceso se ignora), para que
+    esos 2 precios visibles puedan mantenerse con antigüedad <=3s cuando el
+    proveedor lo permite. NO corre el scanner, ni Radar, ni Memory, ni el
+    Motor Predictivo -- solo `DataCollector.get_quote` sobre el MultiProvider
+    (failover Yahoo->Finnhub ya existente). Se construye un DataCollector
+    fresco por request (caché vacío) a propósito: cada llamada trae dato
+    nuevo, sin servir un valor viejo desde caché. Solo lectura.
+
+    Presupuesto de API: 2 símbolos cada 3s ~= 40 req/min, dentro del límite
+    de Finnhub (60/min) e independiente del escaneo del universo (~244) --
+    no aumenta el consumo sobre ese escaneo. Toda la lógica vive en
+    `hot_quote.py` (testeable sin arrancar el servidor); aquí solo se
+    construye un DataCollector fresco por request (caché vacío -> dato nuevo)
+    y se serializa -- cero lógica de negocio en esta capa."""
+    symbols = hot_quote.parse_symbols(request.args.get("symbols", ""))
+    # Sin símbolos válidos: no se construye proveedor ni se consulta nada.
+    collector = DataCollector(get_default_provider()) if symbols else None
+    return jsonify(hot_quote.collect_hot_quotes(symbols, collector))
 
 
 @app.route("/api/mission-control")

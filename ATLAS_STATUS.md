@@ -1,6 +1,6 @@
 # ATLAS_STATUS.md
 
-Estado actual del proyecto, snapshot -- no reemplaza `ATLAS_ROADMAP.md` (hoja de ruta completa) ni `DECISION_LOG.md` (historial de decisiones); apunta a ellos para el detalle. Última actualización: 2026-08-07, Panel de Desempeño de Atlas implementado.
+Estado actual del proyecto, snapshot -- no reemplaza `ATLAS_ROADMAP.md` (hoja de ruta completa) ni `DECISION_LOG.md` (historial de decisiones); apunta a ellos para el detalle. Última actualización: 2026-08-07, canal rápido (Plan A + Plan B) e indicadores de frescura del dato implementados.
 
 ---
 
@@ -11,6 +11,10 @@ Vista "📊 Desempeño" en la Cabina -- dos niveles nunca mezclados: Nivel 1 (Op
 ## Panel de Evolución de Atlas (nuevo, 2026-08-07)
 
 Vista "📈 Evolución" en la Cabina -- cómo evolucionan la precisión y el aprendizaje de Atlas con el tiempo, separando 3 conceptos que nunca se mezclan: precisión del modelo (aciertos hoy/semana/mes/histórico + precisión %), rendimiento financiero (win rate, profit factor, expectativa, drawdown, mejor/peor global) y evolución del aprendizaje (trayectorias, muestras, casos, condiciones con evidencia, nivel de aprendizaje %, última actualización). 100% aditivo y de solo lectura: reutiliza `performance_panel` para las dos primeras secciones y contadores reales del Exit Journal / Memory Store / Memory Engine para la tercera. Todo dato ausente dice "No disponible" -- ningún valor fabricado. Endpoint `/api/evolution`, módulo `atlas_live/evolution_panel.py`. Ver `DECISION_LOG.md`, entrada "2026-08-07 -- Panel de Evolución de Atlas".
+
+## Canal rápido + indicadores de frescura (nuevo, 2026-08-07)
+
+Optimización de latencia: los 2 símbolos visibles (Oportunidad del Día / Plan A + Plan B) se refrescan por un canal dedicado (`/api/hot-quote`, módulo `atlas_live/hot_quote.py`) cada 3s, para mantenerlos con antigüedad ≤3s cuando el proveedor lo permite -- sin tocar el escaneo del universo (~244) ni su frecuencia, y sin sumar consumo de API (2 símbolos/3s ≈ 40 req/min, dentro de Finnhub 60/min). La Cabina muestra, junto al precio del Hero y del Plan B, 5 indicadores de frescura: hora exacta del dato, "hace X s" (recalculada cada segundo), proveedor usado, semáforo 🟢 0-3s / 🟡 3-10s / 🔴 >10s, y aviso de "último recibido" cuando el proveedor no entrega un dato nuevo (nunca se oculta la antigüedad; el reloj solo se reancla con un `price_as_of` genuinamente nuevo). Límite documentado con evidencia: ≤3s para el universo completo es físicamente imposible con REST + rate-limits (el ciclo dura minutos); Yahoo entrega `sourceInterval`≈15s, así que el semáforo cicla honestamente entre ticks del proveedor. Ver `DECISION_LOG.md`, entrada "2026-08-07 -- Optimización de latencia".
 
 ## Fase 1.1 -- Motor Predictivo de Atlas
 

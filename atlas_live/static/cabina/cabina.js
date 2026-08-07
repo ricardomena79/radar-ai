@@ -40,6 +40,42 @@ function fmtTime(isoString) {
   return isoString.slice(11, 16);
 }
 
+// Igual que fmtTime pero con segundos (HH:MM:SS) -- lo pide el indicador de
+// frescura del canal rápido, donde el segundo exacto importa. Misma
+// convención de la Cabina (se muestra el reloj tal cual viaja, etiquetado
+// "ET"), para no mezclar dos horas distintas en la misma tarjeta.
+function fmtTimeSec(isoString) {
+  if (!isoString) return "--";
+  return isoString.slice(11, 19);
+}
+
+/* Indicadores de frescura del dato (2026-08-07, ver DECISION_LOG.md
+ * "Optimización de latencia"). Semáforo PURO en función de la antigüedad
+ * en segundos -- 🟢 0-3s (en vivo), 🟡 3-10s (con retraso), 🔴 >10s (dato
+ * viejo). Sin dato: ⚪. Función sin efectos, testeable de forma aislada. */
+const FRESH_GREEN_MAX = 3;   // seg -- objetivo del canal rápido (Plan A/B)
+const FRESH_AMBER_MAX = 10;  // seg -- todavía utilizable, pero ya con retraso
+
+function freshnessStatus(ageSeconds) {
+  if (ageSeconds === null || ageSeconds === undefined || !isFinite(ageSeconds)) {
+    return { emoji: "⚪", cls: "fresh-none", label: "Sin dato" };
+  }
+  if (ageSeconds <= FRESH_GREEN_MAX) return { emoji: "🟢", cls: "fresh-green", label: "En vivo" };
+  if (ageSeconds <= FRESH_AMBER_MAX) return { emoji: "🟡", cls: "fresh-amber", label: "Con retraso" };
+  return { emoji: "🔴", cls: "fresh-red", label: "Dato viejo" };
+}
+
+// "hace X s" / "hace X min" -- antigüedad legible, nunca oculta. Se
+// recalcula cada segundo (tickHotFreshness), no en cada fetch.
+function fmtAge(ageSeconds) {
+  if (ageSeconds === null || ageSeconds === undefined || !isFinite(ageSeconds)) return "sin dato";
+  const s = Math.max(0, Math.round(ageSeconds));
+  if (s < 60) return `hace ${s}s`;
+  const m = Math.floor(s / 60);
+  const rem = s % 60;
+  return rem ? `hace ${m}min ${rem}s` : `hace ${m}min`;
+}
+
 function fmtMoney(value) {
   // Corrección de interfaz (2026-08-07, ver DECISION_LOG.md): Atlas solo
   // opera el mercado estadounidense hoy -- "US$" en vez del "$" genérico,
@@ -445,6 +481,159 @@ function startMemoryRankingPolling() {
   setInterval(fetchMemoryRanking, MEMORY_POLL_MS);
 }
 
+/* ---------------- Canal de actualización rápida (Plan A + Plan B) --------
+ * Optimización de latencia (2026-08-07, ver DECISION_LOG.md). EXCLUSIVO
+ * para los 2 símbolos visibles -- la Oportunidad del Día (Hero = candidato
+ * #1 elegible) y el Plan B (candidato #2 elegible). El scanner del universo
+ * (~244) NO cambia; este canal solo refresca esos 2 precios contra
+ * `/api/hot-quote`, para mantenerlos con antigüedad <=3s cuando el
+ * proveedor lo permite. Presupuesto: 2 símbolos cada 3s ~= 40 req/min,
+ * dentro de Finnhub (60/min).
+ *
+ * "Último recibido, nunca ocultar la antigüedad": si el proveedor no
+ * entrega un dato nuevo (mismo price_as_of, error, o rate-limit) NO se
+ * reinicia el reloj -- se conserva el último precio bueno y su antigüedad
+ * sigue creciendo (🟢->🟡->🔴). El timestamp solo avanza cuando llega un
+ * price_as_of genuinamente nuevo. */
+const HOT_POLL_MS = 3000;
+// symbol -> { price, change_pct, price_type, market_state, source,
+//             price_as_of, baseAgeMs, receivedAt, lastStatus, gotNew }
+const _hotQuotes = {};
+
+// Símbolos que alimenta el canal rápido AHORA: Hero (candidato[0] elegible)
+// y Plan B (candidato[1] elegible). Mismo criterio de elegibilidad que ya
+// usan renderHero/renderPlanB -- si un candidato no es elegible, no se
+// refresca (no se muestra).
+function hotSymbols() {
+  const c = _memoryRanking.candidates || [];
+  const out = [];
+  if (c[0] && c[0].eligible_radar) out.push(c[0].symbol);
+  if (c[1] && c[1].eligible_radar && c[1].symbol !== (c[0] && c[0].symbol)) out.push(c[1].symbol);
+  return out;
+}
+
+async function fetchHotQuotes() {
+  const symbols = hotSymbols();
+  if (symbols.length === 0) { renderHotWidgets(); return; }
+  try {
+    const res = await fetch(`/api/hot-quote?symbols=${encodeURIComponent(symbols.join(","))}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    const serverMs = Date.parse(data.server_time);
+    const clientNow = Date.now();
+    for (const q of (data.quotes || [])) {
+      const prev = _hotQuotes[q.symbol];
+      if (q.status === "ok" && q.price_as_of) {
+        const isNew = !prev || prev.price_as_of !== q.price_as_of;
+        if (isNew) {
+          // Dato genuinamente nuevo: el reloj de antigüedad se reancla al
+          // timestamp real del proveedor (baseAgeMs = server_time - dato).
+          const asOfMs = Date.parse(q.price_as_of);
+          _hotQuotes[q.symbol] = {
+            price: q.price,
+            change_pct: q.change_pct,
+            price_type: q.price_type,
+            market_state: q.market_state,
+            source: q.source,
+            price_as_of: q.price_as_of,
+            baseAgeMs: (isFinite(serverMs) && isFinite(asOfMs)) ? (serverMs - asOfMs) : 0,
+            receivedAt: clientNow,
+            lastStatus: "ok",
+            gotNew: true,
+          };
+        } else {
+          // Mismo timestamp: el proveedor devolvió, pero sin dato nuevo. NO
+          // se reancla el reloj -- la antigüedad sigue creciendo sola.
+          prev.lastStatus = "ok";
+          prev.gotNew = false;
+        }
+      } else if (prev) {
+        // Proveedor no entregó (error/rate-limit): se conserva el último
+        // recibido, su antigüedad sigue creciendo. Nunca se oculta.
+        prev.lastStatus = q.status || "unavailable";
+        prev.gotNew = false;
+      }
+      // Si status != ok y no hay prev, no hay nada que mostrar todavía --
+      // el Hero mostrará su precio de ciclo con su propia antigüedad.
+    }
+  } catch (err) {
+    console.error("fetchHotQuotes:", err);
+    // Fallo de red del canal: se conserva todo lo previo, no se resetea.
+  }
+  renderHotWidgets();
+}
+
+// Antigüedad EN VIVO del último dato bueno de un símbolo, sin skew de reloj:
+// (server_time - price_as_of)  [ambos del servidor]  +  (ahora - recibido)
+// [ambos del cliente]. Devuelve segundos, o null si no hay dato.
+function hotAgeSeconds(entry) {
+  if (!entry || !isFinite(entry.baseAgeMs)) return null;
+  return entry.baseAgeMs / 1000 + (Date.now() - entry.receivedAt) / 1000;
+}
+
+// Widget de frescura para un símbolo -- los 5 indicadores pedidos: hora
+// exacta del dato, antigüedad, proveedor, semáforo, y aviso de "último
+// recibido" cuando el proveedor no entregó un dato nuevo.
+function hotFreshnessHtml(entry) {
+  if (!entry) {
+    return `<span class="hot-fresh-dot">⚪</span><span class="hot-fresh-label">Refrescando precio en vivo…</span>`;
+  }
+  const age = hotAgeSeconds(entry);
+  const st = freshnessStatus(age);
+  const stale = entry.lastStatus !== "ok" || entry.gotNew === false;
+  const note = stale
+    ? `<span class="hot-fresh-note" title="El proveedor no entregó un dato nuevo en la última consulta">· último recibido</span>`
+    : "";
+  return `
+    <span class="hot-fresh-dot">${st.emoji}</span>
+    <span class="hot-fresh-label">${st.label}</span>
+    <span class="hot-fresh-price">${fmtMoney(entry.price)}</span>
+    <span class="hot-fresh-age">${fmtAge(age)}</span>
+    <span class="hot-fresh-time">dato: ${fmtTimeSec(entry.price_as_of)} ET</span>
+    <span class="hot-fresh-src">${priceSourceLabel(entry.source)}</span>
+    ${note}`;
+}
+
+// Rellena los contenedores de frescura del Hero y el Plan B. Se llama desde
+// el fetch (cada 3s) Y desde el tick de 1s (para que "hace X s" avance solo
+// aunque no llegue dato nuevo). Actualiza también el precio destacado.
+function renderHotWidgets() {
+  const c = _memoryRanking.candidates || [];
+  const heroSym = (c[0] && c[0].eligible_radar) ? c[0].symbol : null;
+  const planBSym = (c[1] && c[1].eligible_radar) ? c[1].symbol : null;
+
+  const heroBox = document.getElementById("hot-fresh-hero");
+  if (heroBox) {
+    const e = heroSym ? _hotQuotes[heroSym] : null;
+    heroBox.className = "hot-fresh " + freshnessStatus(hotAgeSeconds(e)).cls;
+    heroBox.innerHTML = hotFreshnessHtml(e);
+    if (e) {
+      const pv = document.getElementById("hero-price-value");
+      if (pv) pv.innerHTML = fmtMoney(e.price);
+    }
+  }
+  const planBox = document.getElementById("hot-fresh-planb");
+  if (planBox) {
+    const e = planBSym ? _hotQuotes[planBSym] : null;
+    planBox.className = "hot-fresh " + freshnessStatus(hotAgeSeconds(e)).cls;
+    planBox.innerHTML = hotFreshnessHtml(e);
+    if (e) {
+      const pv = document.getElementById("planb-price-value");
+      if (pv) pv.innerHTML = fmtMoney(e.price);
+    }
+  }
+}
+
+function tickHotFreshness() {
+  renderHotWidgets();
+}
+
+function startHotChannel() {
+  fetchHotQuotes();
+  setInterval(fetchHotQuotes, HOT_POLL_MS);
+  setInterval(tickHotFreshness, 1000);
+}
+
 /* Paneles 9-12 (Memory Engine, Prediction Journal, Exit Journal, Mission
  * Control) -- cambian con mucha menos frecuencia que el ranking (una vez
  * por día de mercado, o solo cuando corre un proceso instrumentado), así
@@ -703,9 +892,10 @@ function renderHero() {
       <span class="hero-symbol">${o.symbol}</span>
       <span class="hero-semaforo">${semaforoHtml(o.semaforo)}</span>
       ${badgeHtml(o.market_cap_bucket === "micro" ? "MICROCAP" : (o.market_cap_bucket || "?").toUpperCase(), o.semaforo)}
-      <span class="hero-price">${fmtMoney(o.price)}</span>
+      <span class="hero-price" id="hero-price-value">${fmtMoney(o.price)}</span>
     </div>
     <div class="hero-price-context">${priceContextLine(o)}</div>
+    <div class="hot-fresh fresh-none" id="hot-fresh-hero"><span class="hot-fresh-dot">⚪</span><span class="hot-fresh-label">Refrescando precio en vivo…</span></div>
     <div class="hero-metrics">
       <div><div class="hero-metric-label">Score Radar</div><div class="hero-metric-value">${o.eligible_radar ? fmtNum(o.score) : "N/A"}</div></div>
       <div><div class="hero-metric-label">Probabilidad</div><div class="hero-metric-value">${o.probability_pct !== null ? fmtNum(o.probability_pct) + "%" : '<span class="dim">sin evidencia</span>'}</div></div>
@@ -737,9 +927,10 @@ function renderPlanB() {
     <div class="plan-b-top">
       <span class="plan-b-symbol">${b.symbol}</span>
       ${semaforoHtml(b.semaforo)}
-      <span class="plan-b-price">${fmtMoney(b.price)}</span>
+      <span class="plan-b-price" id="planb-price-value">${fmtMoney(b.price)}</span>
     </div>
     <div class="plan-b-price-context">${priceContextLine(b)}</div>
+    <div class="hot-fresh fresh-none" id="hot-fresh-planb"><span class="hot-fresh-dot">⚪</span><span class="hot-fresh-label">Refrescando precio en vivo…</span></div>
     <div class="plan-b-metrics">
       <div><div class="plan-b-metric-label">Prob.</div><div class="plan-b-metric-value">${b.probability_pct !== null ? fmtNum(b.probability_pct) + "%" : "--"}</div></div>
       <div><div class="plan-b-metric-label">Confianza</div><div class="plan-b-metric-value">${b.confidence}</div></div>
@@ -1219,6 +1410,7 @@ function init() {
   startActivityFeed();
   renderMarketQuality();
   startMemoryRankingPolling(); // Paneles 2-6: hero, Plan B, Explosivas, Momentum, No tocar, Radar Completo
+  startHotChannel(); // Canal rápido (Plan A + Plan B): precio <=3s + indicadores de frescura
   renderOpina();
   renderAlerts();
   renderWhyNot();

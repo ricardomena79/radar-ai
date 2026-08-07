@@ -316,6 +316,37 @@ html, body {
 .hero-empty { color: var(--text-dim); font-size: 15px; }
 .hero-price-context { margin-top: -4px; }
 
+/* ---------- Canal rápido: indicadores de frescura (2026-08-07) ----------
+   Semáforo 🟢/🟡/🔴 del precio en vivo de Plan A / Plan B. Reutiliza las
+   variables de color ya existentes (--green/--amber/--red). El borde
+   izquierdo cambia de color con el estado, para que el semáforo se lea de
+   un vistazo sin depender del emoji. */
+.hot-fresh {
+  margin-top: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-dim);
+  padding: 5px 10px;
+  border-radius: 6px;
+  border-left: 3px solid transparent;
+  background: rgba(255, 255, 255, 0.02);
+}
+.hot-fresh-price { font-weight: 700; color: var(--text); font-size: 13px; }
+.hot-fresh-label { font-weight: 600; letter-spacing: 0.01em; }
+.hot-fresh-age { font-variant-numeric: tabular-nums; }
+.hot-fresh-time, .hot-fresh-src { opacity: 0.85; }
+.hot-fresh-note { color: var(--amber); font-style: italic; }
+.hot-fresh.fresh-green { border-left-color: var(--green); }
+.hot-fresh.fresh-green .hot-fresh-label { color: var(--green); }
+.hot-fresh.fresh-amber { border-left-color: var(--amber); }
+.hot-fresh.fresh-amber .hot-fresh-label { color: var(--amber); }
+.hot-fresh.fresh-red { border-left-color: var(--red); }
+.hot-fresh.fresh-red .hot-fresh-label { color: var(--red); }
+.hot-fresh.fresh-none { border-left-color: var(--text-dim); }
+
 /* ---------- Trazabilidad de precio (2026-08-02) -- fuente, tipo de
    sesión y hora, siempre visibles junto a cualquier precio ---------- */
 .price-context { font-size: 11px; color: var(--text-dim); letter-spacing: 0.01em; display: inline-flex; align-items: center; gap: 6px; }
