@@ -252,7 +252,14 @@ def api_diagnostics_providers():
     2026-08-07): qué proveedor sirvió el último ciclo de escaneo en vivo
     (evidencia real, no supuesta) y si Finnhub autentica de verdad -- una
     llamada real y aislada a `FinnhubProvider`, nunca expone el valor de
-    la API key."""
+    la API key.
+
+    `finnhub_authentication` distingue explícitamente "unauthorized" (401,
+    key inválida) de "rate_limited" (429, key válida pero el techo de 60
+    llamadas/minuto del tier gratuito ya se alcanzó -- límite real,
+    documentado en DECISIONES.md, Ticket 1) -- confundir ambos casos bajo
+    un genérico "invalid" llevaría a una conclusión equivocada sobre el
+    estado real de la credencial."""
     from atlas.data.providers.base import ProviderError, QuoteNotFoundError
     from atlas_live.data_fusion.finnhub_provider import FinnhubProvider
 
@@ -264,8 +271,14 @@ def api_diagnostics_providers():
             finnhub_authentication = "ok"
         except QuoteNotFoundError:
             finnhub_authentication = "ok"
-        except ProviderError:
-            finnhub_authentication = "invalid"
+        except ProviderError as exc:
+            mensaje = str(exc)
+            if "HTTP 429" in mensaje:
+                finnhub_authentication = "rate_limited"
+            elif "HTTP 401" in mensaje or "HTTP 403" in mensaje:
+                finnhub_authentication = "unauthorized"
+            else:
+                finnhub_authentication = f"error: {mensaje}"
 
     return jsonify({
         "active_provider_last_cycle": scan_worker.get_active_provider_source(),
