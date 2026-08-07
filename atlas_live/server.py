@@ -18,10 +18,10 @@ from pathlib import Path
 from flask import Flask, jsonify, request, send_from_directory
 
 from atlas.data.collectors.data_collector import DataCollector
-from atlas_live import evolution_panel, hot_quote, performance_panel, scan_worker
+from atlas_live import evolution_panel, explosive_config, hot_quote, performance_panel, scan_worker
 from atlas_live.backtest import seed_import
 from atlas_live.data_fusion.registry import get_default_provider
-from atlas_live.memory import exit_journal, learning_status, live_integration, market_hours, prediction_journal
+from atlas_live.memory import classifier, exit_journal, learning_status, live_integration, market_hours, prediction_journal
 from atlas_live.mission_control import heartbeat, timeline
 from atlas_live.predictive_engine import prediction_log
 
@@ -189,6 +189,39 @@ def api_hot_quote():
     # Sin símbolos válidos: no se construye proveedor ni se consulta nada.
     collector = DataCollector(get_default_provider()) if symbols else None
     return jsonify(hot_quote.collect_hot_quotes(symbols, collector))
+
+
+@app.route("/api/config")
+def api_config():
+    """Parámetros vigentes de Atlas -- valores REALES leídos de sus módulos,
+    no hardcodeados en la interfaz (limpieza MOCK 2026-08-07, ver
+    DECISION_LOG.md). Solo lectura: el intervalo de escaneo de `scan_worker`,
+    los umbrales del clasificador (`classifier`), el techo de microcap y los
+    gates de elegibilidad del Radar (`explosive_config`), y el horario de
+    mercado + la ventana de sellado (`market_hours`)."""
+    cls = classifier.load_config()
+    exp = explosive_config.load_config()
+
+    def hhmm(t):
+        return t.strftime("%H:%M")
+
+    return jsonify({
+        "refresh_interval_seconds": scan_worker.REFRESH_INTERVAL_SECONDS,
+        "seal_window": f"{hhmm(market_hours.SEAL_WINDOW_START)} - {hhmm(market_hours.REGULAR_START)} ET",
+        "market_hours": {
+            "premarket": f"{hhmm(market_hours.PREMARKET_START)}-{hhmm(market_hours.REGULAR_START)}",
+            "regular": f"{hhmm(market_hours.REGULAR_START)}-{hhmm(market_hours.REGULAR_END)}",
+            "afterhours": f"{hhmm(market_hours.REGULAR_END)}-{hhmm(market_hours.AFTERHOURS_END)}",
+            "timezone": "America/New_York",
+        },
+        "explosion_threshold_pct": cls["explosion_threshold_pct"],
+        "false_breakout_ceiling_pct": cls["false_breakout_ceiling_pct"],
+        "loser_threshold_pct": cls["loser_threshold_pct"],
+        "microcap_ceiling_usd": exp["size_factor"]["small_cap_reference"],
+        "min_price_usd": exp["gates"]["min_price"],
+        "min_dollar_volume_usd": exp["gates"]["min_dollar_volume"],
+        "top_n": exp["top_n"],
+    })
 
 
 @app.route("/api/mission-control")

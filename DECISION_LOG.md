@@ -455,3 +455,24 @@ Como siguiente prioridad, el usuario pidió reemplazar el panel "Calidad del Mer
 **Justificación**: es la única forma de alcanzar ≤3s donde es técnicamente posible (2 símbolos por REST) sin tocar el escaneo del universo ni violar los rate-limits, y de ser honestos donde no lo es (el universo, y los tramos en que Yahoo no ha entregado un tick nuevo) mostrando la antigüedad real en vez de ocultarla.
 
 **Impacto esperado / verificación**: aditivo. Módulo nuevo `atlas_live/hot_quote.py`, endpoint `/api/hot-quote`, y presentación en el frontend (widget de frescura + fast poll + hot refresh); reutiliza las variables de color existentes (`--green/--amber/--red`). Pruebas nuevas `atlas_live/test_latency_freshness.py` (9 casos: tope de 2 símbolos, dedupe/uppercase, cotización OK, símbolo inexistente y rate-limit → "unavailable" sin tumbar el canal, lista vacía, y garantía de que el módulo no referencia scanner/Radar/Memory/Predictivo). Suite offline en verde (atlas_live 66/66 + atlas/tests 25/25). Latencia real medida contra el proveedor: round-trip **1.2-1.7s** por 1-2 símbolos, `price_as_of` a la par del `server_time` (antigüedad efectiva ≤3s con mercado abierto). Verificado en navegador: Hero 🟢 "En vivo · hace 2s", Plan B 🟡 "Con retraso · hace 4s", etiqueta "último recibido" cuando Yahoo devuelve el mismo timestamp (su `sourceInterval`≈15s hace que el semáforo cicle 🟢→🟡 honestamente entre ticks del proveedor).
+
+---
+
+## 2026-08-07 -- Regla permanente: cero MOCK en producción + limpieza completa de la Cabina
+
+**Problema/necesidad**: en producción no puede existir ningún componente MOCK -- ningún dato, alerta, texto, panel o gráfico simulado. Cada elemento visible debe provenir de un motor real; si un panel no tiene información real, debe mostrar un estado honesto, nunca un ejemplo. **Regla permanente declarada por el usuario: preferir un panel vacío antes que un dato inventado.**
+
+**Auditoría (solo lectura, durante la sesión de observación)**: `mock_data.js` (objeto `MOCK`) tenía la mayoría de campos ya muertos (reemplazados por endpoints reales) y **6 secciones activas** aún leyendo MOCK: "¿Por qué NO?", "Atlas Opina", "Alertas", barra de actividad, "ETF" y "Configuración", más una etiqueta visible `MOCK` en cada una de esas 6.
+
+**Decisión tomada (definitiva, pre-autorizada por el usuario; ejecutada tras el cierre de mercado para no reiniciar el escaneo en vivo)**:
+- **"¿Por qué NO?"** → descartes REALES de `/api/explosive-diagnostics` (tabla real: symbol, `failed_stage`, `reason`), priorizando los de mayor gap/RVOL. Estado honesto si no hay descartes.
+- **"Atlas Opina"** → **Resumen Factual** determinista construido SOLO con datos reales (nº candidatos/elegibles, condición del top con Wilson/n, VIX real). Sin evidencia → "Sin evidencia suficiente para emitir un resumen." (No se inventa un motor de opinión.)
+- **"Alertas"** → SOLO eventos reales de Mission Control (`market_state_history`, `provider_failover_history`) con su hora real. Sin eventos → "Sin alertas registradas en esta sesión."
+- **Barra de actividad** → estado REAL del último ciclo (`/api/ranking`: `scanning`, `generated_at`, `symbols_ok/scanned`). Sin ciclo → "Esperando el primer escaneo del día."
+- **"ETF"** → estado honesto ("sin fuente de datos conectada todavía"); no hay feed dedicado de ETF apalancados, así que se elimina toda fila simulada en vez de inventar datos.
+- **"Configuración"** → nuevo endpoint `/api/config` que lee valores REALES del backend (`scan_worker.REFRESH_INTERVAL_SECONDS`, `classifier` umbrales, `explosive_config` techo microcap/gates, `market_hours` horario y ventana de sellado), no constantes hardcodeadas en la interfaz.
+- Se **eliminó `mock_data.js`** y su `<script>`, y las 6 etiquetas `MOCK` del markup.
+
+**Justificación**: decisión directa y definitiva del usuario -- "En producción no puede existir ningún componente MOCK. Si un panel no tiene información real, debe mostrar un estado honesto. Prefiero un panel vacío antes que un dato inventado." Un ejemplo simulado en pantalla puede confundirse con un dato real; el estado honesto no.
+
+**Impacto esperado / verificación**: nuevo `/api/config`; frontend reconectado (6 secciones) a datos reales o estados honestos; `mock_data.js` borrado; cero referencias de código a `MOCK.` y cero texto "MOCK" visible. Pruebas nuevas `atlas_live/test_config_endpoint.py` (5 casos: intervalo, umbrales, techo microcap, horario/sellado, y sanidad de que la respuesta no trae marcas de ejemplo). Suite offline en verde (atlas_live 71/71). Verificado en navegador (servidor local): sin errores de consola; los 6 paneles muestran datos reales o el estado honesto correcto ("Sin evidencia suficiente", "Sin alertas registradas", "Esperando el primer escaneo", config real, ETF honesto); "MOCK" visible = 0.

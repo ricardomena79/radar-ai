@@ -1,10 +1,13 @@
 /* Cabina del Piloto -- navegación y renderizado. Sin framework, mismo
  * criterio que el resto de atlas_live/static/.
  *
- * Integración en curso, panel por panel (ver conversación de aprobación).
- * Conectado a datos reales: Panel 1 (barra superior -- Estado de Atlas y
- * Última actualización, vía /api/ranking). Todo lo demás sigue en MOCK
- * (mock_data.js) hasta que se conecte en su propio paso. */
+ * Limpieza MOCK completada (2026-08-07, ver DECISION_LOG.md): NINGÚN panel
+ * usa datos simulados. Cada sección proviene de un motor real (Radar,
+ * Memory Engine, Prediction Journal, Exit Journal, Mission Control, config
+ * del backend) o muestra un estado honesto ("Sin evidencia suficiente",
+ * "Sin alertas registradas", "sin fuente conectada"). Regla permanente:
+ * preferir un panel vacío antes que un dato inventado. `mock_data.js` fue
+ * eliminado. */
 
 const SEMAFORO_EMOJI = { verde: "🟢", amarillo: "🟡", rojo: "🔴", neutro: "⚪" };
 const SEMAFORO_BADGE = { verde: "badge-verde", amarillo: "badge-amarillo", rojo: "badge-rojo", neutro: "badge-neutro" };
@@ -287,6 +290,8 @@ const STATUS_POLL_MS = 15000;
 // por MarketContextEngine) del mismo /api/ranking que ya se pollea acá --
 // se guarda en una variable global para no duplicar el fetch.
 let _lastContext = null;
+// Estado real del último ciclo (para la barra de actividad -- limpieza MOCK).
+let _systemStatus = null;
 
 async function fetchSystemStatus() {
   try {
@@ -314,10 +319,15 @@ async function fetchSystemStatus() {
 
     lastUpdate.textContent = data.generated_at ? data.generated_at.slice(11, 19) + " UTC" : "--";
     _lastContext = data.context;
+    _systemStatus = data;
     renderMarketQuality();
+    renderActivity();
+    renderOpina();
   } catch (err) {
     document.getElementById("topbar-status-dot").className = "dot dot-red";
     document.getElementById("topbar-status-text").textContent = "Sin conexión con el servidor";
+    _systemStatus = null;
+    renderActivity();
     console.error("fetchSystemStatus:", err);
   }
 }
@@ -375,15 +385,47 @@ function renderMarketQuality() {
     </span>`;
 }
 
+/* "¿Por qué NO?" -- datos REALES de /api/explosive-diagnostics (tabla de
+ * exclusiones del Radar: symbol, etapa que falló, motivo real). Se muestran
+ * los descartes más "llamativos" (mayor gap% o RVOL) para responder la
+ * pregunta obvia; el motivo es el que registró el propio motor, nunca
+ * inventado. Estado honesto si no hay descartes reales. */
+let _explosiveDiagnostics = null;
+
+async function fetchExplosiveDiagnostics() {
+  try {
+    const res = await fetch("/api/explosive-diagnostics");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    _explosiveDiagnostics = await res.json();
+  } catch (err) {
+    console.error("fetchExplosiveDiagnostics:", err);
+  }
+  renderWhyNot();
+}
+
+function _whyNotApparentReason(r) {
+  const bits = [];
+  if (r.gap_pct !== null && r.gap_pct !== undefined) bits.push(`Gap ${r.gap_pct >= 0 ? "+" : ""}${r.gap_pct.toFixed(1)}%`);
+  if (r.relative_volume !== null && r.relative_volume !== undefined) bits.push(`RVOL ${r.relative_volume.toFixed(1)}x`);
+  return bits.length ? bits.join(" · ") : "Apareció en el escaneo";
+}
+
 function renderWhyNot() {
-  const items = MOCK.whyNot;
-  document.getElementById("dashboard-whynot").innerHTML = items.length
-    ? items.map(w => `
+  const el = document.getElementById("dashboard-whynot");
+  const table = (_explosiveDiagnostics && _explosiveDiagnostics.available && _explosiveDiagnostics.table) || [];
+  // Solo exclusiones con motivo real; priorizar las de mayor gap/RVOL (las
+  // que "a primera vista" parecerían atractivas), máximo 5.
+  const excluded = table
+    .filter(r => r.status === "Excluida" && r.reason)
+    .sort((a, b) => (Math.abs(b.gap_pct || 0) + (b.relative_volume || 0)) - (Math.abs(a.gap_pct || 0) + (a.relative_volume || 0)))
+    .slice(0, 5);
+  el.innerHTML = excluded.length
+    ? excluded.map(w => `
         <div class="whynot-item">
-          <div class="whynot-q">¿Por qué no <span class="sym">${w.symbol}</span>? -- ${w.apparentReason}</div>
-          <div class="whynot-a">${w.excludedBecause}</div>
+          <div class="whynot-q">¿Por qué no <span class="sym">${w.symbol}</span>?${w.name ? ` <span class="dim">(${w.name})</span>` : ""} -- ${_whyNotApparentReason(w)}</div>
+          <div class="whynot-a">${w.reason}</div>
         </div>`).join("")
-    : `<div class="empty-state">Nada que aclarar hoy -- ningún candidato llamativo quedó fuera sin explicación.</div>`;
+    : `<div class="empty-state">Sin descartes que aclarar en este momento -- ningún candidato llamativo quedó fuera del Radar.</div>`;
 }
 
 /* ---------------- Panel 2-6 (CONECTADO): /api/memory-ranking ----------
@@ -471,6 +513,7 @@ async function fetchMemoryRanking() {
   renderMomentum();
   renderNoTocar();
   renderMarketQuality();
+  renderOpina();
   if (document.querySelector('.nav-item[data-view="oportunidad"]').classList.contains("active")) {
     renderOportunidad();
   }
@@ -684,6 +727,7 @@ async function fetchExitJournal() {
 }
 
 let _missionControlMarketStateHistory = [];
+let _missionControlFailoverHistory = [];
 
 async function fetchMissionControl() {
   try {
@@ -692,10 +736,12 @@ async function fetchMissionControl() {
     const data = await res.json();
     _missionControlProcesses = data.processes || [];
     _missionControlMarketStateHistory = data.market_state_history || [];
+    _missionControlFailoverHistory = data.provider_failover_history || [];
   } catch (err) {
     console.error("fetchMissionControl:", err);
   }
   renderMissionControl();
+  renderAlerts();
 }
 
 /* Indicadores permanentes de la barra superior (aprobados el 2026-08-02,
@@ -939,33 +985,99 @@ function renderPlanB() {
     <div class="plan-b-explain">${b.explanation}</div>`;
 }
 
+/* "Atlas Opina" -> Resumen Factual (limpieza MOCK 2026-08-07). Atlas NO
+ * genera opinión en lenguaje natural; este bloque arma un resumen
+ * determinista SOLO con datos reales ya en pantalla (candidatos del Memory
+ * Ranking + VIX real del contexto). Si no hay evidencia suficiente (sin
+ * escaneo o sin candidatos), muestra un estado honesto, nunca un ejemplo. */
 function renderOpina() {
-  document.getElementById("dashboard-opina").textContent = MOCK.atlasOpina;
+  const el = document.getElementById("dashboard-opina");
+  const cands = (_memoryRanking && _memoryRanking.candidates) || [];
+  const scanned = _memoryRanking && _memoryRanking.generated_at !== null;
+  if (!scanned || cands.length === 0) {
+    el.textContent = "Sin evidencia suficiente para emitir un resumen.";
+    return;
+  }
+  const elegibles = cands.filter(c => c.eligible_radar);
+  const top = elegibles[0] || null;
+  const vix = _lastContext ? _lastContext.vix_price : null;
+  const partes = [];
+  partes.push(`${cands.length} candidatos analizados en el último escaneo; ${elegibles.length} superan Radar Explosivo y Memory Engine a la vez.`);
+  if (top) {
+    const wilson = (top.evidence_wilson_lower_bound_pct !== null && top.evidence_wilson_lower_bound_pct !== undefined)
+      ? `${top.evidence_wilson_lower_bound_pct.toFixed(1)}%` : "s/d";
+    partes.push(`El más fuerte es ${top.symbol} (confianza ${top.confidence}), por la condición "${top.evidence_condition || "s/d"}" con ${top.evidence_sample_size ?? "s/d"} observaciones de respaldo y límite inferior de Wilson ${wilson}.`);
+  } else {
+    partes.push("Ningún candidato pasa ambos filtros a la vez en este momento -- sin recomendación destacada.");
+  }
+  if (vix !== null && vix !== undefined) {
+    const nivel = vix >= VIX_HIGH ? "alta" : vix <= VIX_LOW ? "baja" : "normal";
+    partes.push(`VIX en ${vix.toFixed(1)} (volatilidad ${nivel}).`);
+  }
+  el.textContent = partes.join(" ");
 }
 
+/* "Alertas" -> SOLO eventos reales del motor (limpieza MOCK 2026-08-07):
+ * cambios de estado de mercado y failover de proveedor que ya registra
+ * Mission Control (timeline real). Cada alerta se justifica con su evento y
+ * su hora reales. Si no hay eventos reales, estado honesto -- nunca ejemplos. */
 function renderAlerts() {
-  const alerts = MOCK.alerts;
-  document.getElementById("dashboard-alerts").innerHTML = alerts.length
-    ? alerts.map(a => `
+  const el = document.getElementById("dashboard-alerts");
+  const events = [];
+  for (const h of _missionControlMarketStateHistory) {
+    const prev = h.previous_market_state;
+    const cur = h.market_state || "?";
+    events.push({
+      timestamp: h.timestamp,
+      semaforo: "amarillo",
+      tag: "Mercado",
+      msg: prev ? `Cambio de estado de mercado: ${prev} -> ${cur}` : `Estado de mercado: ${cur}`,
+    });
+  }
+  for (const f of _missionControlFailoverHistory) {
+    events.push({
+      timestamp: f.timestamp,
+      semaforo: f.severity === "warning" ? "rojo" : "amarillo",
+      tag: "Proveedor",
+      msg: f.message || `Failover de proveedor: ${f.previous_provider_source || "?"} -> ${f.provider_source || "?"}`,
+    });
+  }
+  events.sort((a, b) => (b.timestamp || "").localeCompare(a.timestamp || ""));
+  const top = events.slice(0, 12);
+  el.innerHTML = top.length
+    ? top.map(a => `
         <div class="alert-item">
-          <span class="alert-time">${a.time}</span>
+          <span class="alert-time">${fmtTime(a.timestamp)}</span>
           ${semaforoHtml(a.semaforo)}
-          <span class="alert-sym">${a.symbol}</span>
-          <span class="alert-msg">${a.message}</span>
+          <span class="alert-sym">${a.tag}</span>
+          <span class="alert-msg">${a.msg}</span>
         </div>`).join("")
-    : `<div class="empty-state">Sin alertas todavía en esta sesión.</div>`;
+    : `<div class="empty-state">Sin alertas registradas en esta sesión.</div>`;
 }
 
-let _activityIndex = 0;
-function startActivityFeed() {
-  const feed = MOCK.activityFeed;
+/* Barra de actividad -> estado REAL del último ciclo de escaneo (limpieza
+ * MOCK 2026-08-07). Sale de /api/ranking (`scanning`, `generated_at`,
+ * `symbols_ok`/`symbols_scanned`, `last_error`), no de frases rotativas
+ * inventadas. Estado honesto cuando no hay conexión o aún no corrió el
+ * primer escaneo. */
+function renderActivity() {
   const el = document.getElementById("activity-text");
-  const tick = () => {
-    el.textContent = feed[_activityIndex % feed.length];
-    _activityIndex += 1;
-  };
-  tick();
-  setInterval(tick, 4000);
+  if (!el) return;
+  const s = _systemStatus;
+  if (s === null) {
+    el.textContent = "Sin conexión con el servidor de Atlas.";
+    return;
+  }
+  if (s.scanning) {
+    el.textContent = "Escaneando el universo de símbolos...";
+  } else if (s.last_error) {
+    el.textContent = "El último ciclo de escaneo terminó con un error.";
+  } else if (s.generated_at === null) {
+    el.textContent = "Esperando el primer escaneo del día...";
+  } else {
+    const hhmmss = s.generated_at.slice(11, 19);
+    el.textContent = `Último ciclo: ${hhmmss} UTC · ${s.symbols_ok}/${s.symbols_scanned} símbolos con dato correcto.`;
+  }
 }
 
 // Regla de consenso (2026-08-03, aprobada explícitamente por el usuario,
@@ -1123,18 +1235,16 @@ function renderMomentum() {
   ]);
 }
 
+/* Panel ETF -> estado honesto (limpieza MOCK 2026-08-07). Atlas todavía no
+ * publica un feed dedicado de ETF apalancados por categoría; en vez de
+ * mostrar filas simuladas, se declara explícitamente que no hay fuente
+ * conectada. Regla permanente: preferir un panel vacío antes que un dato
+ * inventado. Cuando exista el backend real (leveraged_etf_families +
+ * precios en vivo) se conecta aquí. */
 function renderEtf() {
-  renderGenericTable("etf-table", MOCK.etfs, [
-    { label: "Símbolo", render: r => `<span class="sym">${r.symbol}</span>` },
-    // Panel ETF sigue en MOCK (fuera del orden de integración ya acordado)
-    // -- no tiene fuente/sesión/hora reales, así que se etiqueta como tal
-    // en vez de inventar un contexto que no existe (2026-08-02, punto 6).
-    { label: "Precio", render: r => `${fmtMoney(r.price)}<br><span class="dim">Dato simulado -- sin fuente real todavía</span>` },
-    { label: "Cambio", render: r => fmtPct(r.changePct) },
-    { label: "Categoría", render: r => r.category },
-    { label: "Probabilidad", render: r => r.probabilityPct !== null ? fmtNum(r.probabilityPct) + "%" : '<span class="dim">sin evidencia</span>' },
-    { label: "Semáforo", render: r => semaforoHtml(r.semaforo) },
-  ]);
+  const el = document.getElementById("etf-table");
+  if (!el) return;
+  el.innerHTML = `<div class="empty-state">Panel ETF sin fuente de datos conectada todavía -- Atlas no publica un feed dedicado de ETF apalancados por ahora. No se muestran ejemplos.</div>`;
 }
 
 // Motivo mostrado en "No tocar": si Radar Explosivo lo rechazó, ESE es el
@@ -1387,36 +1497,59 @@ function renderPredictionJournal() {
     </div>`;
 }
 
-function renderConfig() {
-  const c = MOCK.config;
-  document.getElementById("config-body").innerHTML = `
+/* "Configuración" -> valores REALES de /api/config (limpieza MOCK
+ * 2026-08-07): los lee de los propios módulos del backend (scan_worker,
+ * classifier, explosive_config, market_hours), no de constantes
+ * hardcodeadas en la interfaz. Estado honesto si el endpoint falla. */
+async function renderConfig() {
+  const el = document.getElementById("config-body");
+  let c;
+  try {
+    const res = await fetch("/api/config");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    c = await res.json();
+  } catch (err) {
+    console.error("renderConfig:", err);
+    el.innerHTML = `<div class="empty-state">Configuración no disponible en este momento -- no se pudo leer del servidor.</div>`;
+    return;
+  }
+  const mh = c.market_hours || {};
+  const microMM = c.microcap_ceiling_usd ? `US$${(c.microcap_ceiling_usd / 1e6).toFixed(0)}M` : "--";
+  const dollarVol = c.min_dollar_volume_usd ? `US$${(c.min_dollar_volume_usd / 1e6).toFixed(1)}M` : "--";
+  el.innerHTML = `
     <div class="info-block">
-      <h3>Parámetros vigentes (solo lectura en esta etapa)</h3>
-      <div class="kv-row"><span class="k">Intervalo de escaneo</span><span class="v">${c.refreshIntervalSeconds / 60} min</span></div>
-      <div class="kv-row"><span class="k">Ventana de sellado</span><span class="v">${c.sealWindow}</span></div>
-      <div class="kv-row"><span class="k">Horario de mercado</span><span class="v">${c.marketHours}</span></div>
-      <div class="kv-row"><span class="k">Umbral EXPLOSION</span><span class="v">&ge; ${c.explosionThresholdPct}%</span></div>
-      <div class="kv-row"><span class="k">Techo FALSE_BREAKOUT</span><span class="v">&lt; ${c.falseBreakoutCeilingPct}%</span></div>
-      <div class="kv-row"><span class="k">Techo microcap</span><span class="v">${c.microCapCeiling}</span></div>
+      <h3>Parámetros vigentes (valores reales del backend, solo lectura)</h3>
+      <div class="kv-row"><span class="k">Intervalo de escaneo</span><span class="v">${(c.refresh_interval_seconds / 60).toFixed(0)} min</span></div>
+      <div class="kv-row"><span class="k">Ventana de sellado</span><span class="v">${c.seal_window}</span></div>
+      <div class="kv-row"><span class="k">Horario de mercado</span><span class="v">Premarket ${mh.premarket} · Regular ${mh.regular} · Afterhours ${mh.afterhours} (${mh.timezone})</span></div>
+      <div class="kv-row"><span class="k">Umbral EXPLOSION</span><span class="v">&ge; ${c.explosion_threshold_pct}%</span></div>
+      <div class="kv-row"><span class="k">Techo FALSE_BREAKOUT</span><span class="v">&lt; ${c.false_breakout_ceiling_pct}%</span></div>
+      <div class="kv-row"><span class="k">Umbral LOSER</span><span class="v">&le; ${c.loser_threshold_pct}%</span></div>
+      <div class="kv-row"><span class="k">Techo microcap</span><span class="v">${microMM}</span></div>
+      <div class="kv-row"><span class="k">Precio mínimo</span><span class="v">US$${c.min_price_usd}</span></div>
+      <div class="kv-row"><span class="k">Volumen $ mínimo (liquidez)</span><span class="v">${dollarVol}</span></div>
+      <div class="kv-row"><span class="k">Top N publicado</span><span class="v">${c.top_n}</span></div>
     </div>
-    <div class="detail-note">Edición de estos parámetros: pendiente de definir cuando se conecte esta pantalla al backend real.</div>`;
+    <div class="detail-note">Estos valores se leen en vivo de los módulos del backend (scan_worker, classifier, explosive_config, market_hours) -- no están hardcodeados en la interfaz.</div>`;
 }
 
 /* ---------------- Arranque ---------------- */
 
 function init() {
   setupNav();
-  renderGlobalStatus();
-  startActivityFeed();
+  renderGlobalStatus();      // barra de actividad + estado real (renderActivity)
+  renderActivity();          // estado honesto inmediato hasta el primer fetch
   renderMarketQuality();
   startMemoryRankingPolling(); // Paneles 2-6: hero, Plan B, Explosivas, Momentum, No tocar, Radar Completo
   startHotChannel(); // Canal rápido (Plan A + Plan B): precio <=3s + indicadores de frescura
-  renderOpina();
-  renderAlerts();
-  renderWhyNot();
-  renderEtf(); // sigue en MOCK -- no estaba en el orden de integración pedido
+  renderOpina();             // Resumen Factual (datos reales; honesto si no hay)
+  renderAlerts();            // solo eventos reales de Mission Control
+  renderWhyNot();            // descartes reales de /api/explosive-diagnostics
+  fetchExplosiveDiagnostics();
+  setInterval(fetchExplosiveDiagnostics, MEMORY_POLL_MS);
+  renderEtf();               // estado honesto -- sin fuente simulada
   startPanelStatusPolling(); // Paneles 9-12: Memory Engine, Prediction Journal, Exit Journal, Mission Control
-  renderConfig();
+  renderConfig();            // valores reales de /api/config
   document.getElementById("btn-save-snapshot").addEventListener("click", saveDaySnapshot);
 }
 
