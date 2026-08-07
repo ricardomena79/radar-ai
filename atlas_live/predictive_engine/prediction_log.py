@@ -34,6 +34,12 @@ from atlas_live.predictive_engine.engine import CapabilityResult
 
 DB_PATH = db_path("predictive_engine.db", default=Path(__file__).parent)
 
+
+class AlreadyGradedError(Exception):
+    """Se intentó calificar una predicción que ya tiene `graded_at` --
+    mismo guardia que `AlreadySealedError` de `prediction_journal.py`, la
+    calificación se llena una sola vez."""
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS predictions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -173,3 +179,52 @@ def count_predictions() -> int:
     with closing(_connect()) as conn:
         row = conn.execute("SELECT COUNT(*) AS n FROM predictions").fetchone()
     return row["n"]
+
+
+def grade_prediction(prediction_id: int, actual_outcome: str, graded_at: str) -> None:
+    """Llena las tres columnas reservadas desde el Sprint 1
+    (`graded_at`, `actual_outcome`, `correct`) de una predicción ya
+    registrada -- append-only: ningún otro campo de la fila se toca.
+    `actual_outcome` es uno de "correcta" / "incorrecta" /
+    "sin_evidencia_suficiente" (ver `grading.py`); `correct` se deriva
+    para poder agregar con SQL simple (1/0/NULL)."""
+    correct = {"correcta": 1, "incorrecta": 0}.get(actual_outcome)
+    with closing(_connect()) as conn:
+        existente = conn.execute(
+            "SELECT graded_at FROM predictions WHERE id = ?", (prediction_id,)
+        ).fetchone()
+        if existente is None:
+            raise ValueError(f"No existe ninguna predicción con id={prediction_id!r}")
+        if existente["graded_at"] is not None:
+            raise AlreadyGradedError(f"La predicción id={prediction_id!r} ya fue calificada -- no se recalifica.")
+        conn.execute(
+            "UPDATE predictions SET graded_at = ?, actual_outcome = ?, correct = ? WHERE id = ?",
+            (graded_at, actual_outcome, correct, prediction_id),
+        )
+        conn.commit()
+
+
+def get_accuracy_summary(capability: str = "entry_window") -> Dict[str, Any]:
+    """Evidencia visible del propio desempeño de una capacidad --
+    "aprender tanto de los aciertos como de los errores" (principio
+    aprobado 2026-08-06). Cuenta simple sobre `actual_outcome`, sin ningún
+    modelo ni ponderación nueva -- la atribución de qué variable explica
+    cada acierto/error (`attribution.py`) sigue sin implementarse."""
+    with closing(_connect()) as conn:
+        rows = conn.execute(
+            "SELECT actual_outcome, COUNT(*) AS n FROM predictions "
+            "WHERE capability = ? AND actual_outcome IS NOT NULL GROUP BY actual_outcome",
+            (capability,),
+        ).fetchall()
+    counts = {r["actual_outcome"]: r["n"] for r in rows}
+    correctas = counts.get("correcta", 0)
+    incorrectas = counts.get("incorrecta", 0)
+    sin_evidencia = counts.get("sin_evidencia_suficiente", 0)
+    evaluables = correctas + incorrectas
+    return {
+        "correctas": correctas,
+        "incorrectas": incorrectas,
+        "sin_evidencia_suficiente": sin_evidencia,
+        "total_calificadas": correctas + incorrectas + sin_evidencia,
+        "accuracy_pct": (correctas / evaluables * 100) if evaluables > 0 else None,
+    }

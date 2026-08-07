@@ -48,7 +48,7 @@ from atlas_live.memory import exit_journal as ej
 from atlas_live.memory import market_hours
 from atlas_live.memory import prediction_journal as pj
 from atlas_live.memory import ranking_score as rs
-from atlas_live.predictive_engine import prediction_log
+from atlas_live.predictive_engine import grading, prediction_log
 from atlas_live.predictive_engine.capabilities import entry_window
 from atlas_live.predictive_engine.capabilities.entry_window import EntryWindowCapability
 from atlas_live.predictive_engine.engine import PredictionEngine
@@ -309,6 +309,19 @@ def _grade_pending(date: str, now: datetime) -> str:
     return f"calificados={calificados}/{len(pendientes)}"
 
 
+def _grade_predictive_engine(now: datetime) -> str:
+    """Motor Predictivo (Fase 1.1, Sprint 5) -- califica automáticamente
+    las predicciones de `entry_window` cuyo día de mercado ya cerró,
+    comparándolas contra el resultado real del Exit Journal
+    (`grading.grade_pending`, solo lectura sobre trayectorias ya
+    existentes). No depende del sellado del Prediction Journal."""
+    reporte = grading.grade_pending(now)
+    return (
+        f"calificadas={reporte['calificadas']}/{reporte['pendientes_totales']} "
+        f"(sin_cerrar={reporte['saltadas_dia_no_cerrado']}, errores={reporte['errores']})"
+    )
+
+
 def run_live_cycle(results: List[Dict[str, Any]], now: Optional[datetime] = None) -> Dict[str, Any]:
     """Punto de entrada único. Nunca lanza una excepción hacia el
     llamador -- cualquier error queda en el campo `error` del resumen que
@@ -350,8 +363,14 @@ def run_live_cycle(results: List[Dict[str, Any]], now: Optional[datetime] = None
             accion = _track_trajectory(date, now, results)
             prediccion = _predict_entries(date, now, results)
 
-        elif session in ("afterhours", "closed") and pj.is_sealed(date):
-            accion = _grade_pending(date, now)
+        elif session in ("afterhours", "closed"):
+            if pj.is_sealed(date):
+                accion = _grade_pending(date, now)
+            # Motor Predictivo (Fase 1.1, Sprint 5): calificación automática
+            # de entry_window -- independiente del sellado del Prediction
+            # Journal, porque _predict_entries ya registra predicciones para
+            # CUALQUIER candidato elegible, no solo el top-20 sellado.
+            prediccion = _grade_predictive_engine(now)
 
         return {"session": session, "date": date, "accion": accion, "prediccion": prediccion, "error": None}
     except Exception as exc:

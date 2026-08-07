@@ -131,10 +131,50 @@ def evaluate(
 
     gap_pct = _gap_pct(quote)
     rvol = _relative_volume(quote)
-    dollar_volume = (quote.last_price or 0) * (quote.volume or 0)
     volatility_score = momentum_result.component("atr").score
     market_cap = quote.market_cap
     change_pct = quote.change_percent or 0.0
+
+    # Investigación 3 (2026-08-06, ver DECISIONES.md): confirmado con datos
+    # reales que Yahoo Finance reporta Volume=0 en TODAS las velas de
+    # premarket (el precio sí se mueve vela a vela, prueba de operaciones
+    # reales -- Volume nunca deja de ser 0 igual). Eso bloqueaba
+    # estructuralmente `dollar_volume` y `rvol` durante todo el premarket,
+    # sin importar la fuerza real de la oportunidad -- 67/117 casos reales
+    # con gap>=10% recién quedaban elegibles a las 09:30 ET, la apertura
+    # regular, y 41/117 nunca llegaban a serlo.
+    #
+    # Alternativas evaluadas y descartadas con evidencia real antes de
+    # esta (ver DECISIONES.md, Investigación 3): (a) rango de precio
+    # High-Low en dólares -- unidad sin sentido, valores de $0-$110 en
+    # 13/14 casos reales de EXPLOSION, no mide liquidez; (b) contador de
+    # cambios de precio -- exige pasarle la serie cruda de velas a
+    # `evaluate()`, cambio de interfaz mucho más invasivo que lo mínimo
+    # necesario; (c) omitir el gate directamente en premarket -- elimina
+    # el piso de liquidez en vez de sustituirlo, deja pasar posible ruido.
+    #
+    # Solución aplicada: volumen promedio diario real del símbolo (dato
+    # histórico real, no fabricado, ya presente en `quote.average_volume`)
+    # como piso de capacidad de liquidez, en las mismas unidades y contra
+    # el mismo umbral ya calibrado (`min_dollar_volume`) -- sin inventar
+    # un umbral nuevo. Validado con evidencia real: 14/14 casos reales de
+    # EXPLOSION con gap>=10% en premarket superan el umbral existente con
+    # este sustituto (mediana ~$34.7M vs. umbral $2M).
+    #
+    # Alcance quirúrgico a propósito: solo se activa cuando `market_state`
+    # es uno de los DOS estados reales de premarket que Yahoo reporta --
+    # "PRE" y "PREPRE" (confirmados ambos en producción real, ver
+    # DECISIONES.md; mismo conjunto que ya reconoce
+    # `yahoo_finance_live_provider.MARKET_STATE_TO_PRICE_TYPE`, no una
+    # lista inventada acá) -- Y el volumen no está reportado. El
+    # comportamiento de mercado regular/after-hours/closed queda
+    # exactamente igual que antes, en cualquier otro caso.
+    PREMARKET_STATES = ("PRE", "PREPRE")
+    premarket_sin_volumen = quote.market_state in PREMARKET_STATES and not quote.volume
+    if premarket_sin_volumen:
+        dollar_volume = (quote.average_volume or 0) * (quote.last_price or 0)
+    else:
+        dollar_volume = (quote.last_price or 0) * (quote.volume or 0)
 
     # Se calculan siempre, pasen o no los filtros: el modo Diagnóstico los
     # necesita también para las descartadas (para mostrar "Gap +3%, RVOL
@@ -145,6 +185,7 @@ def evaluate(
         "change_pct": change_pct,
         "relative_volume": rvol,
         "dollar_volume": dollar_volume,
+        "liquidity_proxy_premarket": premarket_sin_volumen,
         "volatility_score": volatility_score,
         "market_cap": market_cap,
         # Trazabilidad de precio (2026-08-02, ver DATA_FUSION_ENGINE_PROPUESTA.md,
@@ -180,7 +221,17 @@ def evaluate(
         return _fail("liquidity", "Liquidez insuficiente para operar intradía")
     stage_trace.append("liquidity")
 
-    if rvol is None or rvol < gates["min_rvol"]:
+    # RVOL depende de `quote.volume`, la misma limitación de datos que
+    # `dollar_volume` -- sin sustituto honesto posible (no hay una línea
+    # base real de "premarket típico" por símbolo para comparar, a
+    # diferencia de la liquidez arriba, que sí tiene un piso real y
+    # validado). Se omite este gate específico solo en el mismo caso
+    # exacto (premarket sin volumen reportado) en vez de fabricar un
+    # número -- `rvol` queda `None` en `metrics`, honesto, no inventado.
+    if rvol is None:
+        if not premarket_sin_volumen:
+            return _fail("rvol", "Volumen relativo insuficiente (sin interés anómalo)")
+    elif rvol < gates["min_rvol"]:
         return _fail("rvol", "Volumen relativo insuficiente (sin interés anómalo)")
     stage_trace.append("rvol")
 

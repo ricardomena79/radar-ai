@@ -2,9 +2,20 @@
 mercado). Uso: `python -m atlas_live.memory.test_exit_journal`"""
 
 import os
+import tempfile
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from atlas_live.memory import exit_journal as ej
+
+# Aislamiento de datos (2026-08-06, incidente real -- ver DECISIONES.md):
+# antes, `_reset_db()` borraba `ej.DB_PATH` por defecto (el mismo archivo
+# que usa la reconstrucción histórica real), y el `_reset_db()` final del
+# bloque __main__ lo dejaba borrado sin volver a escribir nada. Ahora este
+# módulo redirige `ej.DB_PATH` a un directorio temporal propio, generado
+# una sola vez al importar -- ningún test de este archivo puede volver a
+# tocar el archivo real, sin importar quién lo corra ni cuándo.
+ej.DB_PATH = Path(tempfile.mkdtemp(prefix="atlas_test_exit_journal_")) / "exit_journal.db"
 
 
 def _reset_db():

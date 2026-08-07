@@ -56,6 +56,7 @@ from atlas.engine.score_engine import (
 
 from atlas_live import explosive_engine
 from atlas_live.explosive_config import load_config
+from atlas_live.memory import market_hours
 
 DAILY_LOOKBACK_DAYS = 400  # bien por encima de los ~260 días hábiles que cubren 6mo+margen
 TRAILING_AVG_VOLUME_DAYS = 20
@@ -119,7 +120,13 @@ def fetch_intraday_bars(symbols: List[str], target_date: date) -> Dict[str, pd.D
     cuello de botella real de una validación multi-día (no se puede
     reutilizar entre días como el historial diario), así que se paraleliza
     con un pool moderado -- no agresivo, para no forzar el rate limit de
-    Yahoo Finance."""
+    Yahoo Finance.
+
+    `prepost=True` (2026-08-06, ver DECISIONES.md, Fase 1.1): sin esto, el
+    rango devuelto para un día excluye premarket y after-hours -- mismo
+    problema ya encontrado y corregido en el escaneo en vivo (A2) y en el
+    proveedor de Yahoo Finance. Necesario para reconstruir la trayectoria
+    completa desde la primera señal, no solo desde la apertura regular."""
     start = target_date
     end = target_date + timedelta(days=1)
     chunks = _chunks(symbols, CHUNK_SIZE)
@@ -127,7 +134,7 @@ def fetch_intraday_bars(symbols: List[str], target_date: date) -> Dict[str, pd.D
     result: Dict[str, pd.DataFrame] = {}
 
     def _fetch_chunk(chunk: List[str]) -> Dict[str, pd.DataFrame]:
-        df = _download_with_retry(tickers=chunk, start=str(start), end=str(end), interval="5m", group_by="ticker")
+        df = _download_with_retry(tickers=chunk, start=str(start), end=str(end), interval="5m", prepost=True, group_by="ticker")
         out: Dict[str, pd.DataFrame] = {}
         if df.empty:
             return out
@@ -229,7 +236,24 @@ def reconstruct_symbol(
             snapshot_volume = float(snapshot["Volume"].sum())
             snapshot_high = float(snapshot["High"].max())
             snapshot_low = float(snapshot["Low"].min())
-            vwap_component = score_vwap_distance(snapshot_price, snapshot["High"], snapshot["Low"], snapshot["Close"], snapshot["Volume"])
+            if snapshot_volume > 0:
+                vwap_component = score_vwap_distance(snapshot_price, snapshot["High"], snapshot["Low"], snapshot["Close"], snapshot["Volume"])
+            else:
+                # Velas de premarket con volumen 0 (dato real de Yahoo, no un
+                # faltante -- ver DECISIONES.md, "Bug encontrado y corregido
+                # durante la implementación", 2026-08-04): `calc_vwap` da
+                # NaN en todas las filas, y `_last()` revienta con
+                # "single positional indexer is out-of-bounds" al hacer
+                # `.dropna().iloc[-1]` sobre una serie vacía -- esto tumbaba
+                # en silencio TODA la reconstrucción de esa vela (Fase 1.1,
+                # Sprint 2, 2026-08-06), justo el tramo de premarket que esta
+                # fase necesita medir. Mismo valor neutro que ya usa la rama
+                # `else` de abajo para "sin datos intradía".
+                from atlas.engine.score_engine import ComponentScore
+                vwap_component = ComponentScore(
+                    name="vwap_distance", score=50.0,
+                    explanation="Sin volumen en la ventana (premarket ilíquido) -- VWAP no calculable",
+                )
         else:
             # Sin velas intradía para este día (fuera de la ventana de ~60
             # días de Yahoo, o dato faltante): mismo valor neutro que usa
@@ -249,12 +273,27 @@ def reconstruct_symbol(
         elif fallback_market_cap:
             market_cap = fallback_market_cap
 
+        # market_state real (Investigación 3, 2026-08-06, ver DECISIONES.md):
+        # antes quedaba siempre None acá -- el gate de liquidez/RVOL
+        # premarket-aware de explosive_engine.py necesita saberlo para
+        # activarse solo en premarket, igual que ya lo sabe el escaneo en
+        # vivo vía Yahoo. Se deriva de la hora real de la última vela del
+        # snapshot (no inventada -- mismo dato que ya usa
+        # reconstruct_trajectories.py para el timestamp real de cada punto),
+        # reutilizando `market_hours.get_session()` sin duplicar la lógica
+        # de horarios.
+        market_state = None
+        if vwap_available:
+            sesion = market_hours.get_session(snapshot.index[-1])
+            market_state = {"premarket": "PRE", "regular": "REGULAR", "afterhours": "POST", "closed": "CLOSED"}[sesion]
+
         quote = Quote(
             symbol=symbol, name=None, last_price=snapshot_price, change_percent=change_percent,
             volume=int(snapshot_volume), open=day_open, high=snapshot_high, low=snapshot_low,
             previous_close=previous_close, market_cap=market_cap, sector=None, industry=None,
             float_shares=None, average_volume=int(avg_volume) if avg_volume else None,
             relative_volume=None, timestamp=datetime.combine(target_date, datetime.min.time()),
+            market_state=market_state,
         )
 
         components = [

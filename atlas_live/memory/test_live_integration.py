@@ -6,12 +6,26 @@ red real. Uso: `python -m atlas_live.memory.test_live_integration`
 """
 
 import os
+import tempfile
 from datetime import datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from atlas_live.memory import exit_journal as ej
 from atlas_live.memory import live_integration as li
 from atlas_live.memory import prediction_journal as pj
+
+# Aislamiento de datos (2026-08-06, incidente real -- ver DECISIONES.md):
+# antes, `_reset_db()` borraba `ej.DB_PATH`/`pj.DB_PATH` por defecto (los
+# mismos archivos que usa la reconstrucción histórica real y el Prediction
+# Journal en vivo), y el `_reset_db()` final del bloque __main__ los dejaba
+# borrados sin volver a escribir nada. Ahora este módulo redirige ambos
+# DB_PATH a un directorio temporal propio, generado una sola vez al
+# importar -- ningún test de este archivo puede volver a tocar los
+# archivos reales, sin importar quién lo corra ni cuándo.
+_TEST_DATA_DIR = Path(tempfile.mkdtemp(prefix="atlas_test_live_integration_"))
+ej.DB_PATH = _TEST_DATA_DIR / "exit_journal.db"
+pj.DB_PATH = _TEST_DATA_DIR / "prediction_journal.db"
 
 ET = ZoneInfo("America/New_York")
 

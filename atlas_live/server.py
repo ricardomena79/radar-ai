@@ -149,13 +149,16 @@ def api_mission_control():
 
 @app.route("/api/predictive-engine")
 def api_predictive_engine():
-    """Motor Predictivo -- verificación pública del Sprint 1 (Fase 1.1,
-    2026-08-06, ver DECISIONES.md). Últimas predicciones registradas por
-    cualquier capacidad (hoy solo `entry_window`), solo lectura sobre
+    """Motor Predictivo -- verificación pública (Fase 1.1, 2026-08-06, ver
+    DECISIONES.md). Últimas predicciones registradas por cualquier
+    capacidad (hoy solo `entry_window`) y el resumen de precisión ya
+    calificado (Sprint 5) -- "aprender tanto de los aciertos como de los
+    errores" hecho visible, sin ningún modelo nuevo. Solo lectura sobre
     `prediction_log.py`."""
     return jsonify({
         "total_predictions": prediction_log.count_predictions(),
         "recent": prediction_log.get_predictions(limit=20),
+        "accuracy": prediction_log.get_accuracy_summary(),
     })
 
 
