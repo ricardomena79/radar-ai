@@ -258,6 +258,11 @@ class _State:
         # Yahoo Finance detectado, para no duplicar el evento en el
         # Timeline de Mission Control en cada ciclo si no cambió.
         self.last_market_state: Optional[str] = None
+        # Failover del Data Fusion Engine (2026-08-07): último proveedor
+        # que realmente sirvió las cotizaciones del ciclo (`quote.source`,
+        # ya trazado en explosive_engine.py) -- mismo criterio que
+        # last_market_state, solo transiciones reales.
+        self.last_provider_source: Optional[str] = None
 
     def snapshot(self) -> Dict[str, Any]:
         with self._lock:
@@ -477,6 +482,37 @@ def run_scan_once() -> None:
                 pass
             STATE.update(last_market_state=detected_market_state)
 
+        # Failover del Data Fusion Engine (2026-08-07): mismo criterio que
+        # el bloque de arriba -- registra en el Timeline de Mission Control
+        # solo cuando el proveedor que realmente sirvió las cotizaciones de
+        # este ciclo cambió respecto al ciclo anterior (WARNING al pasar a
+        # un respaldo, INFO al volver a Yahoo). Nunca debe tumbar el escaneo.
+        detected_source = next(
+            (r["explosive"]["metrics"].get("source") for r in results if r.get("explosive")), None,
+        )
+        if detected_source and detected_source != STATE.last_provider_source:
+            if STATE.last_provider_source is not None:
+                try:
+                    volviendo_a_yahoo = detected_source == "yahoo_finance"
+                    timeline.record_event(
+                        # run_id distinto de "SCAN_WORKER" a propósito: /api/mission-control
+                        # ya filtra ese run_id para el historial de marketState -- un evento
+                        # de proveedor ahí se mezclaría con ese historial (dos conceptos
+                        # distintos, ver market_state_events en server.py).
+                        run_id="DATA_FUSION", process_type="scan_worker", label="Escaneo en vivo",
+                        event_type="state_changed",
+                        severity="INFO" if volviendo_a_yahoo else "WARNING",
+                        message=(
+                            f"Data Fusion Engine: proveedor activo cambió de "
+                            f"'{STATE.last_provider_source}' a '{detected_source}'"
+                            + (" (recuperado)" if volviendo_a_yahoo else " (failover a respaldo)")
+                        ),
+                        metadata={"provider_source": detected_source, "previous_provider_source": STATE.last_provider_source},
+                    )
+                except Exception:
+                    pass
+            STATE.update(last_provider_source=detected_source)
+
         # El diagnóstico del ciclo (cuántos símbolos, cuántos errores, cuánto
         # tardó) se actualiza siempre, haya o no resultados -- es sobre el
         # ciclo en sí, no sobre lo que se muestra en pantalla.
@@ -624,6 +660,14 @@ def get_memory_ranking() -> Dict[str, Any]:
     del Piloto, Panel 2 en adelante. `candidates` queda vacío hasta que
     corra el primer ciclo completo."""
     return STATE.memory_ranking_snapshot()
+
+
+def get_active_provider_source() -> Optional[str]:
+    """Proveedor (`quote.source`) que realmente sirvió las cotizaciones del
+    último ciclo de escaneo real -- evidencia en vivo para el diagnóstico
+    de failover del Data Fusion Engine, `None` si todavía no corrió ningún
+    ciclo."""
+    return STATE.last_provider_source
 
 
 _background_thread: Optional[threading.Thread] = None

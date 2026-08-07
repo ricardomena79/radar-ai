@@ -167,6 +167,13 @@ def api_mission_control():
         e for e in timeline.get_recent_events(limit=100)
         if e["event_type"] == "state_changed" and e["run_id"] == "SCAN_WORKER"
     ]
+    # Failover del Data Fusion Engine (2026-08-07) -- run_id separado
+    # ("DATA_FUSION"), a propósito, para no mezclarse con el historial de
+    # marketState de arriba (dos conceptos distintos).
+    provider_events = [
+        e for e in timeline.get_recent_events(limit=100)
+        if e["event_type"] == "state_changed" and e["run_id"] == "DATA_FUSION"
+    ]
     return jsonify({
         "processes": heartbeat.list_active_processes(),
         "market_state_history": [
@@ -176,6 +183,16 @@ def api_mission_control():
                 "previous_market_state": e["metadata"].get("previous_market_state"),
             }
             for e in market_state_events
+        ],
+        "provider_failover_history": [
+            {
+                "timestamp": e["timestamp"],
+                "severity": e["severity"],
+                "provider_source": e["metadata"].get("provider_source"),
+                "previous_provider_source": e["metadata"].get("previous_provider_source"),
+                "message": e["message"],
+            }
+            for e in provider_events
         ],
     })
 
@@ -227,6 +244,79 @@ def api_rescan():
     import threading
     threading.Thread(target=scan_worker.run_scan_once, daemon=True).start()
     return jsonify({"status": "escaneo iniciado"})
+
+
+@app.route("/api/diagnostics/providers")
+def api_diagnostics_providers():
+    """Diagnóstico de solo lectura del Data Fusion Engine real (Ricardo,
+    2026-08-07): qué proveedor sirvió el último ciclo de escaneo en vivo
+    (evidencia real, no supuesta) y si Finnhub autentica de verdad -- una
+    llamada real y aislada a `FinnhubProvider`, nunca expone el valor de
+    la API key."""
+    from atlas.data.providers.base import ProviderError, QuoteNotFoundError
+    from atlas_live.data_fusion.finnhub_provider import FinnhubProvider
+
+    api_key = os.environ.get("FINNHUB_API_KEY")
+    finnhub_authentication = "missing"
+    if api_key:
+        try:
+            FinnhubProvider(api_key).get_quote("AAPL")
+            finnhub_authentication = "ok"
+        except QuoteNotFoundError:
+            finnhub_authentication = "ok"
+        except ProviderError:
+            finnhub_authentication = "invalid"
+
+    return jsonify({
+        "active_provider_last_cycle": scan_worker.get_active_provider_source(),
+        "yahoo_provider_present": True,
+        "finnhub_key_present": bool(api_key),
+        "finnhub_authentication": finnhub_authentication,
+        "is_multi_provider": True,
+    })
+
+
+@app.route("/api/diagnostics/forced-failover-test", methods=["POST"])
+def api_diagnostics_forced_failover_test():
+    """Prueba controlada de failover (Ricardo, 2026-08-07): fuerza un
+    `ProviderError` idéntico al que devolvería Yahoo caído, desde un
+    proveedor de prueba que nunca toca la red -- no afecta el Yahoo real
+    ni el escaneo en curso -- y confirma con el `MultiProvider` REAL
+    (`atlas_live.data_fusion.multi_provider`) más el `FinnhubProvider`
+    REAL que `get_quote()` obtiene datos reales del segundo proveedor.
+    Falla honesta con 400 si `FINNHUB_API_KEY` no está configurada."""
+    from atlas.data.providers.base import DataProvider, ProviderError
+    from atlas_live.data_fusion.finnhub_provider import FinnhubProvider
+    from atlas_live.data_fusion.multi_provider import MultiProvider
+
+    api_key = os.environ.get("FINNHUB_API_KEY")
+    if not api_key:
+        return jsonify({"error": "FINNHUB_API_KEY no configurada -- no se puede probar el respaldo real."}), 400
+
+    class _SiempreCaido(DataProvider):
+        """Doble de prueba -- simula a Yahoo caído sin tocar la red real."""
+
+        def get_quote(self, symbol: str):
+            raise ProviderError("Simulado: proveedor primario caído (prueba controlada).")
+
+        def get_quotes(self, symbols):
+            raise ProviderError("Simulado: proveedor primario caído (prueba controlada).")
+
+        def get_history(self, symbol: str, period: str = "6mo", interval: str = "1d"):
+            raise ProviderError("Simulado: proveedor primario caído (prueba controlada).")
+
+    multi = MultiProvider([_SiempreCaido(), FinnhubProvider(api_key)])
+    try:
+        quote = multi.get_quote("AAPL")
+    except ProviderError as exc:
+        return jsonify({"error": f"Failover falló incluso con el respaldo real: {exc}"}), 502
+
+    return jsonify({
+        "failover_confirmado": quote.source == "finnhub",
+        "provider_que_respondio": quote.source,
+        "symbol": quote.symbol,
+        "last_price": quote.last_price,
+    })
 
 
 SHUTDOWN_TIMEOUT_SECONDS = 60
