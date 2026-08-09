@@ -188,7 +188,13 @@ def api_hot_quote():
     symbols = hot_quote.parse_symbols(request.args.get("symbols", ""))
     # Sin símbolos válidos: no se construye proveedor ni se consulta nada.
     collector = DataCollector(get_default_provider()) if symbols else None
-    return jsonify(hot_quote.collect_hot_quotes(symbols, collector))
+    # Reintento acotado SOLO en este canal (<=2 símbolos): Yahoo desde el
+    # datacenter de Railway falla de forma transitoria (timeouts/SSL) en una
+    # fracción alta de requests; un segundo/tercer intento recupera esos 2
+    # precios visibles sin tocar el escaneo del universo. Ver hot_quote._fetch_one.
+    return jsonify(hot_quote.collect_hot_quotes(
+        symbols, collector, max_attempts=3, retry_backoff_seconds=0.3,
+    ))
 
 
 @app.route("/api/config")

@@ -16,11 +16,12 @@ del límite de Finnhub (60/min) e independiente del escaneo del universo --
 no aumenta el consumo sobre ese escaneo.
 """
 
+import time
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from atlas.data.collectors.data_collector import DataCollector
-from atlas.data.providers.base import ProviderError, QuoteNotFoundError
+from atlas.data.providers.base import ProviderError, QuoteNotFoundError, RateLimitError
 
 # El canal es EXCLUSIVO para Plan A + Plan B: como mucho 2 símbolos. Cualquier
 # exceso se ignora, para que nadie pueda usar este endpoint como un escáner
@@ -41,25 +42,32 @@ def parse_symbols(raw: Optional[str]) -> List[str]:
     return seen
 
 
-def collect_hot_quotes(
-    symbols: List[str],
+def _fetch_one(
+    symbol: str,
     collector: DataCollector,
-    now: Optional[datetime] = None,
+    max_attempts: int,
+    retry_backoff_seconds: float,
+    sleep: Callable[[float], None],
 ) -> Dict:
-    """Devuelve `{server_time, quotes}` con la cotización cruda de cada
-    símbolo. Un fallo por símbolo (proveedor caído, rate-limit, o símbolo
-    inexistente) NO tumba el canal ni los otros símbolos: ese símbolo sale
-    con `status="unavailable"` y el frontend conserva el "último recibido",
-    mostrando su antigüedad creciente. Se capturan explícitamente solo las
-    excepciones que el MultiProvider puede lanzar (`ProviderError` -- incluye
-    `RateLimitError` -- y `QuoteNotFoundError`), nunca un `except Exception`
-    genérico."""
-    server_time = (now or datetime.now(timezone.utc)).isoformat()
-    quotes: List[Dict] = []
-    for symbol in symbols:
+    """Trae la cotización de UN símbolo, con reintento acotado SOLO para
+    fallos transitorios del proveedor.
+
+    Reintentar tiene sentido únicamente para el canal rápido (a lo sumo 2
+    símbolos): los fallos que se observaron en vivo contra Yahoo desde un
+    datacenter son mayormente transitorios por request -- timeouts de red y
+    cierres de conexión SSL (`ProviderError` genérico) -- y un segundo
+    intento a los pocos cientos de milisegundos suele pasar. NO se reintenta:
+    - `QuoteNotFoundError`: es definitivo (el símbolo no existe para el
+      proveedor), reintentar no cambia nada.
+    - `RateLimitError`: reintentar dentro del mismo request no ayuda (el
+      límite sigue vigente) y solo gastaría cuota; sale "unavailable" y el
+      frontend conserva el "último recibido".
+    """
+    last_reason = "ProviderError"
+    for attempt in range(max_attempts):
         try:
             q = collector.get_quote(symbol)
-            quotes.append({
+            return {
                 "symbol": q.symbol,
                 "status": "ok",
                 "price": q.last_price,
@@ -68,11 +76,42 @@ def collect_hot_quotes(
                 "market_state": q.market_state,
                 "source": q.source,
                 "price_as_of": q.timestamp.isoformat() if q.timestamp else None,
-            })
-        except (ProviderError, QuoteNotFoundError) as exc:
-            quotes.append({
-                "symbol": symbol,
-                "status": "unavailable",
-                "reason": type(exc).__name__,
-            })
+            }
+        except (QuoteNotFoundError, RateLimitError) as exc:
+            # Fallos definitivos o no-reintentar: se cortan de inmediato.
+            return {"symbol": symbol, "status": "unavailable", "reason": type(exc).__name__}
+        except ProviderError as exc:
+            # Transitorio: reintentar si quedan intentos.
+            last_reason = type(exc).__name__
+            if attempt < max_attempts - 1 and retry_backoff_seconds > 0:
+                sleep(retry_backoff_seconds)
+    return {"symbol": symbol, "status": "unavailable", "reason": last_reason}
+
+
+def collect_hot_quotes(
+    symbols: List[str],
+    collector: DataCollector,
+    now: Optional[datetime] = None,
+    max_attempts: int = 1,
+    retry_backoff_seconds: float = 0.0,
+    sleep: Callable[[float], None] = time.sleep,
+) -> Dict:
+    """Devuelve `{server_time, quotes}` con la cotización cruda de cada
+    símbolo. Un fallo por símbolo (proveedor caído, rate-limit, o símbolo
+    inexistente) NO tumba el canal ni los otros símbolos: ese símbolo sale
+    con `status="unavailable"` y el frontend conserva el "último recibido",
+    mostrando su antigüedad creciente. Se capturan explícitamente solo las
+    excepciones que el MultiProvider puede lanzar (`ProviderError` -- incluye
+    `RateLimitError` -- y `QuoteNotFoundError`), nunca un `except Exception`
+    genérico.
+
+    `max_attempts` es opt-in (default 1 = sin reintento, comportamiento
+    idéntico al anterior): el endpoint lo activa para tolerar los fallos
+    transitorios de Yahoo desde datacenter (ver `_fetch_one`). `sleep` se
+    inyecta para poder testear el reintento sin esperas reales."""
+    server_time = (now or datetime.now(timezone.utc)).isoformat()
+    quotes = [
+        _fetch_one(symbol, collector, max_attempts, retry_backoff_seconds, sleep)
+        for symbol in symbols
+    ]
     return {"server_time": server_time, "quotes": quotes}

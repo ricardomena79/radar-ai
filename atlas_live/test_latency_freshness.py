@@ -61,6 +61,29 @@ class _StubProvider(DataProvider):
         raise NotImplementedError
 
 
+class _FlakyProvider(DataProvider):
+    """Falla las primeras `fail_times` llamadas de un símbolo con la excepción
+    dada, y a partir de ahí devuelve un Quote normal -- para probar el
+    reintento del canal rápido ante fallos transitorios."""
+
+    def __init__(self, fail_times: int, exc: Exception) -> None:
+        self._fail_times = fail_times
+        self._exc = exc
+        self.calls: List[str] = []
+
+    def get_quote(self, symbol: str) -> Quote:
+        self.calls.append(symbol)
+        if len(self.calls) <= self._fail_times:
+            raise self._exc
+        return _quote(symbol)
+
+    def get_quotes(self, symbols):
+        return [self.get_quote(s) for s in symbols]
+
+    def get_history(self, symbol, period="6mo", interval="1d") -> pd.DataFrame:
+        raise NotImplementedError
+
+
 # --------------------------- parse_symbols ---------------------------
 
 def test_parse_symbols_caps_at_two():
@@ -134,6 +157,71 @@ def test_empty_symbols_returns_server_time_and_no_quotes():
     out = hot_quote.collect_hot_quotes([], None, now=now)
     assert out["server_time"] == now.isoformat()
     assert out["quotes"] == []
+
+
+# --------------------------- reintento del canal rápido ---------------------------
+
+def _noop_sleep(_seconds):
+    return None
+
+
+def test_retry_recovers_transient_provider_error():
+    # Falla la 1ra vez (ProviderError transitorio: timeout/SSL) y se recupera
+    # en el 2do intento -> el símbolo termina OK gracias al reintento.
+    provider = _FlakyProvider(fail_times=1, exc=ProviderError("timeout"))
+    collector = DataCollector(provider)
+    out = hot_quote.collect_hot_quotes(
+        ["SPY"], collector, max_attempts=3, retry_backoff_seconds=0.3, sleep=_noop_sleep,
+    )
+    assert out["quotes"][0]["status"] == "ok"
+    assert len(provider.calls) == 2  # 1 fallo + 1 éxito
+
+
+def test_retry_gives_up_after_max_attempts():
+    # ProviderError persistente en los 3 intentos -> unavailable, exactamente
+    # 3 llamadas (no un bucle infinito).
+    provider = _FlakyProvider(fail_times=99, exc=ProviderError("caído"))
+    collector = DataCollector(provider)
+    out = hot_quote.collect_hot_quotes(
+        ["SPY"], collector, max_attempts=3, retry_backoff_seconds=0.3, sleep=_noop_sleep,
+    )
+    assert out["quotes"][0]["status"] == "unavailable"
+    assert out["quotes"][0]["reason"] == "ProviderError"
+    assert len(provider.calls) == 3
+
+
+def test_retry_does_not_retry_quote_not_found():
+    # QuoteNotFoundError es definitivo: no se reintenta (1 sola llamada).
+    provider = _FlakyProvider(fail_times=99, exc=QuoteNotFoundError("SPY"))
+    collector = DataCollector(provider)
+    out = hot_quote.collect_hot_quotes(
+        ["SPY"], collector, max_attempts=3, retry_backoff_seconds=0.3, sleep=_noop_sleep,
+    )
+    assert out["quotes"][0]["status"] == "unavailable"
+    assert out["quotes"][0]["reason"] == "QuoteNotFoundError"
+    assert len(provider.calls) == 1
+
+
+def test_retry_does_not_retry_rate_limit():
+    # RateLimitError no se reintenta dentro del mismo request (1 sola llamada).
+    provider = _FlakyProvider(fail_times=99, exc=RateLimitError("429"))
+    collector = DataCollector(provider)
+    out = hot_quote.collect_hot_quotes(
+        ["SPY"], collector, max_attempts=3, retry_backoff_seconds=0.3, sleep=_noop_sleep,
+    )
+    assert out["quotes"][0]["status"] == "unavailable"
+    assert out["quotes"][0]["reason"] == "RateLimitError"
+    assert len(provider.calls) == 1
+
+
+def test_default_is_no_retry():
+    # Sin especificar max_attempts, el comportamiento es idéntico al anterior:
+    # un solo intento, sin reintento.
+    provider = _FlakyProvider(fail_times=99, exc=ProviderError("x"))
+    collector = DataCollector(provider)
+    out = hot_quote.collect_hot_quotes(["SPY"], collector)
+    assert out["quotes"][0]["status"] == "unavailable"
+    assert len(provider.calls) == 1
 
 
 # --------------------------- garantía de aislamiento ---------------------------
