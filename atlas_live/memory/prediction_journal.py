@@ -74,6 +74,14 @@ class JournaledCandidate:
     evidence_sample_size: int
     evidence_wilson_lower_bound_pct: Optional[float]
     explanation: str
+    # Snapshot de las métricas crudas de detección (gap_pct, change_pct,
+    # relative_volume, dollar_volume, volatility_score, market_cap, price) del
+    # momento del sellado. Se persiste SOLO en el sellado (no en los snapshots
+    # dinámicos) para poder reconstruir la observación de aprendizaje cuando
+    # la trayectoria cierre (ver learning_writeback.py) -- sin volver a
+    # consultar el proveedor ni recalcular nada. Opcional/None por defecto:
+    # los llamadores previos siguen funcionando sin cambios.
+    metrics_snapshot: Optional[Dict[str, Any]] = None
 
 
 _SCHEMA = """
@@ -135,11 +143,23 @@ CREATE INDEX IF NOT EXISTS idx_sealed_date ON sealed_predictions(date);
 """
 
 
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, decl: str) -> None:
+    """Agrega una columna si todavía no existe -- migración aditiva y segura
+    para bases ya creadas (CREATE TABLE IF NOT EXISTS no agrega columnas a
+    una tabla existente). No toca ni una fila de datos."""
+    cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+
+
 def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH, timeout=5)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(_SCHEMA)
+    # Migración aditiva (2026-08-09, F2): snapshot de métricas de detección
+    # para reconstruir la observación de aprendizaje al cerrar la trayectoria.
+    _ensure_column(conn, "sealed_predictions", "metrics_snapshot", "TEXT")
     return conn
 
 
@@ -210,16 +230,26 @@ def seal_ranking(date: str, sealed_at: str, candidates: List[JournaledCandidate]
                 "INSERT INTO sealed_predictions ("
                 "date, symbol, rank, score, probability_pct, confidence, semaforo, "
                 "ranking_score_nivel1, ranking_score_nivel2, ranking_score_nivel3, ranking_score_nivel4, "
-                "evidence_condition, evidence_sample_size, evidence_wilson_lower_bound_pct, explanation, sealed_at"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "evidence_condition, evidence_sample_size, evidence_wilson_lower_bound_pct, explanation, sealed_at, "
+                "metrics_snapshot"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     date, c.symbol, c.rank, c.score, c.probability_pct, c.confidence, c.semaforo,
                     c.ranking_score_nivel1, c.ranking_score_nivel2, c.ranking_score_nivel3, c.ranking_score_nivel4,
                     c.evidence_condition, c.evidence_sample_size, c.evidence_wilson_lower_bound_pct,
                     c.explanation, sealed_at,
+                    json.dumps(c.metrics_snapshot, ensure_ascii=False) if c.metrics_snapshot is not None else None,
                 ),
             )
         conn.commit()
+
+
+def _parse_metrics_snapshot(d: Dict[str, Any]) -> Dict[str, Any]:
+    """Deserializa la columna `metrics_snapshot` (JSON) a dict, si existe.
+    Filas viejas (anteriores a F2) no la tienen -> queda None, honesto."""
+    raw = d.get("metrics_snapshot")
+    d["metrics_snapshot"] = json.loads(raw) if raw else None
+    return d
 
 
 def get_sealed_predictions(date: str) -> List[Dict[str, Any]]:
@@ -227,7 +257,7 @@ def get_sealed_predictions(date: str) -> List[Dict[str, Any]]:
         rows = conn.execute(
             "SELECT * FROM sealed_predictions WHERE date = ? ORDER BY rank ASC", (date,)
         ).fetchall()
-    return [_row_to_dict(r) for r in rows]
+    return [_parse_metrics_snapshot(_row_to_dict(r)) for r in rows]
 
 
 def get_sealed_meta(date: str) -> Optional[Dict[str, Any]]:

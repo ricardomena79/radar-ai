@@ -797,7 +797,64 @@ async function fetchEvolution() {
   renderEvolution();
 }
 
+// Headline de aprendizaje en tiempo real (F6, 2026-08-09). Reúne las
+// métricas clave -- aprendizaje, aciertos/fallos/precisión, histórico vs
+// nuevo, y timestamps reales -- de forma prominente. Todo sale de datos
+// reales (/api/evolution); lo que no existe todavía dice "No disponible",
+// nunca 0% ni un timestamp inventado.
+function renderLearningHeadline() {
+  const el = document.getElementById("learning-headline");
+  if (!el) return;
+  if (!_evolution) { el.innerHTML = ""; return; }
+
+  const a = _evolution.evolucion_aprendizaje || {};
+  const p = _evolution.precision_del_modelo || {};
+
+  const numOr = (v) => (v === null || v === undefined) ? '<span class="dim">No disponible</span>' : v;
+  const pctOr = (v) => (v === null || v === undefined) ? '<span class="dim">No disponible</span>' : (fmtNum(v) + "%");
+  // Timestamp real: HH:MM:SS ET para fecha-hora; fecha tal cual si es solo día.
+  const tsOr = (v) => {
+    if (v === null || v === undefined) return '<span class="dim">No disponible</span>';
+    if (typeof v === "string" && v.length <= 10) return v + " (fecha)";
+    return fmtTimeSec(v) + " ET";
+  };
+
+  // Aciertos: si no hay casos cerrados evaluados, "No disponible" -- NUNCA 0%.
+  const muestra = p.muestra_historica;
+  const aciertos = p.aciertos_historico;
+  const sinCasos = (muestra === null || muestra === undefined || muestra === 0);
+  const fallos = sinCasos ? null : (muestra - aciertos);
+  const aciertosCard = sinCasos
+    ? '<span class="dim">No disponible</span>'
+    : numOr(aciertos);
+  const fallosCard = sinCasos ? '<span class="dim">No disponible</span>' : numOr(fallos);
+  const precisionCard = sinCasos ? '<span class="dim">No disponible</span>' : pctOr(p.precision_historica_pct);
+
+  const card = (icon, label, value, sub) => `
+    <div class="lh-card">
+      <div class="lh-icon">${icon}</div>
+      <div class="lh-label">${label}</div>
+      <div class="lh-value">${value}</div>
+      ${sub ? `<div class="lh-sub">${sub}</div>` : ""}
+    </div>`;
+
+  el.innerHTML =
+    card("🧠", "Nivel de aprendizaje", pctOr(a.nivel_aprendizaje_pct),
+         (a.condiciones_evidencia_suficiente == null ? "" : `${a.condiciones_evidencia_suficiente} / ${a.condiciones_totales_evaluadas} condiciones`)) +
+    card("🎯", "Aciertos", aciertosCard, sinCasos ? "0 casos cerrados evaluados" : `de ${numOr(muestra)} casos`) +
+    card("❌", "Fallos", fallosCard, "") +
+    card("📊", "Precisión", precisionCard, "acierto = EXPLOSION real") +
+    card("📥", "Observaciones nuevas hoy", numOr(a.observaciones_nuevas_hoy), "incorporadas en vivo") +
+    card("📚", "Observaciones históricas", numOr(a.observaciones_historicas), "seed, no cuentan como nuevas") +
+    card("📚", "Observaciones totales", numOr(a.observaciones_totales), `${numOr(a.observaciones_live_total)} live + histórico`) +
+    card("🕐", "Última observación", tsOr(a.ultima_observacion_at), "última incorporación live") +
+    card("🕐", "Último acierto", tsOr(a.ultimo_acierto_at), "") +
+    card("🕐", "Último fallo", tsOr(a.ultimo_fallo_at), "") +
+    card("🧠", "Última recalibración", tsOr(a.ultima_actualizacion), "");
+}
+
 function renderEvolution() {
+  renderLearningHeadline();
   const nd = (v, suf = "") => (v === null || v === undefined) ? '<span class="dim">No disponible</span>' : (v + suf);
   const ndPct = (v) => (v === null || v === undefined) ? '<span class="dim">No disponible</span>' : (fmtNum(v) + "%");
   const precEl = document.getElementById("evolucion-precision");

@@ -45,6 +45,7 @@ from atlas_live.memory import calibration_advisor as ca
 from atlas_live.memory import classifier
 from atlas_live.memory import demo_ranking
 from atlas_live.memory import exit_journal as ej
+from atlas_live.memory import learning_writeback
 from atlas_live.memory import market_hours
 from atlas_live.memory import prediction_journal as pj
 from atlas_live.memory import ranking_score as rs
@@ -97,7 +98,8 @@ def _evidence(now: Optional[datetime] = None) -> Dict[str, Any]:
     return _evidence_cache
 
 
-def _to_journaled(rank: int, c: demo_ranking.RankedCandidate) -> pj.JournaledCandidate:
+def _to_journaled(rank: int, c: demo_ranking.RankedCandidate,
+                  metrics_snapshot: Optional[Dict[str, Any]] = None) -> pj.JournaledCandidate:
     return pj.JournaledCandidate(
         symbol=c.symbol,
         rank=rank,
@@ -113,6 +115,7 @@ def _to_journaled(rank: int, c: demo_ranking.RankedCandidate) -> pj.JournaledCan
         evidence_sample_size=c.evidence_sample_size,
         evidence_wilson_lower_bound_pct=c.evidence_wilson_lower_bound_pct,
         explanation=c.explanation,
+        metrics_snapshot=metrics_snapshot,
     )
 
 
@@ -282,6 +285,7 @@ def _grade_pending(date: str, now: datetime) -> str:
 
     collector = DataCollector(YahooFinanceProvider())
     calificados = 0
+    nuevas_observaciones = 0
     for row in pendientes:
         try:
             quote = collector.get_quote(row["symbol"])
@@ -304,9 +308,25 @@ def _grade_pending(date: str, now: datetime) -> str:
         # calificación -- mismo momento, sin depender de un disparador
         # aparte. Protegido: si ya se cerró antes, no se recalcula.
         if not ej.is_closed(row["symbol"], date):
-            ej.close_exit_summary(row["symbol"], date, entry_at=row["sealed_at"], window_closed_at=now.isoformat())
+            summary = ej.close_exit_summary(row["symbol"], date, entry_at=row["sealed_at"], window_closed_at=now.isoformat())
+            # Write-back de aprendizaje (F3): la trayectoria cerró con un
+            # resultado real -> se incorpora como observación NUEVA al Memory
+            # Store (idempotente). Nunca debe tumbar la calificación.
+            try:
+                if learning_writeback.record_from_closed_trajectory(row, summary):
+                    nuevas_observaciones += 1
+            except Exception:
+                pass
 
-    return f"calificados={calificados}/{len(pendientes)}"
+    # Recalibración (F4): solo si entró al menos una observación nueva. Fuerza
+    # el recálculo de la evidencia (tasas base + condiciones confiables) para
+    # que el nivel de aprendizaje refleje los datos nuevos. NO se recalibra en
+    # cada ciclo ni por polling -- únicamente cuando la evidencia cambió de
+    # verdad. `refresh_evidence` deja `computed_on` = hoy (última recalibración).
+    if nuevas_observaciones > 0:
+        refresh_evidence(computed_on=market_hours.market_date(now))
+
+    return f"calificados={calificados}/{len(pendientes)} observaciones_nuevas={nuevas_observaciones}"
 
 
 def _grade_predictive_engine(now: datetime) -> str:
@@ -343,7 +363,19 @@ def run_live_cycle(results: List[Dict[str, Any]], now: Optional[datetime] = None
             # slice ciego arrastraría inelegibles a las posiciones bajas
             # -- se filtran acá antes de tomar el top N.
             elegibles = [c for c in ranking if c.eligible_radar]
-            journaled = [_to_journaled(i, c) for i, c in enumerate(elegibles[:TOP_N_JOURNAL], start=1)]
+            # Snapshot de métricas de detección por símbolo (F2): se toma del
+            # mismo `results` de este ciclo, sin recalcular ni reconsultar --
+            # viaja dentro de la predicción sellada para reconstruir la
+            # observación de aprendizaje cuando la trayectoria cierre.
+            metrics_por_symbol = {
+                row["symbol"]: row["explosive"]["metrics"]
+                for row in results
+                if row.get("explosive") is not None
+            }
+            journaled = [
+                _to_journaled(i, c, metrics_snapshot=metrics_por_symbol.get(c.symbol))
+                for i, c in enumerate(elegibles[:TOP_N_JOURNAL], start=1)
+            ]
             pj.record_dynamic_snapshot(date, now.isoformat(), journaled)
             accion = "snapshot_dinamico"
 

@@ -101,10 +101,33 @@ def _aprendizaje(now: datetime) -> Dict[str, Any]:
     else:
         nivel = None
 
+    # Histórico vs NUEVO (F6, 2026-08-09): el seed histórico ("v1", etc.)
+    # NO se cuenta como aprendizaje nuevo. Solo las observaciones
+    # `source_version="live"` -- incorporadas por el write-back al cerrar
+    # una trayectoria real -- son "nuevas".
+    hoy = market_hours.market_date(now)
+    live_total = store.count_observations(source_version="live")
+    nuevas_hoy = store.count_observations(source_version="live", date=hoy)
+    historicas = casos - live_total
+
+    # Timestamps reales (o None -- nunca inventados) de la última observación
+    # nueva y del último acierto/fallo live. "acierto" = categoría EXPLOSION,
+    # la misma definición del proyecto; "fallo" = cualquier otra categoría.
+    live_obs = store.get_observations(source_version="live")
+    aciertos_ts = [o["recorded_at"] for o in live_obs if o["category"] == "EXPLOSION" and o.get("recorded_at")]
+    fallos_ts = [o["recorded_at"] for o in live_obs if o["category"] != "EXPLOSION" and o.get("recorded_at")]
+
     return {
         "trayectorias_almacenadas": len(ej.get_all_symbol_dates()),
         "muestras_analizadas": ej.count_trajectory_samples(),
         "casos_similares_acumulados": casos,
+        "observaciones_totales": casos,
+        "observaciones_historicas": historicas,
+        "observaciones_live_total": live_total,
+        "observaciones_nuevas_hoy": nuevas_hoy,
+        "ultima_observacion_at": store.last_recorded_at(source_version="live"),
+        "ultimo_acierto_at": max(aciertos_ts) if aciertos_ts else None,
+        "ultimo_fallo_at": max(fallos_ts) if fallos_ts else None,
         "condiciones_evidencia_suficiente": confiables,
         "condiciones_totales_evaluadas": total_condiciones,
         "nivel_aprendizaje_pct": nivel,

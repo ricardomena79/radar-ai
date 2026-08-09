@@ -666,3 +666,25 @@ html, body {
   .brand-sub, .nav-item { display: none; }
   .sidebar-footer { display: none; }
 }
+
+/* Headline de aprendizaje en tiempo real (F6, 2026-08-09) */
+.learning-headline {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px;
+  margin-bottom: 20px;
+}
+.lh-card {
+  background: var(--card, #131824);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.lh-icon { font-size: 18px; }
+.lh-label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.03em; }
+.lh-value { font-size: 22px; font-weight: 700; color: var(--text); margin-top: 2px; }
+.lh-value .dim { font-size: 13px; font-weight: 500; }
+.lh-sub { font-size: 11px; color: var(--text-faint); }

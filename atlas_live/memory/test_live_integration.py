@@ -6,6 +6,7 @@ red real. Uso: `python -m atlas_live.memory.test_live_integration`
 """
 
 import os
+import shutil
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -14,6 +15,7 @@ from zoneinfo import ZoneInfo
 from atlas_live.memory import exit_journal as ej
 from atlas_live.memory import live_integration as li
 from atlas_live.memory import prediction_journal as pj
+from atlas_live.memory import store
 
 # Aislamiento de datos (2026-08-06, incidente real -- ver DECISIONES.md):
 # antes, `_reset_db()` borraba `ej.DB_PATH`/`pj.DB_PATH` por defecto (los
@@ -26,6 +28,17 @@ from atlas_live.memory import prediction_journal as pj
 _TEST_DATA_DIR = Path(tempfile.mkdtemp(prefix="atlas_test_live_integration_"))
 ej.DB_PATH = _TEST_DATA_DIR / "exit_journal.db"
 pj.DB_PATH = _TEST_DATA_DIR / "prediction_journal.db"
+
+# Memory Store (2026-08-09, F3): el write-back de aprendizaje ahora ESCRIBE
+# en el Memory Store al cerrar una trayectoria durante la calificación. Este
+# test usa la evidencia REAL del Memory Store para el ranking, así que se
+# trabaja sobre una COPIA temporal de la base real: la evidencia sigue siendo
+# la real, pero las observaciones que escribe el write-back quedan aisladas y
+# nunca tocan la base oficial.
+_TEST_STORE = _TEST_DATA_DIR / "memory_store.db"
+if store.DB_PATH.exists():
+    shutil.copy(store.DB_PATH, _TEST_STORE)
+store.DB_PATH = _TEST_STORE
 
 ET = ZoneInfo("America/New_York")
 

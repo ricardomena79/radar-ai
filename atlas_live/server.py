@@ -21,7 +21,7 @@ from atlas.data.collectors.data_collector import DataCollector
 from atlas_live import evolution_panel, explosive_config, hot_quote, performance_panel, scan_worker
 from atlas_live.backtest import seed_import
 from atlas_live.data_fusion.registry import get_default_provider
-from atlas_live.memory import classifier, exit_journal, learning_status, live_integration, market_hours, prediction_journal
+from atlas_live.memory import classifier, exit_journal, learning_status, live_integration, market_hours, observation_recovery, prediction_journal
 from atlas_live.mission_control import heartbeat, timeline
 from atlas_live.predictive_engine import prediction_log
 
@@ -36,6 +36,13 @@ app = Flask(__name__, static_folder=None)
 # de start_background_refresh() para que el Exit Journal ya tenga la
 # base histórica cargada cuando arranque el primer ciclo de escaneo.
 seed_import.import_all_seeds()
+
+# Recuperación de observaciones live del Memory Store (F5, 2026-08-09): si el
+# Volume se perdió, reimporta las observaciones de aprendizaje generadas en
+# vivo desde sus JSONL comiteados. Idempotente y aditivo -- si no hay ninguno
+# (aún no hubo export), no hace nada. Después de seed_import y antes del
+# refresco, para que el primer ciclo ya vea el conocimiento completo.
+observation_recovery.import_all()
 
 scan_worker.start_background_refresh()
 
