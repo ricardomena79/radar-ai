@@ -21,7 +21,7 @@ from atlas.data.collectors.data_collector import DataCollector
 from atlas_live import evolution_panel, explosive_config, hot_quote, performance_panel, scan_worker
 from atlas_live.backtest import seed_import
 from atlas_live.data_fusion.registry import get_default_provider
-from atlas_live.memory import classifier, exit_journal, learning_status, live_integration, market_hours, observation_recovery, prediction_journal
+from atlas_live.memory import classifier, exit_journal, explosion_history, learning_status, live_integration, market_hours, observation_recovery, prediction_journal
 from atlas_live.mission_control import heartbeat, timeline
 from atlas_live.predictive_engine import prediction_log
 
@@ -161,6 +161,22 @@ def api_performance():
     return jsonify({
         "oportunidad_del_dia": performance_panel.get_daily_opportunity(),
         "rendimiento_global": performance_panel.get_global_performance(),
+    })
+
+
+@app.route("/api/explosion-history")
+def api_explosion_history():
+    """Marcador Histórico de Explosiones (2026-08-09): estudio real de cómo
+    se comportaron las acciones que explotaron (hitos +10..+200%, máximo,
+    fin de impulso, anticipación medida), derivado de las trayectorias de 5
+    min del Exit Journal. Solo lectura. Separa calidad de datos (limpias /
+    pre-iniciadas / artefactos) con n explícito; nada se inventa -- lo que no
+    tiene evidencia dice "No disponible"."""
+    registry = explosion_history.build_registry()
+    return jsonify({
+        "por_banda": explosion_history.summarize_by_band(registry),
+        "anticipacion": explosion_history.lead_time_stats(registry),
+        "eventos": explosion_history._clean_for_json(registry)["eventos"],
     })
 
 

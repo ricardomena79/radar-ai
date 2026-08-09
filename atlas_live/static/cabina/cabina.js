@@ -909,7 +909,95 @@ function renderEvolution() {
     <div class="detail-note" style="margin-top:8px">"Nivel de aprendizaje" = fracción de las condiciones evaluadas que ya alcanzaron confiabilidad estadística (límite de Wilson). Crece a medida que Atlas acumula evidencia real.</div>`;
 }
 
+// Marcador Histórico de Explosiones (2026-08-09). Todo dato real de
+// /api/explosion-history; lo que no tiene evidencia dice "No disponible".
+let _explosionHistory = null;
+
+async function fetchExplosionHistory() {
+  try {
+    const res = await fetch("/api/explosion-history");
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    _explosionHistory = await res.json();
+  } catch (err) {
+    console.error("fetchExplosionHistory:", err);
+    _explosionHistory = null;
+  }
+  renderExplosionHistory();
+}
+
+function renderExplosionHistory() {
+  const calEl = document.getElementById("explosiones-calidad");
+  const bandEl = document.getElementById("explosiones-bandas");
+  const antEl = document.getElementById("explosiones-anticipacion");
+  const listEl = document.getElementById("explosiones-lista");
+  if (!calEl || !bandEl || !antEl || !listEl) return;
+  if (!_explosionHistory) {
+    calEl.innerHTML = bandEl.innerHTML = antEl.innerHTML = listEl.innerHTML = `<div class="empty-state">No disponible.</div>`;
+    return;
+  }
+  const nd = (v, suf = "") => (v === null || v === undefined) ? '<span class="dim">No disponible</span>' : (v + suf);
+  const cal = (_explosionHistory.por_banda && _explosionHistory.por_banda.calidad) || {};
+  const lhCard = (icon, label, value, sub) =>
+    `<div class="lh-card"><div class="lh-icon">${icon}</div><div class="lh-label">${label}</div><div class="lh-value">${value}</div>${sub ? `<div class="lh-sub">${sub}</div>` : ""}</div>`;
+  calEl.innerHTML =
+    lhCard("🔥", "Explosiones (≥30%)", nd(cal.eventos_incluidos), "no artefactos") +
+    lhCard("✅", "Limpias (start observado)", nd(cal.limpias_start_observado), "usables p/ anticipación") +
+    lhCard("⏭", "Pre-iniciadas", nd(cal.pre_iniciadas), "movimiento antes de la ventana") +
+    lhCard("🚫", "Artefactos excluidos", nd(cal.artefactos_excluidos), "datos imposibles, no contados");
+
+  // Bandas acumulativas
+  const bandas = (_explosionHistory.por_banda && _explosionHistory.por_banda.por_banda_acumulativa) || {};
+  const bandRow = (b) => {
+    const d = bandas[b];
+    if (!d || d.n === 0) return `<div class="detail-metric"><div class="detail-metric-label">≥ +${b}%</div><div class="detail-metric-value"><span class="dim">No disponible</span></div></div>`;
+    return `<div class="detail-metric"><div class="detail-metric-label">≥ +${b}%</div><div class="detail-metric-value">${d.n} <span class="dim" style="font-size:11px">casos · máx ${d.max_absoluto_pct}%</span></div></div>`;
+  };
+  bandEl.innerHTML = `<div class="detail-grid">${["30","50","100","150","200"].map(bandRow).join("")}</div>
+    <div class="detail-note" style="margin-top:8px">Acumulativo: "≥+50%" incluye las que superaron +50%. Máximo intradía real de la trayectoria (5 min). n explícito.</div>`;
+
+  // Anticipación
+  const a = _explosionHistory.anticipacion || {};
+  if (!a.n) {
+    antEl.innerHTML = `<div class="empty-state">Evidencia insuficiente para medir anticipación.</div>`;
+  } else {
+    antEl.innerHTML = `<div class="detail-grid">
+      <div class="detail-metric"><div class="detail-metric-label">Casos (n)</div><div class="detail-metric-value">${a.n}${a.muestra_suficiente ? "" : ' <span class="dim" style="font-size:11px">muestra chica</span>'}</div></div>
+      <div class="detail-metric"><div class="detail-metric-label">Mediana</div><div class="detail-metric-value">${nd(a.mediana_min, " min")}</div></div>
+      <div class="detail-metric"><div class="detail-metric-label">Media</div><div class="detail-metric-value">${nd(a.media_min, " min")}</div></div>
+      <div class="detail-metric"><div class="detail-metric-label">p25 / p75</div><div class="detail-metric-value">${nd(a.p25_min)} / ${nd(a.p75_min)} min</div></div>
+      <div class="detail-metric"><div class="detail-metric-label">% ≥ 10 min</div><div class="detail-metric-value">${nd(a.pct_ge_10min, "%")}</div></div>
+      <div class="detail-metric"><div class="detail-metric-label">% ≥ 15 min</div><div class="detail-metric-value">${nd(a.pct_ge_15min, "%")}</div></div>
+    </div>
+    <div class="detail-note" style="margin-top:8px">${a.definicion}. Es la anticipación REALMENTE medida, no una promesa. Resolución: 5 minutos.</div>`;
+  }
+
+  // Lista de explosiones
+  const eventos = _explosionHistory.eventos || [];
+  if (!eventos.length) {
+    listEl.innerHTML = `<div class="empty-state">Sin explosiones ≥30% en el histórico disponible.</div>`;
+  } else {
+    const rows = eventos.slice(0, 40).map(e => {
+      const h = e.hitos || {};
+      const hito = (m) => h[m] && h[m].alcanzado ? (h[m].hora_et || "antes") : "—";
+      return `<tr>
+        <td>${e.symbol}</td><td>${e.date}</td>
+        <td>${e.quality === "limpia" ? "✅" : (e.quality === "pre_iniciada" ? "⏭" : "?")}</td>
+        <td style="text-align:right;font-weight:600">+${e.max_return_pct}%</td>
+        <td>${nd(e.movimiento_inicio_hora_et)}</td>
+        <td>${hito("30")}</td><td>${hito("100")}</td>
+        <td>${nd(e.max_hora_et)}</td>
+        <td>${nd(e.duracion_movimiento_min, " min")}</td>
+      </tr>`;
+    }).join("");
+    listEl.innerHTML = `<div style="overflow-x:auto"><table class="data-table">
+      <thead><tr><th>Símbolo</th><th>Día</th><th>Cal.</th><th style="text-align:right">Máx</th><th>Inicio ET</th><th>+30% ET</th><th>+100% ET</th><th>Pico ET</th><th>Duración</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>
+    <div class="detail-note" style="margin-top:8px">Cal.: ✅ limpia (start observado) · ⏭ pre-iniciada (movimiento anterior a la ventana). Horas en ET, reales de la serie de 5 min. "—" = hito no alcanzado.</div>`;
+  }
+}
+
 function startPanelStatusPolling() {
+  fetchExplosionHistory();
   fetchMemoryEngine();
   fetchPredictionJournal();
   fetchExitJournal();
@@ -924,6 +1012,7 @@ function startPanelStatusPolling() {
   setInterval(fetchLearningStatus, PANEL_STATUS_POLL_MS);
   setInterval(fetchPerformance, PANEL_STATUS_POLL_MS);
   setInterval(fetchEvolution, PANEL_STATUS_POLL_MS);
+  setInterval(fetchExplosionHistory, PANEL_STATUS_POLL_MS);
 }
 
 /* 📸 Guardar Estado del Día -- aprobado el 2026-08-02, último elemento

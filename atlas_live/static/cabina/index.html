@@ -57,6 +57,7 @@
     <button class="nav-item nav-item--sub" data-view="exit-journal">📉 Exit Journal</button>
     <button class="nav-item nav-item--sub" data-view="desempeno">📊 Desempeño</button>
     <button class="nav-item nav-item--sub" data-view="evolucion">📈 Evolución</button>
+    <button class="nav-item nav-item--sub" data-view="explosiones">🔥 Explosiones</button>
 
     <div class="nav-sep"></div>
     <button class="nav-item" data-view="radar-completo">📊 Radar Completo</button>
@@ -222,6 +223,20 @@
 
       <h2 class="section-title" style="margin-top:24px">🧠 Evolución del aprendizaje <span class="dim" style="font-size:12px">(¿cuánto sabe Atlas hoy?)</span></h2>
       <div id="evolucion-aprendizaje" class="perf-block"></div>
+    </section>
+
+    <!-- ---------- MARCADOR HISTÓRICO DE EXPLOSIONES ---------- -->
+    <section class="view" id="view-explosiones">
+      <header class="view-header"><h1>🔥 Marcador Histórico de Explosiones</h1>
+        <div class="header-meta">Cómo se comportaron históricamente las acciones que explotaron -- hitos, máximo, fin de impulso y anticipación MEDIDA (no prometida). Todo con datos reales a 5 min; separando calidad (limpias / pre-iniciadas / artefactos) con n explícito.</div>
+      </header>
+      <div id="explosiones-calidad" class="learning-headline"></div>
+      <h2 class="section-title">📊 Por banda (acumulativo)</h2>
+      <div id="explosiones-bandas" class="perf-block"></div>
+      <h2 class="section-title" style="margin-top:20px">⏱ Anticipación medida <span class="dim" style="font-size:12px">(+10% → +30%, solo trayectorias limpias)</span></h2>
+      <div id="explosiones-anticipacion" class="perf-block"></div>
+      <h2 class="section-title" style="margin-top:20px">🔥 Explosiones (mayores primero)</h2>
+      <div id="explosiones-lista" class="perf-block"></div>
     </section>
 
     <!-- ---------- 10. RADAR COMPLETO ---------- -->
