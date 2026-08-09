@@ -129,6 +129,34 @@ def test_summary_acumulativo_con_n():
         _restore()
 
 
+def test_grupos_ABCD():
+    _use_tmp()
+    try:
+        # Apertura = 13:30 UTC (09:30 ET). Arrancamos 30 min antes (13:00).
+        pre = "2026-07-01T13:00:00+00:00"
+        # A: premarket fuerte (pico 15% antes de apertura) + continuó (40% después)
+        _traj("GA", "2026-07-01", [5, 12, 15, 14, 13, 12, 20, 40, 35], start=pre)
+        # B: premarket fuerte (pico 35% antes) + perdió momentum (26% después)
+        _traj("GB", "2026-07-02", [5, 15, 35, 30, 28, 25, 26, 24, 20], start="2026-07-02T13:00:00+00:00")
+        # C: premarket tranquilo + empezó tras apertura (40%)
+        _traj("GC", "2026-07-03", [1, 2, 3, 2, 1, 0, 10, 35, 40], start="2026-07-03T13:00:00+00:00")
+        # D: pre-iniciada (arranca en 40%)
+        _traj("GD", "2026-07-04", [40, 45, 50, 45], start="2026-07-04T13:00:00+00:00")
+        reg = eh.build_registry()
+        por_sym = {e["symbol"]: e["grupo"] for e in reg["eventos"]}
+        assert por_sym["GA"] == "A", por_sym
+        assert por_sym["GB"] == "B", por_sym
+        assert por_sym["GC"] == "C", por_sym
+        assert por_sym["GD"] == "D", por_sym
+        gs = eh.group_study(reg)
+        assert gs["grupos"]["A"]["n"] == 1
+        assert gs["grupos"]["B"]["n"] == 1
+        # B con n<10 -> advertencia honesta presente
+        assert gs["discriminacion_A_vs_B"]["advertencia"] is not None
+    finally:
+        _restore()
+
+
 def test_smoke_datos_reales():
     # Sin redirigir: corre sobre la memoria real, valida estructura + n explícito.
     reg = eh.build_registry()

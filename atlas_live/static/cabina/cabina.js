@@ -955,6 +955,41 @@ function renderExplosionHistory() {
   bandEl.innerHTML = `<div class="detail-grid">${["30","50","100","150","200"].map(bandRow).join("")}</div>
     <div class="detail-note" style="margin-top:8px">Acumulativo: "≥+50%" incluye las que superaron +50%. Máximo intradía real de la trayectoria (5 min). n explícito.</div>`;
 
+  // Estudio A/B/C/D
+  const grpEl = document.getElementById("explosiones-grupos");
+  const disEl = document.getElementById("explosiones-discriminacion");
+  const gs = _explosionHistory.grupos;
+  if (grpEl && disEl && gs) {
+    const defs = gs.definiciones || {};
+    const g = gs.grupos || {};
+    const grpCard = (key) => {
+      const d = g[key] || {};
+      const b = d.bandas_alcanzadas || {};
+      return `<div class="lh-card">
+        <div class="lh-icon">${key}</div>
+        <div class="lh-label">${defs[key] || key}</div>
+        <div class="lh-value">${nd(d.n)}${d.muestra_suficiente === false ? ' <span class="dim" style="font-size:11px">muestra chica</span>' : ""}</div>
+        <div class="lh-sub">≥50%: ${nd(b["50"])} · ≥100%: ${nd(b["100"])}${d.mediana_duracion_min != null ? " · dur " + d.mediana_duracion_min + "min" : ""}</div>
+      </div>`;
+    };
+    grpEl.innerHTML = `<div class="learning-headline">${["A","B","C","D"].map(grpCard).join("")}</div>`;
+
+    const disc = (gs.discriminacion_A_vs_B && gs.discriminacion_A_vs_B.features) || {};
+    const adv = gs.discriminacion_A_vs_B && gs.discriminacion_A_vs_B.advertencia;
+    const featRow = (f) => {
+      const d = disc[f] || {};
+      return `<tr><td>${f}</td>
+        <td style="text-align:right">${nd(d.A_mediana)} <span class="dim" style="font-size:10px">(n${nd(d.A_n)})</span></td>
+        <td style="text-align:right">${nd(d.B_mediana)} <span class="dim" style="font-size:10px">(n${nd(d.B_n)})</span></td></tr>`;
+    };
+    disEl.innerHTML = `<h3 style="margin:0 0 6px">Discriminación: A (continuó) vs B (perdió momentum)</h3>
+      <div style="overflow-x:auto"><table class="data-table">
+      <thead><tr><th>Característica (snapshot +10min)</th><th style="text-align:right">A mediana</th><th style="text-align:right">B mediana</th></tr></thead>
+      <tbody>${Object.keys(disc).map(featRow).join("")}</tbody></table></div>
+      ${adv ? `<div class="detail-note" style="margin-top:8px;color:var(--amber,#e0a800)">⚠️ ${adv}</div>`
+            : `<div class="detail-note" style="margin-top:8px">Diferencias de mediana entre continuación y fallo, con n por característica.</div>`}`;
+  }
+
   // Anticipación
   const a = _explosionHistory.anticipacion || {};
   if (!a.n) {

@@ -51,6 +51,26 @@ START_CEILING_PCT = 10.0      # first_return por encima -> "pre-iniciada" (start
 MIN_START_FLOOR_PCT = -50.0   # first_return por debajo: dato dudoso (posible artefacto)
 MOMENTUM_END_DROP_FRAC = 0.20  # retroceso >= 20% por debajo del pico = fin del impulso
 
+# --- Clasificación relativa a la apertura (grupos A/B/C/D) ---
+PREMARKET_STRONG_PCT = 10.0    # pico premarket >= esto -> "premarket fuerte"
+CONTINUATION_MARGIN_PP = 2.0   # nuevo máximo tras apertura por encima del pico premarket
+_REGULAR_OPEN_ET = (9, 30)     # 09:30 ET
+
+# Features del snapshot +10min que se comparan entre grupos (mismas claves
+# reales que ya calcula Radar Explosivo; disponibles alrededor de la apertura).
+_STUDY_FEATURES = ("gap_pct", "relative_volume", "dollar_volume", "volatility_score", "market_cap")
+
+
+def _market_open_utc(date: str) -> Optional[datetime]:
+    """09:30 ET del día `date`, en UTC (DST-safe vía zoneinfo). None si la
+    fecha no parsea."""
+    try:
+        d = datetime.strptime(date, "%Y-%m-%d").date()
+        et = datetime(d.year, d.month, d.day, _REGULAR_OPEN_ET[0], _REGULAR_OPEN_ET[1], tzinfo=ET)
+        return et.astimezone(ZoneInfo("UTC"))
+    except Exception:
+        return None
+
 
 def _et_iso(utc_iso: Optional[str]) -> Optional[str]:
     """Convierte un timestamp ISO (UTC) a hora ET en formato HH:MM:SS, o None."""
@@ -136,10 +156,41 @@ def _analyze_trajectory(symbol: str, date: str) -> Optional[Dict[str, Any]]:
 
     duracion_min = _minutes_between(movimiento_inicio_utc, max_at)
 
+    # --- Grupo relativo a la apertura (A/B/C/D) ---
+    # A: premarket fuerte + continuó (nuevo máximo tras la apertura).
+    # B: premarket fuerte + perdió momentum (no superó su pico premarket).
+    # C: el movimiento empezó tras la apertura.
+    # D: ya venía alto desde el inicio de la ventana (no se puede medir).
+    open_utc = _market_open_utc(date)
+    pre_peak = post_peak = None
+    if open_utc is not None:
+        open_iso = open_utc.isoformat()
+        pre = [r for ts, r in series if ts < open_iso]
+        post = [r for ts, r in series if ts >= open_iso]
+        pre_peak = max(pre) if pre else None
+        post_peak = max(post) if post else None
+
+    if quality == "pre_iniciada":
+        grupo = "D"
+        grupo_label = "Ya iniciado antes de la ventana (no medible)"
+    elif pre_peak is not None and pre_peak >= PREMARKET_STRONG_PCT:
+        if post_peak is not None and post_peak > pre_peak + CONTINUATION_MARGIN_PP:
+            grupo = "A"; grupo_label = "Premarket fuerte + continuó tras apertura"
+        else:
+            grupo = "B"; grupo_label = "Premarket fuerte + perdió momentum en apertura"
+    elif post_peak is not None and post_peak >= 30:
+        grupo = "C"; grupo_label = "Movimiento empezó tras la apertura"
+    else:
+        grupo = "D"; grupo_label = "No clasificable (sin datos alrededor de la apertura)"
+
     return {
         "symbol": symbol,
         "date": date,
         "quality": quality,
+        "grupo": grupo,
+        "grupo_label": grupo_label,
+        "pico_premarket_pct": round(pre_peak, 1) if pre_peak is not None else None,
+        "pico_post_apertura_pct": round(post_peak, 1) if post_peak is not None else None,
         "first_return_pct": round(first_return, 1),
         "max_return_pct": round(max_return, 1),
         "max_hora_et": _et_iso(max_at),
@@ -216,6 +267,69 @@ def summarize_by_band(registry: Optional[Dict[str, Any]] = None) -> Dict[str, An
             "duracion_muestra_n": len(dur),
         }
     return {"rule": reg["rule"], "calidad": reg["calidad"], "por_banda_acumulativa": resumen}
+
+
+_MIN_RELIABLE_N = 10  # por debajo de esto, una comparación no es fiable
+
+
+def group_study(registry: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Estudio especial A/B/C/D: separa las explosiones según su
+    comportamiento relativo a la apertura y compara las características de
+    detección (snapshot +10min) entre las que CONTINUARON (A) y las que
+    perdieron momentum (B). Todo con n explícito; si una comparación no
+    tiene muestra suficiente, se dice claramente -- no se fabrica un
+    resultado ni una diferencia."""
+    import statistics
+    reg = registry or build_registry()
+    grupos: Dict[str, List[Dict[str, Any]]] = {"A": [], "B": [], "C": [], "D": []}
+    for e in reg["eventos"]:
+        grupos.get(e.get("grupo"), grupos["D"]).append(e)
+
+    def _band_counts(events):
+        return {str(b): sum(1 for e in events if e["max_return_pct"] >= b) for b in BANDS}
+
+    def _feature_vals(events, f):
+        return [e["features_disponibles_antes"][f] for e in events
+                if e.get("features_disponibles_antes") and e["features_disponibles_antes"].get(f) is not None]
+
+    def _grupo_block(events):
+        dur = [e["duracion_movimiento_min"] for e in events if e["duracion_movimiento_min"] is not None]
+        return {
+            "n": len(events),
+            "muestra_suficiente": len(events) >= _MIN_RELIABLE_N,
+            "bandas_alcanzadas": _band_counts(events),
+            "mediana_duracion_min": round(statistics.median(dur), 0) if dur else None,
+        }
+
+    A, B = grupos["A"], grupos["B"]
+    discrim = {}
+    for f in _STUDY_FEATURES:
+        av, bv = _feature_vals(A, f), _feature_vals(B, f)
+        discrim[f] = {
+            "A_mediana": round(statistics.median(av), 2) if av else None, "A_n": len(av),
+            "B_mediana": round(statistics.median(bv), 2) if bv else None, "B_n": len(bv),
+        }
+
+    advertencia = None
+    if len(B) < _MIN_RELIABLE_N:
+        advertencia = (f"Grupo B (perdió momentum) tiene n={len(B)} (< {_MIN_RELIABLE_N}): "
+                       "muestra insuficiente para discriminar de forma fiable qué "
+                       "características separan la continuación del fallo. Se muestran "
+                       "las medianas con su n, pero NO deben tomarse como un patrón demostrado.")
+
+    return {
+        "definiciones": {
+            "A": "Premarket fuerte + continuó tras apertura",
+            "B": "Premarket fuerte + perdió momentum en apertura",
+            "C": "Movimiento empezó tras la apertura",
+            "D": "Ya iniciado antes de la ventana (no medible)",
+            "premarket_fuerte_pct": PREMARKET_STRONG_PCT,
+            "apertura": "09:30 ET",
+            "features_desde": "snapshot +10 min tras apertura (Memory Store)",
+        },
+        "grupos": {k: _grupo_block(v) for k, v in grupos.items()},
+        "discriminacion_A_vs_B": {"features": discrim, "advertencia": advertencia},
+    }
 
 
 def lead_time_stats(registry: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:

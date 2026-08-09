@@ -176,6 +176,7 @@ def api_explosion_history():
     return jsonify({
         "por_banda": explosion_history.summarize_by_band(registry),
         "anticipacion": explosion_history.lead_time_stats(registry),
+        "grupos": explosion_history.group_study(registry),
         "eventos": explosion_history._clean_for_json(registry)["eventos"],
     })
 
