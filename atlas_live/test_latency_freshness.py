@@ -190,13 +190,25 @@ def test_retry_gives_up_after_max_attempts():
     assert len(provider.calls) == 3
 
 
-def test_retry_does_not_retry_quote_not_found():
-    # QuoteNotFoundError es definitivo: no se reintenta (1 sola llamada).
-    provider = _FlakyProvider(fail_times=99, exc=QuoteNotFoundError("SPY"))
+def test_retry_recovers_transient_quote_not_found():
+    # Bajo throttling, Yahoo devuelve "no encontrado" para un símbolo real de
+    # forma transitoria (verificado en prod con BTC-USD). Con reintento, un
+    # QuoteNotFoundError que se recupera al 2do intento termina OK.
+    provider = _FlakyProvider(fail_times=1, exc=QuoteNotFoundError("BTC-USD"))
     collector = DataCollector(provider)
     out = hot_quote.collect_hot_quotes(
-        ["SPY"], collector, max_attempts=3, retry_backoff_seconds=0.3, sleep=_noop_sleep,
+        ["BTC-USD"], collector, max_attempts=3, retry_backoff_seconds=0.3, sleep=_noop_sleep,
     )
+    assert out["quotes"][0]["status"] == "ok"
+    assert len(provider.calls) == 2
+
+
+def test_default_does_not_retry_quote_not_found():
+    # Sin reintento (default), un símbolo inexistente sale "unavailable" en
+    # una sola llamada -- comportamiento del canal intacto.
+    provider = _FlakyProvider(fail_times=99, exc=QuoteNotFoundError("XXX"))
+    collector = DataCollector(provider)
+    out = hot_quote.collect_hot_quotes(["XXX"], collector)
     assert out["quotes"][0]["status"] == "unavailable"
     assert out["quotes"][0]["reason"] == "QuoteNotFoundError"
     assert len(provider.calls) == 1

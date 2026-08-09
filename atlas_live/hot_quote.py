@@ -49,19 +49,22 @@ def _fetch_one(
     retry_backoff_seconds: float,
     sleep: Callable[[float], None],
 ) -> Dict:
-    """Trae la cotización de UN símbolo, con reintento acotado SOLO para
-    fallos transitorios del proveedor.
+    """Trae la cotización de UN símbolo, con reintento acotado ante los
+    fallos transitorios que Yahoo produce desde un datacenter.
 
     Reintentar tiene sentido únicamente para el canal rápido (a lo sumo 2
-    símbolos): los fallos que se observaron en vivo contra Yahoo desde un
-    datacenter son mayormente transitorios por request -- timeouts de red y
-    cierres de conexión SSL (`ProviderError` genérico) -- y un segundo
-    intento a los pocos cientos de milisegundos suele pasar. NO se reintenta:
-    - `QuoteNotFoundError`: es definitivo (el símbolo no existe para el
-      proveedor), reintentar no cambia nada.
-    - `RateLimitError`: reintentar dentro del mismo request no ayuda (el
-      límite sigue vigente) y solo gastaría cuota; sale "unavailable" y el
-      frontend conserva el "último recibido".
+    símbolos, siempre reales y curados: Plan A + Plan B). Los fallos que se
+    midieron en vivo contra Yahoo desde Railway son transitorios por request
+    y aparecen de dos formas:
+    - `ProviderError` genérico -- timeouts de red y cierres de conexión SSL.
+    - `QuoteNotFoundError` -- bajo throttling, Yahoo devuelve datos VACÍOS
+      para un símbolo que sí existe (BTC-USD, verificado en prod: el mismo
+      request alterna entre "no encontrado" y precio real). Como el canal
+      rápido solo recibe símbolos reales, un "no encontrado" acá es
+      casi siempre throttling, no un símbolo inexistente -> se reintenta.
+    NO se reintenta `RateLimitError`: reintentar dentro del mismo request no
+    ayuda (el límite sigue vigente) y solo gastaría cuota; sale "unavailable"
+    y el frontend conserva el "último recibido".
     """
     last_reason = "ProviderError"
     for attempt in range(max_attempts):
@@ -77,11 +80,12 @@ def _fetch_one(
                 "source": q.source,
                 "price_as_of": q.timestamp.isoformat() if q.timestamp else None,
             }
-        except (QuoteNotFoundError, RateLimitError) as exc:
-            # Fallos definitivos o no-reintentar: se cortan de inmediato.
+        except RateLimitError as exc:
+            # No se reintenta: el límite sigue vigente dentro del request.
             return {"symbol": symbol, "status": "unavailable", "reason": type(exc).__name__}
-        except ProviderError as exc:
-            # Transitorio: reintentar si quedan intentos.
+        except (ProviderError, QuoteNotFoundError) as exc:
+            # Transitorio (incluye el "vacío" que Yahoo devuelve bajo
+            # throttling): reintentar si quedan intentos.
             last_reason = type(exc).__name__
             if attempt < max_attempts - 1 and retry_backoff_seconds > 0:
                 sleep(retry_backoff_seconds)
