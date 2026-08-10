@@ -42,15 +42,38 @@ from atlas_live.explosive_config import load_config as load_explosive_config
 from atlas_live.mission_control import timeline
 
 # --- Configuración, pensada para poder ajustarse sin tocar el resto del archivo ---
-WATCHLIST_EQUITIES = 150
-WATCHLIST_ETFS = 50
+#
+# Parámetros del escaneo configurables por variable de entorno (2026-08-09).
+# Motivo: producción (Railway, IP de datacenter) recibe throttling agresivo de
+# Yahoo mientras que en local (IP residencial) Yahoo responde ~95%. Estos
+# knobs permiten AJUSTAR la presión de requests sin tocar código -- ej. un
+# universo más chico y menos concurrencia en Railway, o el universo completo
+# en local. Los DEFAULTS son idénticos al comportamiento anterior: sin la
+# variable seteada, nada cambia. NO fabrican cobertura: si el proveedor está
+# bloqueado, siguen sin haber datos -- solo dosifican la carga.
+import os as _os
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(_os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+WATCHLIST_EQUITIES = _env_int("ATLAS_SCAN_WATCHLIST_EQUITIES", 150)
+WATCHLIST_ETFS = _env_int("ATLAS_SCAN_WATCHLIST_ETFS", 50)
 # Piso fijo, siempre escaneado. Ampliado (2026-08-05) tras confirmar en vivo
 # el 2026-08-04 que movers reales (AMD, TSLA, MSTR, COIN) quedaban fuera del
 # muestreo estratificado y nunca eran vistos por Atlas, sin importar cuánto
 # se movieran -- ver _prefilter_movers() más abajo para el resto del arreglo.
 REQUIRED_SYMBOLS = ["AAPL", "NVDA", "PLTR", "SOXL", "AMD", "TSLA", "MSTR", "COIN"]
-MAX_WORKERS = 10
-REFRESH_INTERVAL_SECONDS = 300  # 5 minutos
+MAX_WORKERS = _env_int("ATLAS_SCAN_MAX_WORKERS", 10)
+# Pausa opcional entre requests de scoring (ms). Default 0 = comportamiento
+# actual. Subirlo dosifica la presión sobre el proveedor (útil si el fallo es
+# rate-limit y no un bloqueo duro de IP).
+SCAN_REQUEST_DELAY_MS = _env_int("ATLAS_SCAN_REQUEST_DELAY_MS", 0)
+REFRESH_INTERVAL_SECONDS = _env_int("ATLAS_SCAN_REFRESH_SECONDS", 300)  # 5 minutos
 TOP_N = 20
 
 # --- Pre-filtro dinámico de movimiento real (2026-08-05) ---
@@ -79,10 +102,10 @@ TOP_N = 20
 # Fusion Engine, sin excepción. Esto no reabre la regla de arquitectura ya
 # declarada (YahooFinanceLiveProvider como único punto autorizado para
 # construir un Quote) porque este pre-filtro nunca construye uno.
-PREFILTER_CHUNK_SIZE = 400
-PREFILTER_WORKERS = 30
-TOP_MOVERS_EQUITIES = 30
-TOP_MOVERS_ETFS = 10
+PREFILTER_CHUNK_SIZE = _env_int("ATLAS_SCAN_PREFILTER_CHUNK", 400)
+PREFILTER_WORKERS = _env_int("ATLAS_SCAN_PREFILTER_WORKERS", 30)
+TOP_MOVERS_EQUITIES = _env_int("ATLAS_SCAN_TOP_MOVERS_EQUITIES", 30)
+TOP_MOVERS_ETFS = _env_int("ATLAS_SCAN_TOP_MOVERS_ETFS", 10)
 
 _prefilter_cursor = 0
 
@@ -416,10 +439,15 @@ def run_scan_once() -> None:
         results: List[Dict[str, Any]] = []
         errors = 0
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-            futures = [
-                executor.submit(_score_symbol, asset, collector, money_flow_engine, recorder, market_context, explosive_cfg)
-                for asset in assets
-            ]
+            futures = []
+            for asset in assets:
+                futures.append(
+                    executor.submit(_score_symbol, asset, collector, money_flow_engine, recorder, market_context, explosive_cfg)
+                )
+                # Pacing opcional (default 0): dosifica el envío de requests para
+                # no dispararlos todos de golpe. Útil si el proveedor rate-limitea.
+                if SCAN_REQUEST_DELAY_MS > 0:
+                    time.sleep(SCAN_REQUEST_DELAY_MS / 1000.0)
             for future in as_completed(futures):
                 row = future.result()
                 if row is None:
