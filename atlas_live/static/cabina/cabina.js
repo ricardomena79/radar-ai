@@ -690,7 +690,6 @@ let _memoryEngine = null;
 let _predictionJournal = null;
 let _exitJournalSummaries = [];
 let _missionControlProcesses = [];
-let _learningStatus = null;
 
 async function fetchMemoryEngine() {
   try {
@@ -744,37 +743,51 @@ async function fetchMissionControl() {
   renderAlerts();
 }
 
-/* Indicadores permanentes de la barra superior (aprobados el 2026-08-02,
- * antes de diseñar el Learning Engine): 🧠 Aprendizaje y 🎯 Confianza de
- * Atlas. Estructura preparada para conectarse al Learning Comparator
- * cuando exista -- hoy `/api/learning-status` no calcula nada, devuelve
- * el estado real y honesto ("Observando", sin observaciones nuevas)
- * porque el Learning Store todavía no existe. Ver atlas_live/memory/learning_status.py. */
-function renderLearningStatus(data) {
-  const l = data.learning;
-  const c = data.confidence;
+/* Indicadores permanentes de la barra superior: 🧠 Aprendizaje y 🎯 Confianza.
+ *
+ * ÚNICA FUENTE DE VERDAD (2026-08-09): se alimentan de `_evolution`
+ * (/api/evolution), EXACTAMENTE la misma fuente real que la vista Evolución.
+ * Antes usaban `/api/learning-status`, un stub que devolvía "Observando · 0
+ * obs" pese a que el Memory Engine ya tiene 73.123 observaciones -- eso
+ * generaba una contradicción visible entre la barra y Evolución. Ya no se
+ * consulta ese stub. Nada se inventa: si no hay dato, "No disponible". */
+function renderTopbarLearning() {
+  const learnEl = document.getElementById("topbar-learning-text");
+  const confEl = document.getElementById("topbar-confidence-text");
+  if (!learnEl || !confEl) return;
 
-  const stateCls = l.state === "Listo para comparar" ? "pill-green"
-    : l.state === "Aprendiendo" ? "pill-amber" : "pill-dim";
-  const progressStr = l.progress_pct !== null ? `${l.progress_pct.toFixed(0)}%` : "--";
-  document.getElementById("topbar-learning-text").innerHTML =
-    `<span class="${stateCls}">${l.state}</span> · ${progressStr} · ${l.days_accumulated} d · ${l.new_observations} obs`;
-  document.getElementById("topbar-learning").title = l.note;
+  if (!_evolution) {
+    learnEl.innerHTML = `<span class="pill-dim">cargando…</span>`;
+    confEl.innerHTML = `<span class="pill-dim">--</span>`;
+    return;
+  }
+  const a = _evolution.evolucion_aprendizaje || {};
+  const p = _evolution.precision_del_modelo || {};
 
-  const confCls = c.available ? "pill-green" : "pill-dim";
-  const confText = c.available ? `${c.value_pct.toFixed(0)}%` : c.state;
-  document.getElementById("topbar-confidence-text").innerHTML = `<span class="${confCls}">${confText}</span>`;
-  document.getElementById("topbar-confidence").title = c.note;
-}
+  // 🧠 Aprendizaje: nivel real + observaciones reales (histórico + nuevas hoy)
+  // + última recalibración real. Sin "Observando" ni "0 obs" falsos.
+  const nivel = (a.nivel_aprendizaje_pct === null || a.nivel_aprendizaje_pct === undefined)
+    ? `<span class="pill-dim">Sin evidencia</span>`
+    : `<span class="pill-green">${fmtNum(a.nivel_aprendizaje_pct)}%</span>`;
+  const obs = (a.observaciones_totales !== null && a.observaciones_totales !== undefined)
+    ? Number(a.observaciones_totales).toLocaleString("es") : "--";
+  const nuevas = (a.observaciones_nuevas_hoy !== null && a.observaciones_nuevas_hoy !== undefined)
+    ? a.observaciones_nuevas_hoy : 0;
+  const act = a.ultima_actualizacion || "--";
+  learnEl.innerHTML = `${nivel} · ${obs} obs · +${nuevas} hoy · act. ${act}`;
+  document.getElementById("topbar-learning").title =
+    "Nivel de aprendizaje = condiciones con evidencia suficiente / total (Memory Engine). Misma fuente real que la vista Evolución. Observaciones históricas + nuevas de hoy, con su última recalibración real.";
 
-async function fetchLearningStatus() {
-  try {
-    const res = await fetch("/api/learning-status");
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    _learningStatus = await res.json();
-    renderLearningStatus(_learningStatus);
-  } catch (err) {
-    console.error("fetchLearningStatus:", err);
+  // 🎯 Confianza = precisión histórica real (aciertos sobre casos cerrados).
+  // Si aún no hay casos cerrados evaluados -> "No disponible" (nunca inventado).
+  if (p.precision_historica_pct === null || p.precision_historica_pct === undefined) {
+    confEl.innerHTML = `<span class="pill-dim">No disponible</span>`;
+    document.getElementById("topbar-confidence").title =
+      "Precisión (aciertos) no disponible: todavía no hay casos cerrados evaluados.";
+  } else {
+    confEl.innerHTML = `<span class="pill-green">${fmtNum(p.precision_historica_pct)}%</span>`;
+    document.getElementById("topbar-confidence").title =
+      `Precisión histórica real sobre ${p.muestra_historica} casos cerrados evaluados.`;
   }
 }
 
@@ -855,6 +868,7 @@ function renderLearningHeadline() {
 
 function renderEvolution() {
   renderLearningHeadline();
+  renderTopbarLearning();  // barra superior desde la MISMA fuente real (/api/evolution)
   const nd = (v, suf = "") => (v === null || v === undefined) ? '<span class="dim">No disponible</span>' : (v + suf);
   const ndPct = (v) => (v === null || v === undefined) ? '<span class="dim">No disponible</span>' : (fmtNum(v) + "%");
   const precEl = document.getElementById("evolucion-precision");
@@ -1037,14 +1051,12 @@ function startPanelStatusPolling() {
   fetchPredictionJournal();
   fetchExitJournal();
   fetchMissionControl();
-  fetchLearningStatus();
   fetchPerformance();
-  fetchEvolution();
+  fetchEvolution();  // alimenta también la barra superior (renderTopbarLearning)
   setInterval(fetchMemoryEngine, PANEL_STATUS_POLL_MS);
   setInterval(fetchPredictionJournal, PANEL_STATUS_POLL_MS);
   setInterval(fetchExitJournal, PANEL_STATUS_POLL_MS);
   setInterval(fetchMissionControl, PANEL_STATUS_POLL_MS);
-  setInterval(fetchLearningStatus, PANEL_STATUS_POLL_MS);
   setInterval(fetchPerformance, PANEL_STATUS_POLL_MS);
   setInterval(fetchEvolution, PANEL_STATUS_POLL_MS);
   setInterval(fetchExplosionHistory, PANEL_STATUS_POLL_MS);
@@ -1082,8 +1094,10 @@ function collectDaySnapshot() {
     prediction_journal: _predictionJournal,
     exit_journal: { summaries: _exitJournalSummaries },
     mission_control: { processes: _missionControlProcesses },
-    aprendizaje: _learningStatus ? _learningStatus.learning : null,
-    confianza: _learningStatus ? _learningStatus.confidence : null,
+    // Aprendizaje/confianza desde la MISMA fuente real que Evolución y la
+    // barra superior (/api/evolution) -- ya no el stub /api/learning-status.
+    aprendizaje: _evolution ? _evolution.evolucion_aprendizaje : null,
+    confianza: _evolution ? { precision_historica_pct: _evolution.precision_del_modelo.precision_historica_pct } : null,
   };
 }
 
