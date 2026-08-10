@@ -490,6 +490,18 @@ def run_scan_once() -> None:
         except Exception:
             pass
 
+        # Registro de Señales (2026-08-09) -- validación en vivo. Consume el
+        # mismo `results` (NO es un segundo scanner): registra/observa los
+        # candidatos elegibles de premarket/apertura y cierra las señales de
+        # días ya terminados. Envuelto en su propio try/except: nunca debe
+        # tumbar el escaneo. Ver atlas_live/signals/signal_tracker.py.
+        try:
+            from atlas_live.signals import signal_tracker
+            signal_tracker.track_cycle(results)
+            signal_tracker.resolve_due()
+        except Exception:
+            pass
+
         # Trazabilidad de precio (2026-08-02): registra en el Timeline de
         # Mission Control el `marketState` que Yahoo Finance reportó en
         # este ciclo, solo si cambió respecto al último ciclo -- mismo

@@ -1045,7 +1045,92 @@ function renderExplosionHistory() {
   }
 }
 
+// 📡 Señales -- validación en vivo. Todo real de /api/signals/*. "Sin señales"
+// cuando no hay datos reales; nunca ejemplos falsos.
+let _signalsStats = null, _signalsActive = null, _signalsResults = null;
+
+async function fetchSignals() {
+  try {
+    const [st, ac, re] = await Promise.all([
+      fetch("/api/signals/stats").then(r => r.json()),
+      fetch("/api/signals/active").then(r => r.json()),
+      fetch("/api/signals/results").then(r => r.json()),
+    ]);
+    _signalsStats = st; _signalsActive = ac.active || []; _signalsResults = re.results || [];
+  } catch (err) {
+    console.error("fetchSignals:", err);
+    _signalsStats = null; _signalsActive = null; _signalsResults = null;
+  }
+  renderSignals();
+}
+
+function renderSignals() {
+  const statsEl = document.getElementById("senales-stats");
+  const bandsEl = document.getElementById("senales-bandas");
+  const actEl = document.getElementById("senales-activas");
+  const resEl = document.getElementById("senales-resultados");
+  if (!statsEl || !bandsEl || !actEl || !resEl) return;
+  const nd = (v, suf = "") => (v === null || v === undefined) ? '<span class="dim">No disponible</span>' : (v + suf);
+  const s = _signalsStats;
+
+  // Tarjetas de estadísticas -- SIEMPRE con n. Acierto sin n no se muestra.
+  const card = (icon, label, value, sub) =>
+    `<div class="lh-card"><div class="lh-icon">${icon}</div><div class="lh-label">${label}</div><div class="lh-value">${value}</div>${sub ? `<div class="lh-sub">${sub}</div>` : ""}</div>`;
+  if (!s || s.total_senales === 0) {
+    statsEl.innerHTML = card("📡", "Señales detectadas", "0", "sin señales todavía");
+    bandsEl.innerHTML = actEl.innerHTML = resEl.innerHTML = `<div class="empty-state">Sin señales todavía. Cuando abra el premarket, Atlas empezará a registrar las oportunidades reales que detecte.</div>`;
+    return;
+  }
+  const tasa = (s.tasa_acierto_pct === null || s.tasa_acierto_pct === undefined)
+    ? '<span class="dim">No disponible</span>'
+    : `${fmtNum(s.tasa_acierto_pct)}%`;
+  statsEl.innerHTML =
+    card("🔥", "Señales detectadas", nd(s.total_senales)) +
+    card("📡", "Activas", nd(s.activas), "observándose") +
+    card("🎯", "Aciertos", nd(s.aciertos), `n=${s.n_evaluadas}`) +
+    card("❌", "Fallos", nd(s.fallos), "") +
+    card("📊", "% acierto", tasa, `n=${s.n_evaluadas}${s.muestra_suficiente ? "" : " · " + (s.aviso_muestra || "muestra chica")}`) +
+    card("⏱", "Anticipación a +30%", nd(s.anticipacion_a_30pct.mediana_min, " min"), `mediana · n=${s.anticipacion_a_30pct.n}${s.anticipacion_a_30pct.aviso ? " · " + s.anticipacion_a_30pct.aviso : ""}`);
+
+  const p = s.pct_alcanzo || {};
+  const bandCell = (k, label) => `<div class="detail-metric"><div class="detail-metric-label">${label}</div><div class="detail-metric-value">${nd(p[k], "%")}</div></div>`;
+  bandsEl.innerHTML = `<div class="detail-grid">
+    ${bandCell("10pct", "% ≥ +10%")}${bandCell("30pct", "% ≥ +30%")}${bandCell("50pct", "% ≥ +50%")}
+    ${bandCell("100pct", "% ≥ +100%")}${bandCell("150pct", "% ≥ +150%")}${bandCell("200pct", "% ≥ +200%")}
+  </div><div class="detail-note" style="margin-top:8px">Sobre ${s.n_evaluadas} señales evaluadas. ${s.muestra_suficiente ? "" : "Muestra chica: interpretar con cautela."}</div>`;
+
+  // Activas
+  if (!_signalsActive || !_signalsActive.length) {
+    actEl.innerHTML = `<div class="empty-state">Ninguna señal activa en este momento.</div>`;
+  } else {
+    actEl.innerHTML = `<div style="overflow-x:auto"><table class="data-table">
+      <thead><tr><th>Ticker</th><th>Día</th><th>Sesión</th><th>Detección</th><th style="text-align:right">Precio</th><th style="text-align:right">Score</th><th>Similar a</th><th>Estado</th></tr></thead>
+      <tbody>${_signalsActive.slice(0, 50).map(x => `<tr>
+        <td>${x.ticker}</td><td>${x.market_date}</td><td>${x.session}</td>
+        <td>${fmtTimeSec(x.detected_at)} ET</td>
+        <td style="text-align:right">${nd(x.price_at_detection)}</td>
+        <td style="text-align:right">${nd(x.score)}</td>
+        <td>${x.historical_group || "—"} <span class="dim" style="font-size:10px">(${nd(x.similar_historical_cases)})</span></td>
+        <td>${x.state}</td></tr>`).join("")}</tbody></table></div>`;
+  }
+
+  // Resultados
+  if (!_signalsResults || !_signalsResults.length) {
+    resEl.innerHTML = `<div class="empty-state">Sin resultados todavía (ninguna señal cerró su día).</div>`;
+  } else {
+    resEl.innerHTML = `<div style="overflow-x:auto"><table class="data-table">
+      <thead><tr><th>Ticker</th><th>Día</th><th>Resultado</th><th style="text-align:right">Máx</th><th>min→+30%</th><th>min→+100%</th><th>Fin impulso</th></tr></thead>
+      <tbody>${_signalsResults.slice(0, 100).map(x => `<tr>
+        <td>${x.ticker}</td><td>${x.market_date}</td>
+        <td>${x.result === "ACIERTO" ? "🎯 Acierto" : (x.result === "FALLO" ? "❌ Fallo" : "— Sin datos")}</td>
+        <td style="text-align:right">${x.max_return_pct != null ? "+" + fmtNum(x.max_return_pct) + "%" : "—"}</td>
+        <td>${nd(x.minutes_to_30pct, " min")}</td><td>${nd(x.minutes_to_100pct, " min")}</td>
+        <td>${x.momentum_end_at ? fmtTimeSec(x.momentum_end_at) + " ET" : "—"}</td></tr>`).join("")}</tbody></table></div>`;
+  }
+}
+
 function startPanelStatusPolling() {
+  fetchSignals();
   fetchExplosionHistory();
   fetchMemoryEngine();
   fetchPredictionJournal();
@@ -1060,6 +1145,7 @@ function startPanelStatusPolling() {
   setInterval(fetchPerformance, PANEL_STATUS_POLL_MS);
   setInterval(fetchEvolution, PANEL_STATUS_POLL_MS);
   setInterval(fetchExplosionHistory, PANEL_STATUS_POLL_MS);
+  setInterval(fetchSignals, PANEL_STATUS_POLL_MS);
 }
 
 /* 📸 Guardar Estado del Día -- aprobado el 2026-08-02, último elemento

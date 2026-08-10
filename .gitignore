@@ -10,3 +10,8 @@ atlas/logs/*
 
 atlas/cache/*
 !atlas/cache/.gitkeep
+
+# Registro de señales -- base de runtime (vive en el Volume de Railway, no en el repo)
+atlas_live/signals/*.db
+atlas_live/signals/*.db-wal
+atlas_live/signals/*.db-shm

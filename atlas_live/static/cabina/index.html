@@ -58,6 +58,7 @@
     <button class="nav-item nav-item--sub" data-view="desempeno">📊 Desempeño</button>
     <button class="nav-item nav-item--sub" data-view="evolucion">📈 Evolución</button>
     <button class="nav-item nav-item--sub" data-view="explosiones">🔥 Marcador Histórico</button>
+    <button class="nav-item nav-item--sub" data-view="senales">📡 Señales (validación en vivo)</button>
 
     <div class="nav-sep"></div>
     <button class="nav-item" data-view="radar-completo">📊 Radar Completo</button>
@@ -241,6 +242,20 @@
       <div id="explosiones-anticipacion" class="perf-block"></div>
       <h2 class="section-title" style="margin-top:20px">🔥 Explosiones (mayores primero)</h2>
       <div id="explosiones-lista" class="perf-block"></div>
+    </section>
+
+    <!-- ---------- SEÑALES (VALIDACIÓN EN VIVO) ---------- -->
+    <section class="view" id="view-senales">
+      <header class="view-header"><h1>📡 Señales — Validación en vivo</h1>
+        <div class="header-meta">Oportunidades reales que Atlas detecta en premarket/apertura y su resultado posterior. Esto es VALIDACIÓN (no es el Marcador Histórico). Detección y resultado están separados — cero data leakage. Todo con n explícito; sin señales reales todavía, dice "Sin señales".</div>
+      </header>
+      <h2 class="section-title">📊 Estadísticas</h2>
+      <div id="senales-stats" class="learning-headline"></div>
+      <div id="senales-bandas" class="perf-block" style="margin-top:6px"></div>
+      <h2 class="section-title" style="margin-top:20px">📡 Señales activas <span class="dim" style="font-size:12px">(observándose)</span></h2>
+      <div id="senales-activas" class="perf-block"></div>
+      <h2 class="section-title" style="margin-top:20px">🎯 Resultados</h2>
+      <div id="senales-resultados" class="perf-block"></div>
     </section>
 
     <!-- ---------- 10. RADAR COMPLETO ---------- -->

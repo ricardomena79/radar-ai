@@ -24,6 +24,7 @@ from atlas_live.data_fusion.registry import get_default_provider
 from atlas_live.memory import classifier, exit_journal, explosion_history, learning_status, live_integration, market_hours, observation_recovery, prediction_journal
 from atlas_live.mission_control import heartbeat, timeline
 from atlas_live.predictive_engine import prediction_log
+from atlas_live.signals import signal_registry, signal_tracker
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -178,6 +179,48 @@ def api_explosion_history():
         "anticipacion": explosion_history.lead_time_stats(registry),
         "grupos": explosion_history.group_study(registry),
         "eventos": explosion_history._clean_for_json(registry)["eventos"],
+    })
+
+
+@app.route("/api/signals")
+def api_signals():
+    """Historial de señales registradas (validación en vivo). Solo lectura,
+    datos reales. Vacío si aún no hay señales. Filtro opcional por fecha."""
+    date = request.args.get("date")
+    return jsonify({"signals": signal_registry.list_signals(market_date=date)})
+
+
+@app.route("/api/signals/active")
+def api_signals_active():
+    """Señales todavía sin resolver (DETECTADA/OBSERVANDO)."""
+    return jsonify({"active": signal_registry.list_active()})
+
+
+@app.route("/api/signals/results")
+def api_signals_results():
+    """Señales resueltas con su resultado (tabla separada)."""
+    return jsonify({"results": signal_registry.list_results()})
+
+
+@app.route("/api/signals/stats")
+def api_signals_stats():
+    """Estadísticas reales de las señales: aciertos/fallos, % por banda,
+    anticipación -- siempre con n; 'Evidencia insuficiente' si la muestra no
+    alcanza. Nunca una tasa presentada como confiable sin respaldo."""
+    return jsonify(signal_tracker.stats())
+
+
+@app.route("/api/signals/<signal_uuid>")
+def api_signal_detail(signal_uuid):
+    """Detalle de una señal: detección (congelada) + seguimiento + resultado
+    (si existe), en secciones separadas para que se vea que no hay leakage."""
+    signal = signal_registry.get_signal(signal_uuid)
+    if signal is None:
+        return jsonify({"error": "señal no encontrada"}), 404
+    return jsonify({
+        "detection": signal,
+        "observations": signal_registry.get_observations(signal_uuid),
+        "result": signal_registry.get_result(signal_uuid),
     })
 
 
