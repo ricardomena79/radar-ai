@@ -66,6 +66,29 @@ def _historical_similarity(session: str, now: Optional[datetime]) -> Dict[str, A
     return {"historical_group": "similar a C (empezó tras apertura)", "similar_historical_cases": n}
 
 
+def _identity(ticker: str) -> Dict[str, Optional[str]]:
+    """Identidad real del instrumento (exchange + nombre) para no confundir
+    tickers homónimos. Nombre desde Racional (si está); exchange desde la caché
+    del universo amplio (sin red). Best-effort: None si no se conoce, nunca
+    inventado. No puede tumbar el ciclo."""
+    exchange = name = None
+    try:
+        from atlas_live.market_study import universe
+        ident = universe.lookup_identity(ticker)
+        exchange, name = ident.get("exchange"), ident.get("name")
+    except Exception:
+        pass
+    if not name:
+        try:
+            from atlas.data.universe import get_asset
+            asset = get_asset(ticker)
+            if asset is not None:
+                name = asset.name
+        except Exception:
+            pass
+    return {"exchange": exchange, "name": name}
+
+
 def _row_features(row: Dict[str, Any]) -> Dict[str, Any]:
     """Features de detección desde la fila del scanner. Solo lo disponible EN
     ESE MOMENTO -- gap, cambio, RVOL, $volumen, volatilidad, market cap. None
@@ -102,6 +125,7 @@ def track_cycle(results: List[Dict[str, Any]], now: Optional[datetime] = None) -
                 v = versions.current_versions()
                 reasons = []
                 cond = row.get("explosive", {}).get("stage_trace") or []
+                ident = _identity(ticker)
                 out = reg.register_signal(
                     ticker=ticker, market_date=market_date, session=session,
                     detected_at=now.isoformat(),
@@ -117,6 +141,8 @@ def track_cycle(results: List[Dict[str, Any]], now: Optional[datetime] = None) -
                     detector_version=v["detector_version"],
                     feature_version=v["feature_version"],
                     data_version=v["data_version"],
+                    exchange=ident["exchange"],
+                    name=ident["name"],
                 )
                 if out.get("created"):
                     creadas += 1
