@@ -15,3 +15,9 @@ atlas/cache/*
 atlas_live/signals/*.db
 atlas_live/signals/*.db-wal
 atlas_live/signals/*.db-shm
+
+# Estudio amplio de mercado -- bases y caché de runtime (viven en el Volume, no en el repo)
+atlas_live/market_study/*.db
+atlas_live/market_study/*.db-wal
+atlas_live/market_study/*.db-shm
+atlas_live/market_study/broad_universe.json

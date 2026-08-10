@@ -182,6 +182,20 @@ def api_explosion_history():
     })
 
 
+@app.route("/api/market-study")
+def api_market_study():
+    """Estudio amplio del mercado (2026-08-10): resumen del conocimiento
+    histórico de explosiones acumulado sobre el universo AMPLIO (no solo
+    Racional). Solo lectura -- NO dispara el job batch (ese corre aparte, ver
+    atlas_live/market_study/run.py). Separa explosiones dentro/fuera de
+    Racional con n explícito. Vacío hasta que se corra el estudio."""
+    from atlas_live.market_study import study_registry
+    return jsonify({
+        "summary": study_registry.summary(),
+        "top_explosions": study_registry.list_explosions(limit=50),
+    })
+
+
 @app.route("/api/signals")
 def api_signals():
     """Historial de señales registradas (validación en vivo). Solo lectura,
