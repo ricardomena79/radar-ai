@@ -19,7 +19,7 @@ llamadas y darle forma de JSON al resultado.
 import threading
 import time
 import traceback
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -265,6 +265,20 @@ class _State:
         self.errors: int = 0
         self.scanning: bool = False
         self.last_error: Optional[str] = None
+        # Observabilidad de ciclos (2026-08-09): heartbeat real del motor, para
+        # distinguir "Atlas caído" de "último ciclo sin datos por el proveedor".
+        # `last_success_at` = último ciclo que puntuó >=1 símbolo (dato fresco
+        # real); `last_cycle_finished_at` = fin del último ciclo cualquiera;
+        # `last_cycle_status` in {ok, sin_datos, error}; contadores acumulados
+        # desde que arrancó el proceso.
+        self.cycles_total: int = 0
+        self.cycles_ok: int = 0
+        self.cycles_sin_datos: int = 0
+        self.cycles_error: int = 0
+        self.last_success_at: Optional[str] = None
+        self.last_cycle_finished_at: Optional[str] = None
+        self.last_cycle_status: Optional[str] = None
+        self.last_failure_reason: Optional[str] = None
         # Cache interna (no forma parte del snapshot JSON): el Money Flow
         # Engine ya escaneado, para que get_symbol_detail() lo reutilice.
         self.money_flow_engine: Optional[MoneyFlowEngine] = None
@@ -299,12 +313,40 @@ class _State:
                 "errors": self.errors,
                 "scanning": self.scanning,
                 "last_error": self.last_error,
+                # Observabilidad del motor (heartbeat de ciclos).
+                "cycles_total": self.cycles_total,
+                "cycles_ok": self.cycles_ok,
+                "cycles_sin_datos": self.cycles_sin_datos,
+                "cycles_error": self.cycles_error,
+                "last_success_at": self.last_success_at,
+                "last_cycle_finished_at": self.last_cycle_finished_at,
+                "last_cycle_status": self.last_cycle_status,
+                "last_failure_reason": self.last_failure_reason,
             }
 
     def update(self, **kwargs: Any) -> None:
         with self._lock:
             for key, value in kwargs.items():
                 setattr(self, key, value)
+
+    def record_cycle_outcome(self, status: str, finished_at: str, reason: Optional[str] = None) -> None:
+        """Registra el desenlace de un ciclo de forma atómica: incrementa los
+        contadores según `status` in {ok, sin_datos, error} y actualiza los
+        timestamps de heartbeat. `last_success_at` solo avanza en 'ok'."""
+        with self._lock:
+            self.cycles_total += 1
+            self.last_cycle_finished_at = finished_at
+            self.last_cycle_status = status
+            if status == "ok":
+                self.cycles_ok += 1
+                self.last_success_at = finished_at
+                self.last_failure_reason = None
+            elif status == "sin_datos":
+                self.cycles_sin_datos += 1
+                self.last_failure_reason = reason
+            else:
+                self.cycles_error += 1
+                self.last_failure_reason = reason
 
     def diagnostics_snapshot(self) -> Optional[Dict[str, Any]]:
         with self._lock:
@@ -380,8 +422,35 @@ def _score_symbol(asset: Asset, collector: DataCollector, money_flow_engine: Mon
         return None
 
 
+# Guard de reentrancia (2026-08-09): impide que dos ciclos corran a la vez --
+# el hilo de refresco de fondo y un /api/rescan manual podrían llamar
+# run_scan_once() en paralelo, duplicando la carga al proveedor y compitiendo
+# por STATE/money_flow_engine. Con este lock, si ya hay un ciclo en curso, el
+# segundo se saltea limpiamente en vez de solaparse.
+_scan_lock = threading.Lock()
+
+# Timeout global del ciclo (2026-08-09): ningún proveedor colgado puede dejar
+# un ciclo esperando para siempre. Configurable; 0 = sin límite (no
+# recomendado). Cada request ya tiene su propio timeout en el proveedor.
+CYCLE_TIMEOUT_SECONDS = _env_int("ATLAS_SCAN_CYCLE_TIMEOUT_SECONDS", 240)
+
+
 def run_scan_once() -> None:
-    """Ejecuta un ciclo completo de escaneo y actualiza el estado cacheado."""
+    """Ejecuta un ciclo completo de escaneo y actualiza el estado cacheado.
+
+    No reentrante: si ya hay un ciclo en curso, retorna de inmediato (no se
+    solapan ciclos). Nunca propaga una excepción: cualquier fallo queda
+    registrado en el heartbeat (`record_cycle_outcome`) y el ciclo siguiente
+    puede arrancar normalmente."""
+    if not _scan_lock.acquire(blocking=False):
+        return  # ya hay un ciclo en curso -- no se solapa
+    try:
+        _run_scan_once_locked()
+    finally:
+        _scan_lock.release()
+
+
+def _run_scan_once_locked() -> None:
     STATE.update(scanning=True, last_error=None)
     start = time.monotonic()
 
@@ -448,12 +517,24 @@ def run_scan_once() -> None:
                 # no dispararlos todos de golpe. Útil si el proveedor rate-limitea.
                 if SCAN_REQUEST_DELAY_MS > 0:
                     time.sleep(SCAN_REQUEST_DELAY_MS / 1000.0)
-            for future in as_completed(futures):
-                row = future.result()
-                if row is None:
-                    errors += 1
-                else:
-                    results.append(row)
+            # Timeout global: si algún request queda colgado más allá del
+            # límite del ciclo, no se espera para siempre -- se cierra el
+            # ciclo con lo que sí terminó y los pendientes cuentan como error.
+            timeout = CYCLE_TIMEOUT_SECONDS if CYCLE_TIMEOUT_SECONDS > 0 else None
+            completadas = 0
+            try:
+                for future in as_completed(futures, timeout=timeout):
+                    completadas += 1
+                    row = future.result()
+                    if row is None:
+                        errors += 1
+                    else:
+                        results.append(row)
+            except FuturesTimeoutError:
+                pendientes = len(futures) - completadas
+                errors += pendientes
+                for f in futures:
+                    f.cancel()
 
         recorder.close()
 
@@ -594,8 +675,23 @@ def run_scan_once() -> None:
             )
 
         STATE.update(**state_fields)
+        # Heartbeat del ciclo (2026-08-09): un ciclo terminado, con o sin
+        # datos, NO es una caída. Se registra su desenlace para que la Cabina
+        # muestre el estado real (último ciclo exitoso vs último sin datos) y
+        # los contadores acumulados.
+        STATE.record_cycle_outcome(
+            "ok" if results else "sin_datos",
+            datetime.now(timezone.utc).isoformat(),
+            reason=None if results else state_fields.get("last_error"),
+        )
     except Exception as exc:
-        STATE.update(scanning=False, last_error=f"{exc}\n{traceback.format_exc()}")
+        # Excepción REAL del ciclo (no un símbolo suelto -- esos ya los aísla
+        # _score_symbol). Se registra el tipo y el mensaje, no se oculta, y el
+        # ciclo siguiente puede arrancar igual. Nunca se propaga al hilo de
+        # refresco (que quedaría muerto si esto escapara).
+        reason = f"{type(exc).__name__}: {exc}"
+        STATE.update(scanning=False, last_error=f"{reason}\n{traceback.format_exc()}")
+        STATE.record_cycle_outcome("error", datetime.now(timezone.utc).isoformat(), reason=reason)
 
 
 def get_symbol_detail(symbol: str) -> Dict[str, Any]:

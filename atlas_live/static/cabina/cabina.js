@@ -303,18 +303,39 @@ async function fetchSystemStatus() {
     const text = document.getElementById("topbar-status-text");
     const lastUpdate = document.getElementById("topbar-last-update");
 
+    // Estado honesto por `last_cycle_status` (heartbeat real del motor):
+    //  ok        -> 🟢 hay dato fresco;
+    //  sin_datos -> 🟡 el ciclo terminó pero el proveedor no dio datos
+    //               (NO es una caída de Atlas: el motor sigue vivo);
+    //  error     -> 🔴 excepción real del ciclo.
+    const st = data.last_cycle_status;
+    const okTime = data.last_success_at ? data.last_success_at.slice(11, 19) + " UTC" : "nunca";
     if (data.scanning) {
       dot.className = "dot dot-amber";
       text.textContent = "Escaneando...";
-    } else if (data.last_error) {
+    } else if (st === "ok") {
+      dot.className = "dot dot-green";
+      text.textContent = `Sistema OK (${data.symbols_ok}/${data.symbols_scanned})`;
+    } else if (st === "sin_datos") {
+      dot.className = "dot dot-amber";
+      text.textContent = `Sin datos del proveedor · último ciclo con datos: ${okTime}`;
+    } else if (st === "error") {
       dot.className = "dot dot-red";
-      text.textContent = "Error en el último ciclo";
-    } else if (data.generated_at === null) {
+      text.textContent = "Error en el ciclo (excepción)";
+    } else if (data.generated_at === null && (data.cycles_total || 0) === 0) {
       dot.className = "dot dot-amber";
       text.textContent = "Sin escaneo todavía";
     } else {
       dot.className = "dot dot-green";
       text.textContent = `Sistema OK (${data.symbols_ok}/${data.symbols_scanned})`;
+    }
+    // Heartbeat en el tooltip: ciclos y último éxito -- confirma que el motor
+    // está vivo aunque un ciclo puntual no traiga datos.
+    if (text.parentElement) {
+      text.parentElement.title =
+        `Ciclos: ${data.cycles_total || 0} (ok ${data.cycles_ok || 0} · sin datos ${data.cycles_sin_datos || 0} · error ${data.cycles_error || 0}). ` +
+        `Último ciclo con datos: ${okTime}. Último ciclo terminado: ${data.last_cycle_finished_at ? data.last_cycle_finished_at.slice(11, 19) + " UTC" : "--"}.` +
+        (data.last_failure_reason ? ` Motivo: ${data.last_failure_reason}` : "");
     }
 
     lastUpdate.textContent = data.generated_at ? data.generated_at.slice(11, 19) + " UTC" : "--";
@@ -1349,15 +1370,19 @@ function renderActivity() {
     el.textContent = "Sin conexión con el servidor de Atlas.";
     return;
   }
+  const okTime = s.last_success_at ? s.last_success_at.slice(11, 19) + " UTC" : "nunca";
   if (s.scanning) {
     el.textContent = "Escaneando el universo de símbolos...";
-  } else if (s.last_error) {
-    el.textContent = "El último ciclo de escaneo terminó con un error.";
-  } else if (s.generated_at === null) {
+  } else if (s.last_cycle_status === "sin_datos") {
+    // 0 símbolos por el proveedor -- Atlas sigue vivo (ciclos completándose).
+    el.textContent = `El último ciclo terminó sin datos del proveedor (${s.cycles_total || 0} ciclos corridos, ${s.cycles_ok || 0} con datos). Atlas sigue activo; último ciclo con datos: ${okTime}.`;
+  } else if (s.last_cycle_status === "error") {
+    el.textContent = `El último ciclo terminó con una excepción${s.last_failure_reason ? ": " + s.last_failure_reason : ""}. El motor sigue corriendo; el próximo ciclo reintenta.`;
+  } else if ((s.generated_at === null) && ((s.cycles_total || 0) === 0)) {
     el.textContent = "Esperando el primer escaneo del día...";
   } else {
-    const hhmmss = s.generated_at.slice(11, 19);
-    el.textContent = `Último ciclo: ${hhmmss} UTC · ${s.symbols_ok}/${s.symbols_scanned} símbolos con dato correcto.`;
+    const hhmmss = (s.generated_at || "").slice(11, 19);
+    el.textContent = `Último ciclo: ${hhmmss} UTC · ${s.symbols_ok}/${s.symbols_scanned} símbolos con dato correcto · ${s.cycles_ok || 0}/${s.cycles_total || 0} ciclos con datos.`;
   }
 }
 
