@@ -1150,7 +1150,71 @@ function renderSignals() {
   }
 }
 
+// 🧠 Estudio Histórico -- job de fondo. Todo real de /api/market-study.
+let _estudio = null;
+
+async function fetchEstudio() {
+  try {
+    const res = await fetch("/api/market-study");
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    _estudio = await res.json();
+  } catch (err) {
+    console.error("fetchEstudio:", err);
+    _estudio = null;
+  }
+  renderEstudio();
+}
+
+function renderEstudio() {
+  const stEl = document.getElementById("estudio-estado");
+  const bandEl = document.getElementById("estudio-bandas");
+  const detEl = document.getElementById("estudio-detalle");
+  if (!stEl || !bandEl || !detEl) return;
+  const nd = (v, suf = "") => (v === null || v === undefined) ? '<span class="dim">No disponible</span>' : (v + suf);
+  if (!_estudio || !_estudio.status) {
+    stEl.innerHTML = bandEl.innerHTML = detEl.innerHTML = `<div class="empty-state">No disponible.</div>`;
+    return;
+  }
+  const s = _estudio.status;
+  const stateBadge = {
+    RUNNING: '<span class="pill-green">EJECUTANDO</span>', COMPLETE: '<span class="pill-green">COMPLETO</span>',
+    PAUSED: '<span class="pill-amber">PAUSADO</span>', ERROR: '<span class="pill-red">ERROR</span>',
+    IDLE: '<span class="pill-dim">EN ESPERA</span>',
+  }[s.state] || `<span class="pill-dim">${s.state}</span>`;
+  const card = (icon, label, value, sub) =>
+    `<div class="lh-card"><div class="lh-icon">${icon}</div><div class="lh-label">${label}</div><div class="lh-value">${value}</div>${sub ? `<div class="lh-sub">${sub}</div>` : ""}</div>`;
+  const fmtN = (v) => (v === null || v === undefined) ? "—" : Number(v).toLocaleString("es");
+  stEl.innerHTML =
+    card("⚙", "Estado", stateBadge, `proveedor: ${s.provider || "—"}`) +
+    card("🌐", "Universo", fmtN(s.universe_total), "acciones US (amplio)") +
+    card("✅", "Procesadas", fmtN(s.procesados), `pendientes: ${fmtN(s.pendientes)}`) +
+    card("📈", "Progreso", s.progreso_pct === null ? "—" : s.progreso_pct + "%", "") +
+    card("💥", "Explosiones", fmtN(s.explosiones_totales), `en Racional: ${fmtN(s.en_racional)} · fuera: ${fmtN(s.fuera_de_racional)}`) +
+    card("🕐", "Último avance", s.ultimo_avance_at ? fmtTimeSec(s.ultimo_avance_at) + " ET" : "—", `${nd(s.velocidad_symbols_min)}/min · errores ${s.errores || 0} · retries ${s.retries || 0}`);
+
+  const e = s.explosiones || {};
+  const bandCell = (k) => `<div class="detail-metric"><div class="detail-metric-label">≥ ${k}%</div><div class="detail-metric-value">${fmtN(e["+" + k])}</div></div>`;
+  bandEl.innerHTML = `<div class="detail-grid">${["30","50","100","150","200"].map(bandCell).join("")}</div>
+    <div class="detail-note" style="margin-top:8px">Acumulativo: "≥+100%" incluye las que superaron +100%. Universo amplio (no solo Racional). Último símbolo: ${s.ultimo_simbolo || "—"}.</div>`;
+
+  const top = (_estudio.top_explosions || []).slice(0, 40);
+  if (!top.length) {
+    detEl.innerHTML = `<div class="empty-state">Sin explosiones registradas todavía. El job de fondo las irá acumulando.</div>`;
+  } else {
+    detEl.innerHTML = `<div style="overflow-x:auto"><table class="data-table">
+      <thead><tr><th>Ticker</th><th>Fecha</th><th style="text-align:right">Máx</th><th>Banda</th><th style="text-align:right">Gap apertura</th><th>Racional</th></tr></thead>
+      <tbody>${top.map(x => `<tr>
+        <td>${x.ticker}</td><td>${x.date}</td>
+        <td style="text-align:right;font-weight:600">+${fmtNum(x.max_intraday_pct)}%</td>
+        <td>${x.band}</td>
+        <td style="text-align:right">${x.gap_open_pct != null ? fmtNum(x.gap_open_pct) + "%" : "—"}</td>
+        <td>${x.available_in_racional ? "✅ sí" : "— no"}</td></tr>`).join("")}</tbody></table></div>
+    <div class="detail-note" style="margin-top:8px">Gap de apertura = feature disponible EN la detección (leakage-safe). El máximo es RESULTADO, en tabla separada.</div>`;
+  }
+}
+
 function startPanelStatusPolling() {
+  fetchEstudio();
   fetchSignals();
   fetchExplosionHistory();
   fetchMemoryEngine();
@@ -1167,6 +1231,7 @@ function startPanelStatusPolling() {
   setInterval(fetchEvolution, PANEL_STATUS_POLL_MS);
   setInterval(fetchExplosionHistory, PANEL_STATUS_POLL_MS);
   setInterval(fetchSignals, PANEL_STATUS_POLL_MS);
+  setInterval(fetchEstudio, PANEL_STATUS_POLL_MS);
 }
 
 /* 📸 Guardar Estado del Día -- aprobado el 2026-08-02, último elemento

@@ -59,6 +59,7 @@
     <button class="nav-item nav-item--sub" data-view="evolucion">📈 Evolución</button>
     <button class="nav-item nav-item--sub" data-view="explosiones">🔥 Marcador Histórico</button>
     <button class="nav-item nav-item--sub" data-view="senales">📡 Señales (validación en vivo)</button>
+    <button class="nav-item nav-item--sub" data-view="estudio">🧠 Estudio Histórico</button>
 
     <div class="nav-sep"></div>
     <button class="nav-item" data-view="radar-completo">📊 Radar Completo</button>
@@ -256,6 +257,18 @@
       <div id="senales-activas" class="perf-block"></div>
       <h2 class="section-title" style="margin-top:20px">🎯 Resultados</h2>
       <div id="senales-resultados" class="perf-block"></div>
+    </section>
+
+    <!-- ---------- ESTUDIO HISTÓRICO (job de fondo) ---------- -->
+    <section class="view" id="view-estudio">
+      <header class="view-header"><h1>🧠 Estudio Histórico de Explosiones</h1>
+        <div class="header-meta">Job de investigación que corre en segundo plano en Railway (dentro del mismo Atlas, sin segundo scanner), acumulando explosiones históricas sobre el universo AMPLIO de EE.UU. Aprende del mercado; Racional se filtra después. Progreso real, checkpoint persistente; nunca "completo" si no terminó.</div>
+      </header>
+      <div id="estudio-estado" class="learning-headline"></div>
+      <h2 class="section-title" style="margin-top:16px">💥 Explosiones encontradas (por banda)</h2>
+      <div id="estudio-bandas" class="perf-block"></div>
+      <h2 class="section-title" style="margin-top:16px">🔎 Detalle</h2>
+      <div id="estudio-detalle" class="perf-block"></div>
     </section>
 
     <!-- ---------- 10. RADAR COMPLETO ---------- -->

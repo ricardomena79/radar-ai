@@ -47,6 +47,14 @@ observation_recovery.import_all()
 
 scan_worker.start_background_refresh()
 
+# Worker del estudio histórico (2026-08-10): hilo de fondo gentil, en ESTE
+# mismo proceso (no un segundo servidor/scanner). Acumula evidencia de
+# explosiones sobre el universo amplio toda la noche, cediendo al scanner
+# operativo y reanudando desde el checkpoint tras un reinicio. Se habilita/
+# deshabilita por ATLAS_STUDY_ENABLED.
+from atlas_live.market_study import study_worker
+study_worker.start_study_worker()
+
 
 @app.route("/")
 def index():
@@ -191,6 +199,7 @@ def api_market_study():
     Racional con n explícito. Vacío hasta que se corra el estudio."""
     from atlas_live.market_study import study_registry
     return jsonify({
+        "status": study_registry.study_status(),
         "summary": study_registry.summary(),
         "top_explosions": study_registry.list_explosions(limit=50),
     })

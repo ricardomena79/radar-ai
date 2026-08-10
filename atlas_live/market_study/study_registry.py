@@ -69,6 +69,14 @@ CREATE TABLE IF NOT EXISTS explosion_outcome (
     UNIQUE(ticker, date)
 );
 CREATE INDEX IF NOT EXISTS idx_out_date ON explosion_outcome(date);
+
+-- Estado del job de estudio (clave-valor). Persistente -> sobrevive a
+-- reinicios de Railway; el worker lo lee al arrancar para reanudar.
+CREATE TABLE IF NOT EXISTS study_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT,
+    updated_at TEXT NOT NULL
+);
 """
 
 
@@ -76,11 +84,22 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+_schema_ready_for: Optional[str] = None
+
+
 def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH, timeout=5)
+    conn = sqlite3.connect(DB_PATH, timeout=15)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.executescript(_SCHEMA)
+    conn.execute("PRAGMA busy_timeout=15000")
+    # El esquema (DDL) se crea una sola vez por ruta de DB, no en cada
+    # conexión: correr CREATE en cada _connect toma un lock de escritura y,
+    # con el worker de fondo escribiendo seguido, generaba "database is
+    # locked". Idempotente: al cambiar DB_PATH (tests) se vuelve a crear.
+    global _schema_ready_for
+    if _schema_ready_for != str(DB_PATH):
+        conn.executescript(_SCHEMA)
+        _schema_ready_for = str(DB_PATH)
     return conn
 
 
@@ -185,6 +204,71 @@ def list_explosions(limit: int = 500, band: Optional[str] = None,
     query += " ORDER BY o.max_intraday_pct DESC LIMIT ?"; params.append(limit)
     with closing(_connect()) as conn:
         return [_row(r) for r in conn.execute(query, params).fetchall()]
+
+
+def set_meta(**kwargs: Any) -> None:
+    """Guarda pares clave-valor del estado del job (idempotente por clave)."""
+    with closing(_connect()) as conn:
+        for k, v in kwargs.items():
+            conn.execute(
+                "INSERT INTO study_meta (key, value, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+                (k, str(v) if v is not None else None, _now()),
+            )
+        conn.commit()
+
+
+def get_meta() -> Dict[str, Any]:
+    with closing(_connect()) as conn:
+        return {r["key"]: r["value"] for r in conn.execute("SELECT key, value FROM study_meta")}
+
+
+def study_status() -> Dict[str, Any]:
+    """Estado completo del estudio para la Cabina (Fase 8): combina el
+    checkpoint (procesados, explosiones por banda) con el meta del worker
+    (estado, último símbolo, último avance, universo total, errores). Todo
+    real; nunca 'completo' si no terminó. Vacío hasta que arranque el job."""
+    meta = get_meta()
+    s = summary()
+    universo_total = int(meta.get("universe_total") or 0)
+    procesados = s["simbolos_procesados"]
+    pendientes = max(0, universo_total - procesados) if universo_total else None
+    progreso = round(procesados / universo_total * 100, 1) if universo_total else None
+    band = s["por_banda"]
+
+    def _ge(threshold):
+        # explosiones que alcanzaron AL MENOS `threshold` (bandas acumulativas)
+        total = 0
+        for b, n in band.items():
+            try:
+                val = 201 if b == ">200" else int(b)
+            except ValueError:
+                continue
+            if val >= threshold:
+                total += n
+        return total
+
+    return {
+        "state": meta.get("state", "IDLE"),
+        "provider": meta.get("provider", "yahoo_finance"),
+        "universe_total": universo_total or None,
+        "procesados": procesados,
+        "pendientes": pendientes,
+        "progreso_pct": progreso,
+        "explosiones": {
+            "+30": _ge(30), "+50": _ge(50), "+100": _ge(100),
+            "+150": _ge(150), "+200": _ge(200),
+        },
+        "explosiones_totales": s["explosiones_totales"],
+        "en_racional": s["explosiones_en_racional"],
+        "fuera_de_racional": s["explosiones_fuera_de_racional"],
+        "ultimo_simbolo": meta.get("last_symbol"),
+        "ultimo_avance_at": meta.get("last_advance_at"),
+        "ultimo_checkpoint_at": meta.get("last_advance_at"),
+        "errores": int(meta.get("errors") or 0),
+        "retries": int(meta.get("retries") or 0),
+        "velocidad_symbols_min": meta.get("speed_symbols_min"),
+    }
 
 
 def summary() -> Dict[str, Any]:
