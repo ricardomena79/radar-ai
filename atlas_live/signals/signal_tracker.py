@@ -29,7 +29,7 @@ from atlas_live.signals import versions
 # Umbral de "acierto" de una señal: alcanzó una explosión real (+30%), la
 # misma definición que usa todo el proyecto (Clasificador/Marcador).
 ACIERTO_PCT = 30.0
-MILESTONES = [10, 30, 50, 100, 150, 200]
+MILESTONES = [1, 3, 10, 30, 50, 100, 150, 200]
 MOMENTUM_END_DROP_FRAC = 0.20  # igual criterio que explosion_history
 
 _group_cache: Dict[str, Any] = {}
@@ -214,6 +214,7 @@ def _compute_result(signal: Dict[str, Any], obs: List[Dict[str, Any]]) -> Dict[s
         "fields": {
             "max_return_pct": round(max_ret, 2), "max_at": max_at,
             "return_at_10min": round(ret_10min, 2) if ret_10min is not None else None,
+            "minutes_to_1pct": minutes_to[1], "minutes_to_3pct": minutes_to[3],
             "minutes_to_10pct": minutes_to[10], "minutes_to_30pct": minutes_to[30],
             "minutes_to_50pct": minutes_to[50], "minutes_to_100pct": minutes_to[100],
             "minutes_to_150pct": minutes_to[150], "minutes_to_200pct": minutes_to[200],
@@ -297,6 +298,8 @@ def stats() -> Dict[str, Any]:
         "muestra_suficiente": reliable,
         "aviso_muestra": None if reliable else f"Evidencia insuficiente (n={len(con_dato)} < {_MIN_RELIABLE_N})",
         "pct_alcanzo": {
+            "1pct": _pct_reached("minutes_to_1pct"),
+            "3pct": _pct_reached("minutes_to_3pct"),
             "10pct": _pct_reached("minutes_to_10pct"),
             "30pct": _pct_reached("minutes_to_30pct"),
             "50pct": _pct_reached("minutes_to_50pct"),

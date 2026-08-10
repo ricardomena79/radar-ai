@@ -114,6 +114,8 @@ CREATE TABLE IF NOT EXISTS signal_results (
     max_return_pct REAL,
     max_at TEXT,
     return_at_10min REAL,
+    minutes_to_1pct REAL,
+    minutes_to_3pct REAL,
     minutes_to_10pct REAL,
     minutes_to_30pct REAL,
     minutes_to_50pct REAL,
@@ -145,12 +147,16 @@ def _connect() -> sqlite3.Connection:
 
 
 def _ensure_columns(conn: sqlite3.Connection) -> None:
-    """Migración aditiva NO destructiva: agrega columnas de identidad a una DB
-    `signals` ya poblada, sin borrar ni recrear filas. Idempotente."""
-    have = {r[1] for r in conn.execute("PRAGMA table_info(signals)")}
+    """Migración aditiva NO destructiva: agrega columnas nuevas a DBs ya
+    pobladas, sin borrar ni recrear filas. Idempotente."""
+    sig = {r[1] for r in conn.execute("PRAGMA table_info(signals)")}
     for col in ("exchange", "name"):
-        if col not in have:
+        if col not in sig:
             conn.execute(f"ALTER TABLE signals ADD COLUMN {col} TEXT")
+    res = {r[1] for r in conn.execute("PRAGMA table_info(signal_results)")}
+    for col in ("minutes_to_1pct", "minutes_to_3pct"):
+        if col not in res:
+            conn.execute(f"ALTER TABLE signal_results ADD COLUMN {col} REAL")
     conn.commit()
 
 
@@ -307,6 +313,7 @@ def get_observations(signal_uuid: str) -> List[Dict[str, Any]]:
 
 _RESULT_FIELDS = (
     "max_return_pct", "max_at", "return_at_10min",
+    "minutes_to_1pct", "minutes_to_3pct",
     "minutes_to_10pct", "minutes_to_30pct", "minutes_to_50pct",
     "minutes_to_100pct", "minutes_to_150pct", "minutes_to_200pct",
     "continued_after_open", "lost_momentum", "momentum_end_at",

@@ -30,6 +30,13 @@ STATIC_DIR = Path(__file__).parent / "static"
 
 app = Flask(__name__, static_folder=None)
 
+# Chequeo de persistencia (2026-08-10): PRIMERO de todo. Verifica que los datos
+# de aprendizaje (signal_registry.db y demás) vivan en almacenamiento durable.
+# Si ATLAS_REQUIRE_PERSISTENCE=true y no lo es, LEVANTA acá y el arranque falla
+# ruidosamente en vez de perder señales en silencio. Ver persistence_check.py.
+from atlas_live import persistence_check
+PERSISTENCE_STATUS = persistence_check.enforce()
+
 # Investigación 4 (2026-08-06, ver DECISION_LOG.md): recuperación
 # automática de la base oficial -- si el Volume se pierde por completo,
 # arrancar el proceso de nuevo la reconstruye sola, de forma acumulativa
@@ -223,6 +230,14 @@ def api_signals_active():
 def api_signals_results():
     """Señales resueltas con su resultado (tabla separada)."""
     return jsonify({"results": signal_registry.list_results()})
+
+
+@app.route("/api/persistence")
+def api_persistence():
+    """Estado de persistencia de los datos de aprendizaje, medido al arrancar.
+    `survived_at_least_one_restart=true` es la PRUEBA real de que el Volume
+    sobrevive a los redeploys. `level`: OK / PENDING_PROOF / CRITICAL."""
+    return jsonify(PERSISTENCE_STATUS)
 
 
 @app.route("/api/signals/stats")
