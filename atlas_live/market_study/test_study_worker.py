@@ -29,11 +29,16 @@ def _restore():
 
 
 def _install_fakes(monkey_symbols, scan_fn):
-    orig_u = universe.fetch_broad_universe
+    # FASE 11 (2026-08-10, sesión paralela): study_loop() ahora llama
+    # fetch_broad_universe_meta() (identidad exchange+nombre), no
+    # fetch_broad_universe() -- parchear la función vieja ya no intercepta
+    # nada real, el worker terminaba golpeando la red de verdad. Corregido
+    # acá para que el test vuelva a ser 100% offline/determinístico.
+    orig_u = universe.fetch_broad_universe_meta
     orig_r = universe.racional_symbols
     orig_s = explosion_scan.scan_symbol
     orig_yield = w._operational_scanning
-    universe.fetch_broad_universe = lambda use_cache=True: list(monkey_symbols)
+    universe.fetch_broad_universe_meta = lambda use_cache=True: {s: {"exchange": "TEST", "name": s} for s in monkey_symbols}
     universe.racional_symbols = lambda: set()
     explosion_scan.scan_symbol = scan_fn
     w._operational_scanning = lambda: False  # nunca cede en el test
@@ -41,7 +46,7 @@ def _install_fakes(monkey_symbols, scan_fn):
 
 
 def _uninstall_fakes(saved):
-    universe.fetch_broad_universe, universe.racional_symbols, explosion_scan.scan_symbol, w._operational_scanning = saved
+    universe.fetch_broad_universe_meta, universe.racional_symbols, explosion_scan.scan_symbol, w._operational_scanning = saved
 
 
 def _run_until_processed(symbols, timeout=8.0):
