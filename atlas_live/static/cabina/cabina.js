@@ -1202,14 +1202,17 @@ function renderEstudio() {
     detEl.innerHTML = `<div class="empty-state">Sin explosiones registradas todavía. El job de fondo las irá acumulando.</div>`;
   } else {
     detEl.innerHTML = `<div style="overflow-x:auto"><table class="data-table">
-      <thead><tr><th>Ticker</th><th>Fecha</th><th style="text-align:right">Máx</th><th>Banda</th><th style="text-align:right">Gap apertura</th><th>Racional</th></tr></thead>
+      <thead><tr><th>Ticker</th><th>Empresa</th><th>Exchange</th><th>Fecha</th><th style="text-align:right">Máx</th><th>Banda</th><th style="text-align:right">Gap apertura</th><th>Racional</th></tr></thead>
       <tbody>${top.map(x => `<tr>
-        <td>${x.ticker}</td><td>${x.date}</td>
+        <td title="${x.tradingview_symbol || x.ticker}">${x.tradingview_symbol || x.ticker}</td>
+        <td>${x.name || '<span class="dim">—</span>'}</td>
+        <td>${x.exchange || '<span class="dim">—</span>'}</td>
+        <td>${x.date}</td>
         <td style="text-align:right;font-weight:600">+${fmtNum(x.max_intraday_pct)}%</td>
         <td>${x.band}</td>
         <td style="text-align:right">${x.gap_open_pct != null ? fmtNum(x.gap_open_pct) + "%" : "—"}</td>
         <td>${x.available_in_racional ? "✅ sí" : "— no"}</td></tr>`).join("")}</tbody></table></div>
-    <div class="detail-note" style="margin-top:8px">Gap de apertura = feature disponible EN la detección (leakage-safe). El máximo es RESULTADO, en tabla separada.</div>`;
+    <div class="detail-note" style="margin-top:8px">Identidad = ticker + exchange + empresa (evita confundir homónimos; símbolo con prefijo TradingView). Gap de apertura = feature disponible EN la detección (leakage-safe). El máximo es RESULTADO, en tabla separada.</div>`;
   }
 }
 

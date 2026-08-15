@@ -100,6 +100,9 @@ def scan_symbol(ticker: str, racional_symbols: Set[str], period: str = "6mo") ->
     explosions = detect_explosions_from_daily(bars)
     market_cap = _fetch_market_cap(ticker) if explosions else None
     available = ticker.upper() in racional_symbols
+    # Identidad real (exchange + nombre) desde la caché del universo, SIN red.
+    from atlas_live.market_study import universe
+    identity = universe.lookup_identity(ticker)
     nuevas = 0
     for e in explosions:
         if reg.record_explosion(
@@ -108,6 +111,7 @@ def scan_symbol(ticker: str, racional_symbols: Set[str], period: str = "6mo") ->
             prior_avg_volume=e["prior_avg_volume"], market_cap=market_cap,
             available_in_racional=available, max_intraday_pct=e["max_intraday_pct"],
             close_change_pct=e["close_change_pct"], day_volume=e["day_volume"],
+            exchange=identity.get("exchange"), name=identity.get("name"),
         ):
             nuevas += 1
     return {"status": "ok", "explosions": len(explosions), "nuevas": nuevas}

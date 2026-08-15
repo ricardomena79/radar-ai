@@ -40,6 +40,8 @@ CREATE TABLE IF NOT EXISTS study_checkpoint (
 CREATE TABLE IF NOT EXISTS explosion_features (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ticker TEXT NOT NULL,
+    exchange TEXT,
+    name TEXT,
     date TEXT NOT NULL,
     prev_close REAL,
     open_price REAL,
@@ -99,8 +101,19 @@ def _connect() -> sqlite3.Connection:
     global _schema_ready_for
     if _schema_ready_for != str(DB_PATH):
         conn.executescript(_SCHEMA)
+        _ensure_columns(conn)
         _schema_ready_for = str(DB_PATH)
     return conn
+
+
+def _ensure_columns(conn: sqlite3.Connection) -> None:
+    """Migración aditiva no destructiva: agrega columnas de identidad a una DB
+    ya existente sin borrar ni recrear nada. Idempotente."""
+    have = {r[1] for r in conn.execute("PRAGMA table_info(explosion_features)")}
+    for col in ("exchange", "name"):
+        if col not in have:
+            conn.execute(f"ALTER TABLE explosion_features ADD COLUMN {col} TEXT")
+    conn.commit()
 
 
 def _row(r: sqlite3.Row) -> Dict[str, Any]:
@@ -142,10 +155,12 @@ def record_explosion(
     prior_avg_volume: Optional[float], market_cap: Optional[float], available_in_racional: bool,
     max_intraday_pct: float, close_change_pct: Optional[float], day_volume: Optional[float],
     source: str = "yahoo_finance",
+    exchange: Optional[str] = None, name: Optional[str] = None,
 ) -> bool:
     """Persiste UNA explosión: features (leakage-safe) y outcome en tablas
     separadas. Idempotente por (ticker, date). Devuelve True si insertó nueva.
-    Las bandas alcanzadas y el máximo son RESULTADO -- van solo en outcome."""
+    Las bandas alcanzadas y el máximo son RESULTADO -- van solo en outcome.
+    `exchange`/`name` son IDENTIDAD (no resultado): van en features."""
     reached = {b: 1 if max_intraday_pct >= b else 0 for b in BANDS}
     band = "0"
     for b in BANDS:
@@ -157,10 +172,10 @@ def record_explosion(
     with closing(_connect()) as conn:
         cur = conn.execute(
             "INSERT OR IGNORE INTO explosion_features "
-            "(ticker, date, prev_close, open_price, gap_open_pct, prior_avg_volume, market_cap, "
+            "(ticker, exchange, name, date, prev_close, open_price, gap_open_pct, prior_avg_volume, market_cap, "
             "available_in_racional, source, data_version, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (ticker, date, prev_close, open_price, gap_open_pct, prior_avg_volume, market_cap,
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (ticker, exchange, name, date, prev_close, open_price, gap_open_pct, prior_avg_volume, market_cap,
              1 if available_in_racional else 0, source, DATA_VERSION, _now()),
         )
         inserted = cur.rowcount > 0
@@ -191,7 +206,7 @@ def list_explosions(limit: int = 500, band: Optional[str] = None,
     """Explosiones con features + outcome (join). No mezcla: outcome viene de
     su tabla separada, se une solo para consulta."""
     query = (
-        "SELECT f.ticker, f.date, f.gap_open_pct, f.prior_avg_volume, f.market_cap, "
+        "SELECT f.ticker, f.exchange, f.name, f.date, f.gap_open_pct, f.prior_avg_volume, f.market_cap, "
         "f.available_in_racional, o.max_intraday_pct, o.band, o.day_volume, o.close_change_pct "
         "FROM explosion_features f JOIN explosion_outcome o "
         "ON f.ticker = o.ticker AND f.date = o.date WHERE 1=1"
@@ -203,7 +218,11 @@ def list_explosions(limit: int = 500, band: Optional[str] = None,
         query += " AND f.available_in_racional = 1"
     query += " ORDER BY o.max_intraday_pct DESC LIMIT ?"; params.append(limit)
     with closing(_connect()) as conn:
-        return [_row(r) for r in conn.execute(query, params).fetchall()]
+        rows = [_row(r) for r in conn.execute(query, params).fetchall()]
+    from atlas_live.market_study.universe import tradingview_symbol
+    for r in rows:
+        r["tradingview_symbol"] = tradingview_symbol(r.get("exchange"), r["ticker"])
+    return rows
 
 
 def set_meta(**kwargs: Any) -> None:

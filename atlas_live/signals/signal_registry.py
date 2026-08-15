@@ -69,6 +69,8 @@ CREATE TABLE IF NOT EXISTS signals (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     signal_uuid TEXT NOT NULL UNIQUE,
     ticker TEXT NOT NULL,
+    exchange TEXT,
+    name TEXT,
     market_date TEXT NOT NULL,
     session TEXT NOT NULL,
     detected_at TEXT NOT NULL,
@@ -138,7 +140,24 @@ def _connect() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(_SCHEMA)
+    _ensure_columns(conn)
     return conn
+
+
+def _ensure_columns(conn: sqlite3.Connection) -> None:
+    """Migración aditiva NO destructiva: agrega columnas de identidad a una DB
+    `signals` ya poblada, sin borrar ni recrear filas. Idempotente."""
+    have = {r[1] for r in conn.execute("PRAGMA table_info(signals)")}
+    for col in ("exchange", "name"):
+        if col not in have:
+            conn.execute(f"ALTER TABLE signals ADD COLUMN {col} TEXT")
+    conn.commit()
+
+
+def _tradingview_symbol(exchange: Optional[str], ticker: str) -> str:
+    """Símbolo TradingView `PREFIJO:TICKER` sin depender del módulo de estudio."""
+    from atlas_live.market_study.universe import tradingview_symbol
+    return tradingview_symbol(exchange, ticker)
 
 
 def _row(r: sqlite3.Row) -> Dict[str, Any]:
@@ -150,6 +169,7 @@ def _signal_row(r: sqlite3.Row) -> Dict[str, Any]:
     d["features"] = json.loads(d["features_json"]) if d.get("features_json") else None
     d["reasons"] = json.loads(d["reasons_json"]) if d.get("reasons_json") else None
     d["conditions"] = json.loads(d["conditions_json"]) if d.get("conditions_json") else None
+    d["tradingview_symbol"] = _tradingview_symbol(d.get("exchange"), d["ticker"])
     return d
 
 
@@ -174,22 +194,25 @@ def register_signal(
     detector_version: str,
     feature_version: str,
     data_version: str,
+    exchange: Optional[str] = None,
+    name: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Registra la DETECCIÓN de una oportunidad. Idempotente por
     (ticker, market_date): si ya existe una señal para esa oportunidad, NO se
     reescribe la detección -- se devuelve la existente con `created=False`.
     Solo campos de detección: esta función no acepta ningún dato de resultado.
+    `exchange`/`name` son IDENTIDAD del instrumento (no resultado).
     """
     new_uuid = str(_uuid.uuid4())
     with closing(_connect()) as conn:
         cur = conn.execute(
             "INSERT OR IGNORE INTO signals ("
-            "signal_uuid, ticker, market_date, session, detected_at, price_at_detection, price_as_of, provider, "
+            "signal_uuid, ticker, exchange, name, market_date, session, detected_at, price_at_detection, price_as_of, provider, "
             "features_json, score, reasons_json, conditions_json, historical_group, similar_historical_cases, "
             "detector_version, feature_version, data_version, state, created_at"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
-                new_uuid, ticker, market_date, session, detected_at, price_at_detection, price_as_of, provider,
+                new_uuid, ticker, exchange, name, market_date, session, detected_at, price_at_detection, price_as_of, provider,
                 json.dumps(features, ensure_ascii=False) if features is not None else None,
                 score,
                 json.dumps(reasons, ensure_ascii=False) if reasons is not None else None,

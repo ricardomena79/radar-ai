@@ -102,7 +102,11 @@ def _process_one(sym: str, racional: set) -> dict:
 
 def study_loop() -> None:
     try:
-        universo = universe.fetch_broad_universe()
+        # fetch_broad_universe_meta descarga y CACHEA la identidad (exchange +
+        # nombre) de todo el universo, para que explosion_scan.lookup_identity
+        # la resuelva sin red. La lista de símbolos deriva de esa misma meta.
+        meta = universe.fetch_broad_universe_meta()
+        universo = sorted(meta)
         racional = universe.racional_symbols()
         reg.set_meta(universe_total=len(universo), provider="yahoo_finance", state="RUNNING")
     except Exception as exc:
