@@ -72,6 +72,19 @@ TOP_N_JOURNAL = 20  # mismo top_n que ya usa Radar Explosivo en explosive_config
 _evidence_cache: Dict[str, Any] = {}
 
 
+def reset_evidence_cache() -> None:
+    """Invalida `_evidence_cache` sin esperar al cambio de día de mercado
+    (2026-08-15, hallazgo real: un `learning_reset` que vacía el Memory
+    Store en disco NO alcanza por sí solo -- si el proceso ya calculó la
+    evidencia (`_evidence()`) antes de que corriera el reset, o si el reset
+    corre sobre un proceso ya "caliente", la Cabina seguiría mostrando el
+    `nivel_aprendizaje_pct`/`reliable_condition_count` viejo hasta el
+    próximo día de mercado, aunque la base ya esté vacía. Llamado desde
+    `atlas_live.learning_reset.reset_learning_once()` para que un reset
+    real SIEMPRE invalide también esta caché de proceso, no solo el disco."""
+    _evidence_cache.clear()
+
+
 def refresh_evidence(computed_on: Optional[str] = None) -> None:
     observations = br.load_all_observations()
     baseline = br.compute_population_base_rate(observations, CATEGORY)

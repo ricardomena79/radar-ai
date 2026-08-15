@@ -21,8 +21,51 @@ atlas_live/market_study/*.db
 atlas_live/market_study/*.db-wal
 atlas_live/market_study/*.db-shm
 atlas_live/market_study/broad_universe.json
+atlas_live/market_study/broad_universe_meta.json
 
 # Radar de universo completo (CAPA 2) -- base de runtime (vive en el Volume, no en el repo)
 atlas_live/radar/*.db
 atlas_live/radar/*.db-wal
 atlas_live/radar/*.db-shm
+
+# Base histórica de referencia (2026-08-15) -- base de runtime (vive en el Volume, no en el repo)
+atlas_live/reference/*.db
+atlas_live/reference/*.db-wal
+atlas_live/reference/*.db-shm
+
+# Backups del reinicio de aprendizaje (2026-08-15) -- quedan junto a cada base
+# original (local o Volume de Railway), nunca en git. El dato viejo se
+# preserva ahí, nunca en el historial de git (ver bloque de abajo -- estas
+# bases dejaron de trackearse el 2026-08-16).
+*.pre_reset_v2_*.bak.db
+*.pre_reset_v2_*.bak.db-wal
+*.pre_reset_v2_*.bak.db-shm
+atlas_live/memory/_learning_reset_v2_*.marker
+
+# Memory Store, Exit Journal, Prediction Journal (2026-08-16) -- bases de
+# runtime, igual que radar/reference/signals/market_study arriba. Hasta
+# ahora vivían commiteadas con datos reales ya cargados (73.123
+# observaciones del Memory Store) para que `atlas.config.config.db_path()`
+# las migrara al Volume de Railway en el primer arranque -- decisión
+# revertida a pedido explícito: Atlas no debe depender de una base
+# commiteada para funcionar, y no queremos volver a sembrar ese dato viejo
+# en ninguna instalación nueva. Cada módulo crea su propio esquema vacío
+# solo al conectar (`CREATE TABLE IF NOT EXISTS`, verificado con
+# scripts/verify_fresh_install_schemas.py) -- `db_path()` sigue teniendo su
+# lógica de migración por si algún OTRO módulo la necesita en el futuro,
+# pero para estos 4 archivos ya no hay nada que migrar (el origen no existe
+# en git), así que simplemente no hace nada, sin error.
+atlas_live/memory/*.db
+atlas_live/memory/*.db-wal
+atlas_live/memory/*.db-shm
+atlas_live/mission_control/*.db
+atlas_live/mission_control/*.db-wal
+atlas_live/mission_control/*.db-shm
+atlas_live/predictive_engine/*.db
+atlas_live/predictive_engine/*.db-wal
+atlas_live/predictive_engine/*.db-shm
+
+# Resultado crudo de una corrida de los Experimentos A/B/C (2026-08-16) --
+# output regenerable con scripts/run_experiments_abc.py, no código fuente.
+# Los resultados importantes quedan documentados en EXPERIMENTOS_A_B_C.md.
+experiments_abc_resultado.json

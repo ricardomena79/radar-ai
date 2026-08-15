@@ -30,6 +30,20 @@ STATIC_DIR = Path(__file__).parent / "static"
 
 app = Flask(__name__, static_folder=None)
 
+# Reinicio del aprendizaje anterior (2026-08-15, "Reinicio v2" -- pedido
+# explícito del usuario): las 73.123 observaciones "v1" del Memory Store, el
+# seed histórico del Exit Journal y las señales/predicciones ya resueltas
+# quedaron atadas a una arquitectura anterior (sin Tradier, sin radar de
+# universo completo) y pueden no ser representativas -- no deben seguir
+# acumulándose. Corre UNA sola vez (marca persistida junto a los datos,
+# nunca se repite), con backup automático de cada base antes de vaciarla.
+# Antes de seed_import: así, si esto es la primera vez que corre, no hay
+# una ventana donde el seed viejo se recupera y el reinicio lo borra recién
+# después -- el orden importa para que el resultado final sea siempre "base
+# limpia", nunca "recuperado y luego vaciado a medias".
+from atlas_live import learning_reset
+learning_reset.reset_learning_once()
+
 # Investigación 4 (2026-08-06, ver DECISION_LOG.md): recuperación
 # automática de la base oficial -- si el Volume se pierde por completo,
 # arrancar el proceso de nuevo la reconstruye sola, de forma acumulativa
@@ -243,12 +257,39 @@ def api_radar_informe_dia():
     from atlas_live.radar import candidate_registry as radar_registry
 
     date_param = request.args.get("date") or _mh.market_date()
+    resumen_dia = radar_registry.get_daily_summary(date_param)
     return jsonify({
         "market_date": date_param,
         "resumen": radar_registry.get_meta().get("eod_resumen"),
+        "resumen_dia": resumen_dia,
+        "precision_acumulada": radar_registry.cumulative_precision(),
         "outcomes": radar_registry.list_outcomes_for_date(date_param),
         "candidatas": radar_registry.list_candidates_for_date(date_param),
     })
+
+
+@app.route("/api/learning-maturity")
+def api_learning_maturity():
+    """Aprendizaje en Vivo + Madurez (2026-08-15, ver
+    PROPUESTA_MADUREZ_APRENDIZAJE.md). SOLO datos de `candidate_registry`
+    (radar CAPA 2, en vivo, arranca en cero tras el reset) -- nunca mezcla
+    la Base Histórica de Referencia. La madurez es el mínimo de los 11 ejes
+    (cuello de botella), nunca condiciones_confiables/14 (ver
+    evolution_panel.py para ese cálculo, ahora solo diagnóstico interno)."""
+    from atlas_live.learning import live_summary
+
+    date_param = request.args.get("date")
+    return jsonify(live_summary.get_live_learning_summary(market_date=date_param))
+
+
+@app.route("/api/historical-reference-summary")
+def api_historical_reference_summary():
+    """Base Histórica de Referencia (2026-08-15) -- estudio de ~3 meses del
+    universo vía Tradier. Explícitamente NUNCA es aprendizaje de Atlas, solo
+    contexto para comparar patrones (ver live_summary.get_historical_reference_summary)."""
+    from atlas_live.learning import live_summary
+
+    return jsonify(live_summary.get_historical_reference_summary())
 
 
 @app.route("/api/signals")
