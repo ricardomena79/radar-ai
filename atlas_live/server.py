@@ -292,6 +292,53 @@ def api_historical_reference_summary():
     return jsonify(live_summary.get_historical_reference_summary())
 
 
+def _admin_token_ok() -> bool:
+    """Fail-closed a propósito (2026-08-16): sin ATLAS_ADMIN_TOKEN
+    configurado en el entorno, el endpoint admin SIEMPRE rechaza -- nunca
+    queda abierto por accidente si alguien olvida configurar la variable."""
+    expected = os.environ.get("ATLAS_ADMIN_TOKEN")
+    if not expected:
+        return False
+    provided = request.headers.get("X-Admin-Token") or request.args.get("token")
+    return provided == expected
+
+
+@app.route("/api/admin/build-historical-reference", methods=["POST"])
+def api_admin_build_historical_reference():
+    """Dispara, de forma manual y una vez por llamada, la construcción/
+    continuación de la Base Histórica de Referencia (2026-08-16) --
+    reutiliza scripts/build_historical_reference.py sin duplicar ni cambiar
+    su lógica. Corre en un hilo de fondo DENTRO de este mismo proceso (el
+    único con el Volume real de Railway montado, via ATLAS_DATA_DIR) --
+    nunca se llama automáticamente al arrancar el servidor. No-reentrante:
+    si ya hay una construcción corriendo, devuelve 409 sin iniciar otra.
+    Protegido con ATLAS_ADMIN_TOKEN (X-Admin-Token header o ?token=)."""
+    if not _admin_token_ok():
+        return jsonify({"error": "no autorizado"}), 403
+
+    from scripts import build_historical_reference as bhr
+
+    limit = request.args.get("limit", default=2600, type=int)
+    workers = request.args.get("workers", default=8, type=int)
+    delay_ms = request.args.get("delay_ms", default=80, type=int)
+    period = request.args.get("period", default="3mo")
+
+    result = bhr.start_background_build(limit=limit, workers=workers, delay_ms=delay_ms, period=period)
+    return jsonify(result), (202 if result.get("started") else 409)
+
+
+@app.route("/api/admin/build-historical-reference/status")
+def api_admin_build_historical_reference_status():
+    """Solo lectura: si está corriendo, cuántos símbolos/casos lleva,
+    errores, y cuándo terminó -- todo real, de reference_registry."""
+    if not _admin_token_ok():
+        return jsonify({"error": "no autorizado"}), 403
+
+    from scripts import build_historical_reference as bhr
+
+    return jsonify(bhr.build_status())
+
+
 @app.route("/api/signals")
 def api_signals():
     """Historial de señales registradas (validación en vivo). Solo lectura,

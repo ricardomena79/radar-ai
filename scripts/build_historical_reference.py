@@ -14,8 +14,11 @@ Uso:
 
 import argparse
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional
 
 from atlas.data.providers.tradier_symbol_map import normalize
 from atlas.data.universe import get_equities, get_etfs
@@ -167,6 +170,86 @@ def run_batch(limit: int, workers: int, delay_ms: int, period: str, batch_timeou
         "ok": ok, "sin_datos": sin_datos, "errores": errores,
         "tiempo_s": round(time.time() - t0, 2),
         "conteos_totales": reg.counts(),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Disparo manual en segundo plano (2026-08-16) -- para que el endpoint admin
+# de `server.py` pueda iniciar esto DENTRO del proceso real de Railway (el
+# único que tiene el Volume persistente montado), sin bloquear la petición
+# HTTP y sin duplicar nada de `run_batch`/`_process_one` de arriba -- los
+# reutiliza tal cual. El estado queda persistido vía
+# `reference_registry.set_meta()` (mismo mecanismo ya usado por el radar),
+# así que sobrevive a un reinicio del proceso -- ver docstring de
+# `start_background_build` para qué pasa exactamente en ese caso.
+# ---------------------------------------------------------------------------
+
+_build_lock = threading.Lock()
+_build_thread: Optional[threading.Thread] = None
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _run_batch_background(limit: int, workers: int, delay_ms: int, period: str, batch_timeout_s: int) -> None:
+    global _build_thread
+    reg.set_meta(build_state="RUNNING", build_started_at=_now_iso(), build_finished_at=None, build_error=None)
+    try:
+        result = run_batch(limit, workers, delay_ms, period, batch_timeout_s)
+        if isinstance(result, dict) and result.get("error"):
+            reg.set_meta(build_state="ERROR", build_finished_at=_now_iso(), build_error=result["error"])
+        else:
+            reg.set_meta(build_state="COMPLETED", build_finished_at=_now_iso(), build_last_result=result)
+    except Exception as exc:
+        reg.set_meta(build_state="ERROR", build_finished_at=_now_iso(), build_error=f"{type(exc).__name__}: {exc}")
+    finally:
+        with _build_lock:
+            _build_thread = None
+
+
+def start_background_build(
+    limit: int = 2600, workers: int = 8, delay_ms: int = 80, period: str = "3mo", batch_timeout_s: int = 3600,
+) -> Dict[str, Any]:
+    """Punto de entrada para el endpoint admin -- NUNCA se llama solo al
+    arrancar el proceso (eso queda a cargo exclusivo de quien dispara el
+    endpoint). No-reentrante: si ya hay un hilo vivo, no inicia uno segundo,
+    devuelve `started=False`.
+
+    Reinicio de Railway a mitad de camino: el hilo muere con el proceso: el
+    Volume ya tiene, checkpointeados, todos los símbolos procesados HASTA
+    ese momento (mark_processed corre símbolo por símbolo dentro de
+    run_batch, no al final). `build_state` queda "RUNNING" en el meta viejo
+    -- informativo, no bloqueante: como el lock es un objeto en memoria del
+    PROCESO (se resetea solo con el reinicio), una nueva llamada a este
+    endpoint arranca sin problema y `run_batch` retoma exactamente donde
+    quedó (salta los símbolos ya en `reference_checkpoint`)."""
+    global _build_thread
+    with _build_lock:
+        if _build_thread is not None and _build_thread.is_alive():
+            return {"started": False, "reason": "ya hay una construcción en curso"}
+        _build_thread = threading.Thread(
+            target=_run_batch_background, args=(limit, workers, delay_ms, period, batch_timeout_s), daemon=True,
+        )
+        _build_thread.start()
+    return {"started": True, "limit": limit, "workers": workers, "delay_ms": delay_ms, "period": period}
+
+
+def build_status() -> Dict[str, Any]:
+    """Estado consultable -- corriendo o no, avance real, errores, cuándo
+    terminó. Todo sale de datos reales (`reference_registry`), nada
+    inventado si el proceso nunca se disparó."""
+    meta = reg.get_meta()
+    with _build_lock:
+        vivo_en_este_proceso = _build_thread is not None and _build_thread.is_alive()
+    return {
+        "corriendo_en_este_proceso": vivo_en_este_proceso,
+        "build_state": meta.get("build_state", "NUNCA_INICIADO"),
+        "build_started_at": meta.get("build_started_at"),
+        "build_finished_at": meta.get("build_finished_at"),
+        "build_error": meta.get("build_error"),
+        "build_last_result": meta.get("build_last_result"),
+        "conteos_actuales": reg.counts(),
     }
 
 
