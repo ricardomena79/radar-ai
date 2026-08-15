@@ -1,0 +1,626 @@
+{
+  "ADGI": {
+    "category": "2_renombrado",
+    "name_snapshot": "Adagio Therapeutics",
+    "reason": "Adagio Therapeutics renombrada a Invivyd -- confirmado: IVVD resuelve en Tradier.",
+    "state": "ACTIVE",
+    "tradier_symbol": "IVVD",
+    "verified": "2026-08-14"
+  },
+  "AKO.B": {
+    "category": "1_formato",
+    "name_snapshot": "Embotelladora Andina",
+    "reason": "Tradier usa slash para clase de acción, no punto -- confirmado: AKO/B resuelve, AKO.B no.",
+    "state": "ACTIVE",
+    "tradier_symbol": "AKO/B",
+    "verified": "2026-08-14"
+  },
+  "BF.A": {
+    "category": "1_formato",
+    "name_snapshot": "Brown-Forman Corp (Class A)",
+    "reason": "Tradier usa slash para clase de acción, no punto -- confirmado: BF/A resuelve, BF.A no.",
+    "state": "ACTIVE",
+    "tradier_symbol": "BF/A",
+    "verified": "2026-08-14"
+  },
+  "BF.B": {
+    "category": "1_formato",
+    "name_snapshot": "Brown Forman Corp.",
+    "reason": "Tradier usa slash para clase de acción, no punto -- confirmado: BF/B resuelve, BF.B no.",
+    "state": "ACTIVE",
+    "tradier_symbol": "BF/B",
+    "verified": "2026-08-14"
+  },
+  "BFK": {
+    "category": "4_etf_especial",
+    "name_snapshot": "BlackRock Municipal Income Trust",
+    "reason": "ETF de nicho (type=ETF en snapshot Racional) -- confirmado no resuelto en Tradier, sin explicación de formato ni corporativa.",
+    "state": "SPECIAL",
+    "tradier_symbol": null,
+    "verified": "2026-08-14"
+  },
+  "BK": {
+    "category": "2_renombrado",
+    "name_snapshot": "Bank of New York Mellon Corp., The",
+    "reason": "Bank of New York Mellon cambió su ticker de BK a BNY. Confirmado: BNY resuelve en Tradier ($163.24). Fuente: búsqueda web, verificado 2026-08-14.",
+    "state": "ACTIVE",
+    "tradier_symbol": "BNY",
+    "verified": "2026-08-14 (segunda pasada)"
+  },
+  "BLCN": {
+    "category": "4_etf_especial",
+    "name_snapshot": "Siren ETF Trust Siren Nasdaq NextGen ETF",
+    "reason": "ETF de nicho (type=ETF en snapshot Racional) -- confirmado no resuelto en Tradier, sin explicación de formato ni corporativa.",
+    "state": "SPECIAL",
+    "tradier_symbol": null,
+    "verified": "2026-08-14"
+  },
+  "BRK.A": {
+    "category": "1_formato",
+    "name_snapshot": "Berkshire Hathaway (Class A)",
+    "reason": "Tradier usa slash para clase de acción, no punto -- confirmado: BRK/A resuelve, BRK.A no.",
+    "state": "ACTIVE",
+    "tradier_symbol": "BRK/A",
+    "verified": "2026-08-14"
+  },
+  "BRK.B": {
+    "category": "1_formato",
+    "name_snapshot": "Berkshire Hathaway (Class B)",
+    "reason": "Tradier usa slash para clase de acción, no punto -- confirmado: BRK/B resuelve, BRK.B no.",
+    "state": "ACTIVE",
+    "tradier_symbol": "BRK/B",
+    "verified": "2026-08-14"
+  },
+  "BYON": {
+    "category": "6_no_cubierto_confirmado",
+    "name_snapshot": "Overstock.com, Inc.",
+    "reason": "Probado individual/aislado contra Tradier (fuera de lote grande) -- confirmado no reconocido, sin problema de formato ni causa corporativa encontrada. (ticker ACTUAL de Beyond Inc, post-renombre de Overstock.com -- confirmado sin explicación).",
+    "state": "UNSUPPORTED",
+    "tradier_symbol": null,
+    "verified": "2026-08-14"
+  },
+  "CFINASDAQ": {
+    "category": "5_racional_exclusivo",
+    "name_snapshot": "ETF Singular Acciones NASDAQ",
+    "reason": "\"ETF Singular Acciones NASDAQ\" -- producto wrapper propio del bróker Racional (Chile), no un ticker de mercado real.",
+    "state": "SPECIAL",
+    "tradier_symbol": null,
+    "verified": "2026-08-14"
+  },
+  "CFISP500": {
+    "category": "5_racional_exclusivo",
+    "name_snapshot": "ETF Singular S&P 500",
+    "reason": "\"ETF Singular S&P 500\" -- producto wrapper propio del bróker Racional (Chile), no un ticker de mercado real.",
+    "state": "SPECIAL",
+    "tradier_symbol": null,
+    "verified": "2026-08-14"
+  },
+  "CFLT": {
+    "category": "6_no_cubierto_confirmado",
+    "name_snapshot": "Confluent, Inc",
+    "reason": "Probado individual/aislado contra Tradier (fuera de lote grande) -- confirmado no reconocido, sin problema de formato ni causa corporativa encontrada.",
+    "state": "UNSUPPORTED",
+    "tradier_symbol": null,
+    "verified": "2026-08-14"
+  },
+  "CIVI": {
+    "category": "6_no_cubierto_confirmado",
+    "name_snapshot": "CIVITAS RESOURCES INC",
+    "reason": "Probado directo (\"CIVI\") -- no resuelve. El único candidato por nombre en Tradier (CIVII) es un WARRANT (vencimiento 2026-01-20, precio $0.0044), no la acción común -- no es un reemplazo válido. Sin explicación de rename/delisting encontrada. Verificado 2026-08-14.",
+    "state": "UNSUPPORTED",
+    "tradier_symbol": null,
+    "verified": "2026-08-14 (segunda pasada)"
+  },
+  "CYBR": {
+    "category": "3_fusion_delisting",
+    "name_snapshot": "CyberArk Software, Ltd.",
+    "reason": "CyberArk Software fue adquirida por Palo Alto Networks, fusión cerrada 2026-02-11, delistada de Nasdaq y desregistrada. Fuente: TipRanks/comunicados, verificado 2026-08-14.",
+    "state": "OBSOLETE",
+    "tradier_symbol": null,
+    "verified": "2026-08-14 (segunda pasada)"
+  },
+  "DWAC": {
+    "category": "2_renombrado",
+    "name_snapshot": "DIGITAL WORLD ACQUISITION CORP",
+    "reason": "Digital World Acquisition Corp fusionada con Trump Media & Technology Group -- confirmado: DJT resuelve en Tradier.",
+    "state": "ACTIVE",
+    "tradier_symbol": "DJT",
+    "verified": "2026-08-14"
+  },
+  "EDOC": {
+    "category": "4_etf_especial",
+    "name_snapshot": "GL X TELEMEDICINE DIG HEALTH",
+    "reason": "ETF de nicho (type=ETF en snapshot Racional) -- confirmado no resuelto en Tradier, sin explicación de formato ni corporativa.",
+    "state": "SPECIAL",
+    "tradier_symbol": null,
+    "verified": "2026-08-14"
+  },
+  "ELP": {
+    "category": "2_renombrado",
+    "name_snapshot": "Companhia Paranaense de Energia",
+    "reason": "Companhia Paranaense de Energia (Copel) -- Tradier indexa el ADR bajo ELPC. Confirmado: ELPC resuelve ($10.46). Verificado 2026-08-14.",
+    "state": "ACTIVE",
+    "tradier_symbol": "ELPC",
+    "verified": "2026-08-14 (segunda pasada)"
+  },
+  "ELY": {
+    "category": "2_renombrado",
+    "name_snapshot": "Callaway Golf Co",
+    "reason": "Callaway Golf -- tras la separación de Topgolf Callaway Brands, la marca de golf vuelve a cotizar como Callaway Golf bajo el ticker CALY. Confirmado: CALY resuelve ($16.48). Verificado 2026-08-14.",
+    "state": "ACTIVE",
+    "tradier_symbol": "CALY",
+    "verified": "2026-08-14 (segunda pasada)"
+  },
+  "EMO.RT": {
+    "category": "4_etf_especial",
+    "name_snapshot": "ClearBridge Energy Midstream Opportunity Fund Inc. - Right",
+    "reason": "Right (derecho temporal) de ClearBridge Energy Midstream Opportunity Fund -- confirmado que el fondo base EMO SÍ resuelve; el Right como instrumento aparte no. No se normaliza a EMO porque son instrumentos financieros distintos.",
+    "state": "SPECIAL",
+    "tradier_symbol": null,
+    "verified": "2026-08-14"
+  },
+  "ENOB": {
+    "category": "6_no_cubierto_confirmado",
+    "name_snapshot": "ENOCHIAN BIOSCIENCES INC",
+    "reason": "Probado individual/aislado contra Tradier (fuera de lote grande) -- confirmado no reconocido, sin problema de formato ni causa corporativa encontrada. (ticker histórico de Enochian Biosciences, renombrada a Renovaro Biosciences/RENB -- pero RENB tampoco resuelve).",
+    "state": "UNSUPPORTED",
+    "tradier_symbol": null,
+    "verified": "2026-08-14"
+  },
+  "ERJ": {
+    "category": "2_renombrado",
+    "name_snapshot": "Embraer S.A.",
+    "reason": "Embraer S.A. -- Tradier indexa el común bajo EMBJ (no ERJ). Confirmado: EMBJ resuelve ($75.38). Verificado 2026-08-14.",
+    "state": "ACTIVE",
+    "tradier_symbol": "EMBJ",
+    "verified": "2026-08-14 (segunda pasada)"
+  },
+  "EXAS": {
+    "category": "6_no_cubierto_confirmado",
+    "name_snapshot": "Exact Sciences Corporation",
+    "reason": "Probado individual/aislado contra Tradier (fuera de lote grande) -- confirmado no reconocido, sin problema de formato ni causa corporativa encontrada.",
+    "state": "UNSUPPORTED",
+    "tradier_symbol": null,
+    "verified": "2026-08-14"
+  },
+  "FI": {
+    "category": "2_renombrado",
+    "name_snapshot": "Fiserv, Inc.",
+    "reason": "Fiserv -- Tradier todavía indexa el ticker FISV (no FI) para la cotización en vivo. Confirmado: FISV resuelve ($54.39, \"Fiserv Inc\"). Verificado 2026-08-14.",
+    "state": "ACTIVE",
+    "tradier_symbol": "FISV",
+    "verified": "2026-08-14 (segunda pasada)"
+  },
+  "FIVG": {
+    "category": "4_etf_especial",
+    "name_snapshot": "Defiance Next Gen Connectivity ETF",
+    "reason": "ETF de nicho (type=ETF en snapshot Racional) -- confirmado no resuelto en Tradier, sin explicación de formato ni corporativa.",
+    "state": "SPECIAL",
+    "tradier_symbol": null,
+    "verified": "2026-08-14"
+  },
+  "FNGB": {
+    "category": "4_etf_especial",
+    "name_snapshot": "Microsectors Fang 3X Leveraged ETNs",
+    "reason": "ETF de nicho (type=ETF en snapshot Racional) -- confirmado no resuelto en Tradier, sin explicación de formato ni corporativa.",
+    "state": "SPECIAL",
+    "tradier_symbol": null,
+    "verified": "2026-08-14"
+  },
+  "GAZ": {
+    "category": "3_fusion_delisting",
+    "name_snapshot": "IPATH SER B BBG NAT GAS TR",
+    "reason": "iPath Series B Bloomberg Natural Gas ETN -- no resuelve ni aislado; consistente con redención/vencimiento conocido del instrumento. NO reverificado con fuente externa en esta sesión (confianza media).",
+    "state": "OBSOLETE",
+    "tradier_symbol": null,
+    "verified": "2026-08-14"
+  },
+  "GBOX": {
+    "category": "6_no_cubierto_confirmado",
+    "name_snapshot": "GreenBox POS",
+    "reason": "Probado individual/aislado contra Tradier (fuera de lote grande) -- confirmado no reconocido, sin problema de formato ni causa corporativa encontrada. (ticker histórico de GreenBox POS, renombrada a RYVYL Inc/RVYL -- pero RVYL tampoco resuelve).",
+    "state": "UNSUPPORTED",
+    "tradier_symbol": null,
+    "verified": "2026-08-14"
+  },
+  "GCI": {
+    "category": "6_no_cubierto_confirmado",
+    "name_snapshot": "Gannett Co., Inc.",
+    "reason": "Probado individual/aislado contra Tradier (fuera de lote grande) -- confirmado no reconocido, sin problema de formato ni causa corporativa encontrada.",
+    "state": "UNSUPPORTED",
+    "tradier_symbol": null,
+    "verified": "2026-08-14"
+  },
+  "GENVR": {
+    "category": "4_etf_especial",
+    "name_snapshot": "GEN DIGITAL INC - CVR",
+    "reason": "CVR (Contingent Value Right) de Gen Digital Inc. -- instrumento especial de corta vida, no una acción ordinaria.",
+    "state": "SPECIAL",
+    "tradier_symbol": null,
+    "verified": "2026-08-14"
+  },
+  "GMET": {
+    "category": "4_etf_especial",
+    "name_snapshot": "VanEck Green Metals ETF",
+    "reason": "ETF de nicho (type=ETF en snapshot Racional) -- confirmado no resuelto en Tradier, sin explicación de formato ni corporativa.",
+    "state": "SPECIAL",
+    "tradier_symbol": null,
+    "verified": "2026-08-14"
+  },
+  "GPS": {
+    "category": "2_renombrado",
+    "name_snapshot": "Gap, Inc., The",
+    "reason": "Gap Inc cambió su ticker de GPS a GAP. Confirmado: GAP resuelve en Tradier ($20.60). Fuente: TradingView/StockAnalysis, verificado 2026-08-14.",
+    "state": "ACTIVE",
+    "tradier_symbol": "GAP",
+    "verified": "2026-08-14 (segunda pasada)"
+  },
+  "HBI": {
+    "category": "6_no_cubierto_confirmado",
+    "name_snapshot": "Hanesbrands Inc.",
+    "reason": "Probado individual/aislado contra Tradier (fuera de lote grande) -- confirmado no reconocido, sin problema de formato ni causa corporativa encontrada.",
+    "state": "UNSUPPORTED",
+    "tradier_symbol": null,
+    "verified": "2026-08-14"
+  },
+  "IAC": {
+    "category": "6_no_cubierto_confirmado",
+    "name_snapshot": "InterActiveCorp",
+    "reason": "Probado individual/aislado contra Tradier (fuera de lote grande) -- confirmado no reconocido, sin problema de formato ni causa corporativa encontrada.",
+    "state": "UNSUPPORTED",
+    "tradier_symbol": null,
+    "verified": "2026-08-14"
+  },
+  "IBDQ": {
+    "category": "4_etf_especial",
+    "name_snapshot": "ISHARES IBONDS DEC 2025 TERM",
+    "reason": "ETF de nicho (type=ETF en snapshot Racional) -- confirmado no resuelto en Tradier, sin explicación de formato ni corporativa.",
+    "state": "SPECIAL",
+    "tradier_symbol": null,
+    "verified": "2026-08-14"
+  },
+  "IBHE": {
+    "category": "4_etf_especial",
+    "name_snapshot": "iShares iBonds 2025 Term High Yield and Income ETF",
+    "reason": "ETF de nicho (type=ETF en snapshot Racional) -- confirmado no resuelto en Tradier, sin explicación de formato ni corporativa.",
+    "state": "SPECIAL",
+    "tradier_symbol": null,
+    "verified": "2026-08-14"
+  },
+  "IBIB": {
+    "category": "4_etf_especial",
+    "name_snapshot": "iShares iBonds Oct 2025 Term TIPS ETF",
+    "reason": "ETF de nicho (type=ETF en snapshot Racional) -- confirmado no resuelto en Tradier, sin explicación de formato ni corporativa.",
+    "state": "SPECIAL",
+    "tradier_symbol": null,
+    "verified": "2026-08-14"
+  },
+  "IBMN": {
+    "category": "4_etf_especial",
+    "name_snapshot": "ISHARES IBONDS DEC 2025 TERM",
+    "reason": "ETF de nicho (type=ETF en snapshot Racional) -- confirmado no resuelto en Tradier, sin explicación de formato ni corporativa.",
+    "state": "SPECIAL",
+    "tradier_symbol": null,
+    "verified": "2026-08-14"
+  },
+  "IBTF": {
+    "category": "4_etf_especial",
+    "name_snapshot": "ISHARES IBONDS DEC 2025 TERM",
+    "reason": "ETF de nicho (type=ETF en snapshot Racional) -- confirmado no resuelto en Tradier, sin explicación de formato ni corporativa.",
+    "state": "SPECIAL",
+    "tradier_symbol": null,
+    "verified": "2026-08-14"
+  },
+  "IPG": {
+    "category": "3_fusion_delisting",
+    "name_snapshot": "Interpublic Group of Companies, Inc.",
+    "reason": "Interpublic Group fusionada con Omnicom Group, cerrada 2025-11-26. Fuente: PRNewswire/Omnicom, verificado por búsqueda web 2026-08-14.",
+    "state": "OBSOLETE",
+    "tradier_symbol": null,
+    "verified": "2026-08-14"
+  },
+  "IRBT": {
+    "category": "6_no_cubierto_confirmado",
+    "name_snapshot": "iRobot Corporation",
+    "reason": "Probado individual/aislado contra Tradier (fuera de lote grande) -- confirmado no reconocido, sin problema de formato ni causa corporativa encontrada.",
+    "state": "UNSUPPORTED",
+    "tradier_symbol": null,
+    "verified": "2026-08-14"
+  },
+  "JPMO": {
+    "category": "4_etf_especial",
+    "name_snapshot": "YieldMax JPM Option Income Strategy ETF",
+    "reason": "ETF de nicho (type=ETF en snapshot Racional) -- confirmado no resuelto en Tradier, sin explicación de formato ni corporativa.",
+    "state": "SPECIAL",
+    "tradier_symbol": null,
+    "verified": "2026-08-14"
+  },
+  "K": {
+    "category": "3_fusion_delisting",
+    "name_snapshot": "Kellogg Co.",
+    "reason": "Kellanova adquirida por Mars Inc. (US$36B), cerrada 2025-12-11, delistada de NYSE. Fuente: Mars/Kellanova press release, verificado por búsqueda web 2026-08-14.",
+    "state": "OBSOLETE",
+    "tradier_symbol": null,
+    "verified": "2026-08-14"
+  },
+  "KRMA": {
+    "category": "4_etf_especial",
+    "name_snapshot": "Global X Conscious Companies ETF",
+    "reason": "ETF de nicho (type=ETF en snapshot Racional) -- confirmado no resuelto en Tradier, sin explicación de formato ni corporativa.",
+    "state": "SPECIAL",
+    "tradier_symbol": null,
+    "verified": "2026-08-14"
+  },
+  "LIFWW": {
+    "category": "4_etf_especial",
+    "name_snapshot": "MSP RECOVERY INC. Warrants: 5/20/27",
+    "reason": "Warrants de MSP Recovery Inc. (vencimiento 2027) -- instrumento derivado, no la acción ordinaria (LIFW).",
+    "state": "SPECIAL",
+    "tradier_symbol": null,
+    "verified": "2026-08-14"
+  },
+  "LOKVU": {
+    "category": "4_etf_especial",
+    "name_snapshot": "Live Oak Acquisition Corp. V",
+    "reason": "Unidades (Units) de Live Oak Acquisition Corp V, un SPAC -- instrumento compuesto pre-fusión.",
+    "state": "SPECIAL",
+    "tradier_symbol": null,
+    "verified": "2026-08-14"
+  },
+  "MASI": {
+    "category": "6_no_cubierto_confirmado",
+    "name_snapshot": "Masimo Corp",
+    "reason": "Probado individual/aislado contra Tradier (fuera de lote grande) -- confirmado no reconocido, sin problema de formato ni causa corporativa encontrada.",
+    "state": "UNSUPPORTED",
+    "tradier_symbol": null,
+    "verified": "2026-08-14"
+  },
+  "MMC": {
+    "category": "2_renombrado",
+    "name_snapshot": "Marsh & McLennan Companies, Inc.",
+    "reason": "Marsh McLennan cambió su ticker NYSE de MMC a MRSH, efectivo 2026-01-14. Confirmado: MRSH resuelve en Tradier ($187.82). Fuente: comunicado corporativo de Marsh, verificado 2026-08-14.",
+    "state": "ACTIVE",
+    "tradier_symbol": "MRSH",
+    "verified": "2026-08-14 (segunda pasada)"
+  },
+  "MODG": {
+    "category": "2_renombrado",
+    "name_snapshot": "Callaway Golf Co",
+    "reason": "Topgolf Callaway Brands -- mismo caso que ELY: tras la separación, ambos tickers históricos (MODG y ELY) apuntan a CALY en Tradier. Confirmado: CALY resuelve ($16.48). Verificado 2026-08-14.",
+    "state": "ACTIVE",
+    "tradier_symbol": "CALY",
+    "verified": "2026-08-14 (segunda pasada)"
+  },
+  "MPW": {
+    "category": "2_renombrado",
+    "name_snapshot": "Medical Properties Trust Inc.",
+    "reason": "Medical Properties Trust -- Tradier indexa MPT (no MPW). Confirmado: MPT resuelve ($4.18). Verificado 2026-08-14.",
+    "state": "ACTIVE",
+    "tradier_symbol": "MPT",
+    "verified": "2026-08-14 (segunda pasada)"
+  },
+  "MTSR": {
+    "category": "3_fusion_delisting",
+    "name_snapshot": "Metsera Inc.",
+    "reason": "Metsera adquirida por Pfizer tras disputa de oferta con Novo Nordisk. Fuente: Pfizer press release, verificado por búsqueda web 2026-08-14.",
+    "state": "OBSOLETE",
+    "tradier_symbol": null,
+    "verified": "2026-08-14"
+  },
+  "NSA": {
+    "category": "6_no_cubierto_confirmado",
+    "name_snapshot": "National Storage Affiliates",
+    "reason": "Probado individual/aislado contra Tradier (fuera de lote grande) -- confirmado no reconocido, sin problema de formato ni causa corporativa encontrada.",
+    "state": "UNSUPPORTED",
+    "tradier_symbol": null,
+    "verified": "2026-08-14"
+  },
+  "PBR.A": {
+    "category": "1_formato",
+    "name_snapshot": "Petróleo Brasileiro Petrobras A-Shares",
+    "reason": "Tradier usa slash para clase de acción, no punto -- confirmado: PBR/A resuelve, PBR.A no.",
+    "state": "ACTIVE",
+    "tradier_symbol": "PBR/A",
+    "verified": "2026-08-14"
+  },
+  "PBRA": {
+    "category": "1_formato",
+    "name_snapshot": "Petróleo Brasileiro Petrobras A-Shares",
+    "reason": "Entrada duplicada del mismo instrumento que PBR.A (Petrobras A-Shares), mal codificada sin separador -- usar PBR/A.",
+    "state": "ACTIVE",
+    "tradier_symbol": "PBR/A",
+    "verified": "2026-08-14"
+  },
+  "PIN": {
+    "category": "4_etf_especial",
+    "name_snapshot": "Invesco India ETF",
+    "reason": "ETF de nicho (type=ETF en snapshot Racional) -- confirmado no resuelto en Tradier, sin explicación de formato ni corporativa.",
+    "state": "SPECIAL",
+    "tradier_symbol": null,
+    "verified": "2026-08-14"
+  },
+  "POAHY.OLD": {
+    "category": "1_formato",
+    "name_snapshot": "PORSCHE AUTOMOBIL-UNSP ADR",
+    "reason": "Sufijo .OLD es anotación interna de Racional, no de mercado -- confirmado: POAHY (Porsche Automobil Holding ADR) resuelve solo.",
+    "state": "ACTIVE",
+    "tradier_symbol": "POAHY",
+    "verified": "2026-08-14"
+  },
+  "PSTG": {
+    "category": "2_renombrado",
+    "name_snapshot": "Pure Storage, Inc.",
+    "reason": "Pure Storage se renombró a \"Everpure\" y cambió su ticker de PSTG a P, efectivo 2026-04-17. Confirmado: P resuelve en Tradier ($118.16, descripción \"Everpure Inc\"). Fuente: búsqueda web, verificado 2026-08-14.",
+    "state": "ACTIVE",
+    "tradier_symbol": "P",
+    "verified": "2026-08-14 (segunda pasada)"
+  },
+  "QVCGP": {
+    "category": "2_renombrado",
+    "name_snapshot": "QVC Group Inc",
+    "reason": "QVC Group -- Tradier indexa QVCG (no QVCGP) para el común. Confirmado: QVCG resuelve ($15.225). Verificado 2026-08-14.",
+    "state": "ACTIVE",
+    "tradier_symbol": "QVCG",
+    "verified": "2026-08-14 (segunda pasada)"
+  },
+  "RENB": {
+    "category": "6_no_cubierto_confirmado",
+    "name_snapshot": "ENOCHIAN BIOSCIENCES INC",
+    "reason": "Probado individual/aislado contra Tradier (fuera de lote grande) -- confirmado no reconocido, sin problema de formato ni causa corporativa encontrada. (ticker ACTUAL de Renovaro Biosciences, post-renombre -- confirmado sin explicación).",
+    "state": "UNSUPPORTED",
+    "tradier_symbol": null,
+    "verified": "2026-08-14"
+  },
+  "REVG": {
+    "category": "6_no_cubierto_confirmado",
+    "name_snapshot": "REV Group Inc.",
+    "reason": "Probado individual/aislado contra Tradier (fuera de lote grande) -- confirmado no reconocido, sin problema de formato ni causa corporativa encontrada.",
+    "state": "UNSUPPORTED",
+    "tradier_symbol": null,
+    "verified": "2026-08-14"
+  },
+  "RVYL": {
+    "category": "6_no_cubierto_confirmado",
+    "name_snapshot": "GreenBox POS",
+    "reason": "Probado individual/aislado contra Tradier (fuera de lote grande) -- confirmado no reconocido, sin problema de formato ni causa corporativa encontrada. (ticker ACTUAL de RYVYL Inc, post-renombre -- confirmado sin explicación).",
+    "state": "UNSUPPORTED",
+    "tradier_symbol": null,
+    "verified": "2026-08-14"
+  },
+  "SATS": {
+    "category": "2_renombrado",
+    "name_snapshot": "EchoStar Corp.",
+    "reason": "EchoStar Corp -- Tradier indexa ECHO (no SATS). Confirmado: ECHO resuelve ($91.89). Verificado 2026-08-14.",
+    "state": "ACTIVE",
+    "tradier_symbol": "ECHO",
+    "verified": "2026-08-14 (segunda pasada)"
+  },
+  "SEVCD": {
+    "category": "2_renombrado",
+    "name_snapshot": "SONO GROUP N.V.",
+    "reason": "Sono Group N.V. -- Tradier consolida las variantes bajo SSM. Confirmado: SSM resuelve ($2.63). Verificado 2026-08-14.",
+    "state": "ACTIVE",
+    "tradier_symbol": "SSM",
+    "verified": "2026-08-14 (segunda pasada)"
+  },
+  "SEVCF": {
+    "category": "2_renombrado",
+    "name_snapshot": "SONO GROUP N.V.",
+    "reason": "Sono Group N.V. -- ídem SEVCD, consolidado bajo SSM. Verificado 2026-08-14.",
+    "state": "ACTIVE",
+    "tradier_symbol": "SSM",
+    "verified": "2026-08-14 (segunda pasada)"
+  },
+  "SEVCQ": {
+    "category": "2_renombrado",
+    "name_snapshot": "SONO GROUP N.V.",
+    "reason": "Sono Group N.V. -- ídem SEVCD, consolidado bajo SSM. Verificado 2026-08-14.",
+    "state": "ACTIVE",
+    "tradier_symbol": "SSM",
+    "verified": "2026-08-14 (segunda pasada)"
+  },
+  "SIXG": {
+    "category": "4_etf_especial",
+    "name_snapshot": "Defiance Connective Technologies ETF",
+    "reason": "ETF de nicho (type=ETF en snapshot Racional) -- confirmado no resuelto en Tradier, sin explicación de formato ni corporativa.",
+    "state": "SPECIAL",
+    "tradier_symbol": null,
+    "verified": "2026-08-14"
+  },
+  "SNBR": {
+    "category": "6_no_cubierto_confirmado",
+    "name_snapshot": "Sleep Number Corporation",
+    "reason": "Probado individual/aislado contra Tradier (fuera de lote grande) -- confirmado no reconocido, sin problema de formato ni causa corporativa encontrada.",
+    "state": "UNSUPPORTED",
+    "tradier_symbol": null,
+    "verified": "2026-08-14"
+  },
+  "SOL": {
+    "category": "6_no_cubierto_confirmado",
+    "name_snapshot": "Emeren Group Ltd",
+    "reason": "Probado individual/aislado contra Tradier (fuera de lote grande) -- confirmado no reconocido, sin problema de formato ni causa corporativa encontrada. (ticker ACTUAL de Emeren Group, post-renombre de ReneSola -- confirmado sin explicación).",
+    "state": "UNSUPPORTED",
+    "tradier_symbol": null,
+    "verified": "2026-08-14"
+  },
+  "SPLG": {
+    "category": "4_etf_especial",
+    "name_snapshot": "SPDR Portfolio Large Cap ETF",
+    "reason": "ETF de nicho (type=ETF en snapshot Racional) -- confirmado no resuelto en Tradier, sin explicación de formato ni corporativa.",
+    "state": "SPECIAL",
+    "tradier_symbol": null,
+    "verified": "2026-08-14"
+  },
+  "SWIN": {
+    "category": "2_renombrado",
+    "name_snapshot": "Solowin Holdings Ltd",
+    "reason": "Solowin Holdings -- Tradier indexa AXG (no SWIN). Confirmado: AXG resuelve ($2.70). Verificado 2026-08-14.",
+    "state": "ACTIVE",
+    "tradier_symbol": "AXG",
+    "verified": "2026-08-14 (segunda pasada)"
+  },
+  "THS": {
+    "category": "6_no_cubierto_confirmado",
+    "name_snapshot": "TreeHouse Foods, Inc.",
+    "reason": "Probado individual/aislado contra Tradier (fuera de lote grande) -- confirmado no reconocido, sin problema de formato ni causa corporativa encontrada.",
+    "state": "UNSUPPORTED",
+    "tradier_symbol": null,
+    "verified": "2026-08-14"
+  },
+  "TKO.OLD": {
+    "category": "1_formato",
+    "name_snapshot": "World Wrestling Entertainment Inc.",
+    "reason": "Sufijo .OLD es anotación interna de Racional -- confirmado: TKO (TKO Group Holdings, ex-WWE) resuelve solo.",
+    "state": "ACTIVE",
+    "tradier_symbol": "TKO",
+    "verified": "2026-08-14"
+  },
+  "TPH": {
+    "category": "6_no_cubierto_confirmado",
+    "name_snapshot": "TRI Pointe Homes Inc.",
+    "reason": "Probado individual/aislado contra Tradier (fuera de lote grande) -- confirmado no reconocido, sin problema de formato ni causa corporativa encontrada.",
+    "state": "UNSUPPORTED",
+    "tradier_symbol": null,
+    "verified": "2026-08-14"
+  },
+  "TRUE.OLD": {
+    "category": "3_fusion_delisting",
+    "name_snapshot": "TrueCar, Inc.",
+    "reason": "TrueCar Inc. -- ni TRUE ni TRUE.OLD resuelven (se descartó problema de formato). Sufijo .OLD de Racional sugiere ticker ya superado en su propio sistema. NO reverificado con fuente externa en esta sesión (confianza media).",
+    "state": "OBSOLETE",
+    "tradier_symbol": null,
+    "verified": "2026-08-14"
+  },
+  "UTF.RT": {
+    "category": "4_etf_especial",
+    "name_snapshot": "Cohen & Steers Infrastructure Fund Inc",
+    "reason": "Right (derecho temporal) de Cohen & Steers Infrastructure Fund -- confirmado que el fondo base UTF SÍ resuelve; el Right como instrumento aparte no. No se normaliza a UTF por ser instrumentos financieros distintos.",
+    "state": "SPECIAL",
+    "tradier_symbol": null,
+    "verified": "2026-08-14"
+  },
+  "VRNA": {
+    "category": "3_fusion_delisting",
+    "name_snapshot": "VERONA PHARMA PLC - ADR",
+    "reason": "Verona Pharma adquirida por Merck (US$10B), cerrada 2025-10-07, delistada de Nasdaq. Fuente: Merck/MSD press release, verificado por búsqueda web 2026-08-14.",
+    "state": "OBSOLETE",
+    "tradier_symbol": null,
+    "verified": "2026-08-14"
+  },
+  "VSCO": {
+    "category": "6_no_cubierto_confirmado",
+    "name_snapshot": "Victoria's Secret & Co",
+    "reason": "Probado individual/aislado contra Tradier (fuera de lote grande) -- confirmado no reconocido, sin problema de formato ni causa corporativa encontrada.",
+    "state": "UNSUPPORTED",
+    "tradier_symbol": null,
+    "verified": "2026-08-14"
+  },
+  "ZYXI": {
+    "category": "3_fusion_delisting",
+    "name_snapshot": "Zynex Inc",
+    "reason": "Zynex Inc entró en Chapter 11 el 2025-12-15, delistada de Nasdaq, movida a OTC como ZYXIQ (penny stock, ~$0.055 -- reorganización, no la misma acción). Fuente: SEC 8-K + Globe and Mail, verificado 2026-08-14.",
+    "state": "OBSOLETE",
+    "tradier_symbol": null,
+    "verified": "2026-08-14 (segunda pasada)"
+  }
+}

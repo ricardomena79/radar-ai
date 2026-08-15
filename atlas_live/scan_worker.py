@@ -217,12 +217,44 @@ def _prefilter_movers(chunk: List[Asset]) -> List[Asset]:
     return [a for a, _ in equities[:TOP_MOVERS_EQUITIES]] + [a for a, _ in etfs[:TOP_MOVERS_ETFS]]
 
 
-def _build_watchlist(include_dynamic_movers: bool = True) -> Dict[str, Asset]:
-    """Arma el watchlist real que se escanea cada ciclo, en tres capas:
+def _radar_candidates_layer(by_symbol: Dict[str, "Asset"]) -> List[Asset]:
+    """Candidatas detectadas HOY por el radar de universo completo
+    (`atlas_live.radar`, Tradier sobre ~2.575 símbolos) -- fuente PRINCIPAL
+    del watchlist desde 2026-08-14 (CAPA 2). Aislada en su propio
+    try/except a propósito: si el radar está deshabilitado
+    (`ATLAS_RADAR_ENABLED=false`), recién arrancó y todavía no detectó
+    nada, o la tabla no existe por cualquier motivo, esta capa queda vacía
+    y el resto de `_build_watchlist` sigue funcionando exactamente igual
+    que antes -- nunca rompe el ciclo de escaneo."""
+    try:
+        from atlas_live.memory import market_hours
+        from atlas_live.radar import candidate_registry as radar_registry
 
-    1. Muestreo estratificado de siempre (base de diversidad, sin cambios).
-    2. Movers reales detectados por el pre-filtro rotativo -- lo nuevo de
-       este cambio, ver PREFILTER_CHUNK_SIZE arriba.
+        market_date = market_hours.market_date()
+        candidatas = radar_registry.list_candidates_for_date(market_date)
+        out = []
+        for c in candidatas:
+            asset = by_symbol.get(c["ticker"])
+            if asset is not None:
+                out.append(asset)
+        return out
+    except Exception:
+        return []
+
+
+def _build_watchlist(include_dynamic_movers: bool = True) -> Dict[str, Asset]:
+    """Arma el watchlist real que se escanea cada ciclo, en cuatro capas:
+
+    0. Candidatas del radar de universo completo (`atlas_live.radar`,
+       Tradier) -- capa PRINCIPAL desde 2026-08-14 (CAPA 2): todo lo que el
+       barrido de ~2.575 símbolos detectó HOY por cualquiera de sus puertas
+       independientes entra acá, sin importar si está entre los primeros
+       de ninguna muestra.
+    1. Muestreo estratificado de siempre (RESPALDO/compatibilidad, sin
+       cambios de comportamiento -- ver DECISIÓN 2026-08-14: se conserva a
+       propósito, no se elimina).
+    2. Movers reales detectados por el pre-filtro rotativo (RESPALDO,
+       tampoco se elimina).
     3. REQUIRED_SYMBOLS -- piso fijo, exactamente igual que antes.
 
     `include_dynamic_movers=False` se usa desde el único call site que no
@@ -230,9 +262,18 @@ def _build_watchlist(include_dynamic_movers: bool = True) -> Dict[str, Asset]:
     Flow Engine cuando todavía no hay ningún escaneo en caché) para no
     pagar el costo del pre-filtro en un camino que no lo necesita.
     """
-    equities = _stratified_sample(get_equities(), WATCHLIST_EQUITIES)
-    etfs = _stratified_sample(get_etfs(), WATCHLIST_ETFS)
-    watchlist = {asset.symbol: asset for asset in equities + etfs}
+    equities_pool = get_equities()
+    etfs_pool = get_etfs()
+    by_symbol = {asset.symbol: asset for asset in equities_pool + etfs_pool}
+
+    watchlist: Dict[str, Asset] = {}
+    for asset in _radar_candidates_layer(by_symbol):
+        watchlist[asset.symbol] = asset
+
+    equities = _stratified_sample(equities_pool, WATCHLIST_EQUITIES)
+    etfs = _stratified_sample(etfs_pool, WATCHLIST_ETFS)
+    for asset in equities + etfs:
+        watchlist[asset.symbol] = asset
 
     if include_dynamic_movers:
         for asset in _prefilter_movers(_next_prefilter_chunk()):
@@ -244,7 +285,7 @@ def _build_watchlist(include_dynamic_movers: bool = True) -> Dict[str, Asset]:
             # de este cambio) es un ETF apalancado, no una acción: buscar
             # solo en get_equities() lo dejaba sin garantía real pese a
             # figurar en la lista (bug preexistente, corregido acá).
-            for asset in get_equities() + get_etfs():
+            for asset in equities_pool + etfs_pool:
                 if asset.symbol == symbol:
                     watchlist[symbol] = asset
                     break

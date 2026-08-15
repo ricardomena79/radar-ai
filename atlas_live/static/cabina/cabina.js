@@ -1213,7 +1213,82 @@ function renderEstudio() {
   }
 }
 
+let _radarUniverso = null;
+let _radarInforme = null;
+
+async function fetchRadarUniverso() {
+  try {
+    const res = await fetch("/api/radar-universo");
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    _radarUniverso = await res.json();
+  } catch (err) {
+    console.error("fetchRadarUniverso:", err);
+    _radarUniverso = null;
+  }
+  try {
+    const res2 = await fetch("/api/radar-informe-dia");
+    if (res2.ok) _radarInforme = await res2.json();
+  } catch (err) {
+    console.error("fetchRadarInforme:", err);
+  }
+  renderRadarUniverso();
+}
+
+function renderRadarUniverso() {
+  const stEl = document.getElementById("radar-universo-estado");
+  const candEl = document.getElementById("radar-universo-candidatas");
+  const infEl = document.getElementById("radar-universo-informe");
+  if (!stEl || !candEl || !infEl) return;
+  const fmtN = (v) => (v === null || v === undefined) ? "—" : Number(v).toLocaleString("es");
+  if (!_radarUniverso || !_radarUniverso.status) {
+    stEl.innerHTML = candEl.innerHTML = infEl.innerHTML = `<div class="empty-state">No disponible.</div>`;
+    return;
+  }
+  const s = _radarUniverso.status;
+  const stateBadge = {
+    RUNNING: '<span class="pill-green">EJECUTANDO</span>', EOD_COMPLETO: '<span class="pill-green">CIERRE EVALUADO</span>',
+    ERROR: '<span class="pill-red">ERROR</span>', IDLE: '<span class="pill-dim">EN ESPERA</span>',
+  }[s.state] || `<span class="pill-dim">${s.state || "—"}</span>`;
+  const card = (icon, label, value, sub) =>
+    `<div class="lh-card"><div class="lh-icon">${icon}</div><div class="lh-label">${label}</div><div class="lh-value">${value}</div>${sub ? `<div class="lh-sub">${sub}</div>` : ""}</div>`;
+  stEl.innerHTML =
+    card("⚙", "Estado", stateBadge, `sesión: ${s.session_actual || "—"}`) +
+    card("🔁", "Barridos", fmtN(s.sweeps_total), `ok: ${fmtN(s.sweeps_ok)} · error: ${fmtN(s.sweeps_error)}`) +
+    card("🕐", "Último barrido", s.ultimo_sweep_at ? fmtTimeSec(s.ultimo_sweep_at) + " ET" : "—", s.ultimo_sweep_duracion_s ? `${s.ultimo_sweep_duracion_s}s` : "") +
+    card("🎯", "Candidatas hoy", fmtN(s.candidatas_hoy), s.market_date_actual || "");
+
+  const candidatas = (_radarUniverso.candidatas_hoy || []).slice(0, 40);
+  if (!candidatas.length) {
+    candEl.innerHTML = `<div class="empty-state">Sin candidatas detectadas todavía en el día actual.</div>`;
+  } else {
+    candEl.innerHTML = `<div style="overflow-x:auto"><table class="data-table">
+      <thead><tr><th>Ticker</th><th>Detectada</th><th style="text-align:right">Precio</th><th style="text-align:right">Cambio %</th><th style="text-align:right">RVOL</th><th>Puertas</th></tr></thead>
+      <tbody>${candidatas.map(c => `<tr>
+        <td>${c.ticker}</td><td>${fmtTimeSec(c.detected_at)} ET</td>
+        <td style="text-align:right">${c.price_at_detection != null ? "$" + fmtNum(c.price_at_detection) : "—"}</td>
+        <td style="text-align:right;font-weight:600">${c.change_pct_at_detection != null ? fmtNum(c.change_pct_at_detection) + "%" : "—"}</td>
+        <td style="text-align:right">${c.relative_volume_at_detection != null ? fmtNum(c.relative_volume_at_detection) + "x" : "—"}</td>
+        <td>${(c.gates_fired || []).map(g => g.name).join(", ")}</td></tr>`).join("")}</tbody></table></div>`;
+  }
+
+  const resumen = _radarInforme && _radarInforme.resumen;
+  if (!resumen) {
+    infEl.innerHTML = `<div class="empty-state">El informe de cierre corre automáticamente cuando termina el mercado regular.</div>`;
+  } else {
+    infEl.innerHTML = `<div class="detail-grid">
+      <div class="detail-metric"><div class="detail-metric-label">Candidatas</div><div class="detail-metric-value">${fmtN(resumen.n_candidatas)}</div></div>
+      <div class="detail-metric"><div class="detail-metric-label">≥ +20%</div><div class="detail-metric-value">${fmtN(resumen.n_reached_20)}</div></div>
+      <div class="detail-metric"><div class="detail-metric-label">≥ +50%</div><div class="detail-metric-value">${fmtN(resumen.n_reached_50)}</div></div>
+      <div class="detail-metric"><div class="detail-metric-label">≥ +100%</div><div class="detail-metric-value">${fmtN(resumen.n_reached_100)}</div></div>
+      <div class="detail-metric"><div class="detail-metric-label">Falsas señales</div><div class="detail-metric-value">${fmtN(resumen.n_falsas_senales)}</div></div>
+      <div class="detail-metric"><div class="detail-metric-label">Detección tardía</div><div class="detail-metric-value">${fmtN(resumen.n_deteccion_tardia)}</div></div>
+    </div>
+    <div class="detail-note" style="margin-top:8px">"Detección tardía" = la acción ya había corrido la mayor parte del movimiento ANTES de que el radar la detectara -- no cuenta como buen acierto operativo aunque el día haya cerrado muy arriba.</div>`;
+  }
+}
+
 function startPanelStatusPolling() {
+  fetchRadarUniverso();
   fetchEstudio();
   fetchSignals();
   fetchExplosionHistory();
@@ -1232,6 +1307,7 @@ function startPanelStatusPolling() {
   setInterval(fetchExplosionHistory, PANEL_STATUS_POLL_MS);
   setInterval(fetchSignals, PANEL_STATUS_POLL_MS);
   setInterval(fetchEstudio, PANEL_STATUS_POLL_MS);
+  setInterval(fetchRadarUniverso, PANEL_STATUS_POLL_MS);
 }
 
 /* 📸 Guardar Estado del Día -- aprobado el 2026-08-02, último elemento

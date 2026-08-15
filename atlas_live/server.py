@@ -55,6 +55,17 @@ scan_worker.start_background_refresh()
 from atlas_live.market_study import study_worker
 study_worker.start_study_worker()
 
+# CAPA 2 -- radar de universo completo (2026-08-14): hilo de fondo propio
+# (Hilo A), igual patrón que study_worker -- barre los ~2.575 símbolos del
+# universo Racional vía Tradier con cadencia propia (auto-ajustada, no los
+# 300s del ciclo de scoring), detecta candidatas con puertas independientes,
+# y alimenta _build_watchlist() como fuente PRINCIPAL (los mecanismos
+# anteriores -- muestra estratificada, pre-filtro de movers -- se conservan
+# como respaldo, no se eliminan). Se habilita/deshabilita por
+# ATLAS_RADAR_ENABLED (default: encendido).
+from atlas_live.radar import radar_worker
+radar_worker.start_universe_radar()
+
 
 @app.route("/")
 def index():
@@ -202,6 +213,41 @@ def api_market_study():
         "status": study_registry.study_status(),
         "summary": study_registry.summary(),
         "top_explosions": study_registry.list_explosions(limit=50),
+    })
+
+
+@app.route("/api/radar-universo")
+def api_radar_universo():
+    """Radar de universo completo (CAPA 2, 2026-08-14): estado del Hilo A
+    (barridos, última corrida, candidatas de hoy) + la lista de candidatas
+    detectadas hoy con sus condiciones EN el momento de detección. Solo
+    lectura -- no dispara ningún barrido (eso corre aparte, ver
+    atlas_live/radar/radar_worker.py)."""
+    from atlas_live.memory import market_hours as _mh
+    from atlas_live.radar import candidate_registry as radar_registry
+
+    market_date = _mh.market_date()
+    return jsonify({
+        "status": radar_registry.radar_status(),
+        "candidatas_hoy": radar_registry.list_candidates_for_date(market_date),
+    })
+
+
+@app.route("/api/radar-informe-dia")
+def api_radar_informe_dia():
+    """Informe de cierre del radar (2026-08-14): condiciones en detección vs.
+    resultado real posterior, por candidata -- la base del aprendizaje.
+    Vacío/parcial hasta que el mercado regular cierre y corra la evaluación
+    (`radar_worker.maybe_run_eod_evaluation`, automática, una vez por día)."""
+    from atlas_live.memory import market_hours as _mh
+    from atlas_live.radar import candidate_registry as radar_registry
+
+    date_param = request.args.get("date") or _mh.market_date()
+    return jsonify({
+        "market_date": date_param,
+        "resumen": radar_registry.get_meta().get("eod_resumen"),
+        "outcomes": radar_registry.list_outcomes_for_date(date_param),
+        "candidatas": radar_registry.list_candidates_for_date(date_param),
     })
 
 
