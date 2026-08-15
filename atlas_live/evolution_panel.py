@@ -87,19 +87,28 @@ def _financiero(global_perf: Dict[str, Any], cerrados: List[Dict[str, Any]]) -> 
 # ---------------------------------------------------------------------------
 
 def _aprendizaje(now: datetime) -> Dict[str, Any]:
+    """ADVERTENCIA (2026-08-15, ver PROPUESTA_MADUREZ_APRENDIZAJE.md): el
+    campo `memory_engine_condition_coverage_pct` de acá abajo (antes
+    `nivel_aprendizaje_pct`) **ya NO es "el aprendizaje de Atlas"**. Es un
+    diagnóstico interno del Memory Engine v1 (fracción de una grilla FIJA de
+    14 condiciones univariadas que superan un umbral de Wilson, mezclando
+    observaciones históricas y en vivo del Memory Store congelado) --
+    exactamente el cálculo que producía el "71.4% (10/14 condiciones)" que
+    el usuario reportó como incorrecto tras el reset del aprendizaje. La
+    Madurez real de Atlas vive en `atlas_live.learning.maturity`
+    (`/api/learning-maturity`), separada por completo de esta función.
+    Este campo se conserva solo como diagnóstico interno del motor v1 -- si
+    algún día se muestra en la Cabina, debe etiquetarse explícitamente como
+    tal, nunca como "Aprendizaje" ni "Madurez"."""
     resumen = live_integration.get_memory_engine_summary(now)
     casos = store.count_observations()
     confiables = resumen.get("reliable_condition_count")
     total_condiciones = len(ca.CONDITION_GRID)
 
-    # Nivel de aprendizaje = fracción de las condiciones evaluadas que ya
-    # alcanzaron confiabilidad estadística (límite inferior de Wilson por
-    # encima del baseline). Es un dato real, no un compuesto arbitrario.
-    # Si todavía no hay observaciones, es "No disponible" -- no se fabrica.
     if casos and total_condiciones > 0 and confiables is not None:
-        nivel = round(confiables / total_condiciones * 100, 1)
+        memory_engine_condition_coverage_pct = round(confiables / total_condiciones * 100, 1)
     else:
-        nivel = None
+        memory_engine_condition_coverage_pct = None
 
     # Histórico vs NUEVO (F6, 2026-08-09): el seed histórico ("v1", etc.)
     # NO se cuenta como aprendizaje nuevo. Solo las observaciones
@@ -128,9 +137,13 @@ def _aprendizaje(now: datetime) -> Dict[str, Any]:
         "ultima_observacion_at": store.last_recorded_at(source_version="live"),
         "ultimo_acierto_at": max(aciertos_ts) if aciertos_ts else None,
         "ultimo_fallo_at": max(fallos_ts) if fallos_ts else None,
-        "condiciones_evidencia_suficiente": confiables,
-        "condiciones_totales_evaluadas": total_condiciones,
-        "nivel_aprendizaje_pct": nivel,
+        "memory_engine_conditions_reliable": confiables,
+        "memory_engine_conditions_total": total_condiciones,
+        "memory_engine_condition_coverage_pct": memory_engine_condition_coverage_pct,
+        "memory_engine_nota": (
+            "Diagnóstico interno del Memory Engine v1 -- NO es el nivel de aprendizaje "
+            "de Atlas. Ver /api/learning-maturity para la Madurez real (11 ejes, cuello de botella)."
+        ),
         "ultima_actualizacion": resumen.get("last_recalibrated_on"),
     }
 

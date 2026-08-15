@@ -87,10 +87,14 @@ def test_run_eod_evaluation_completo_e_idempotente():
         assert report1.n_reached_20 == 1
         assert len(report1.mejores_oportunidades) == 1
 
-        # segunda corrida -- idempotente, no vuelve a evaluar ni duplica
+        # segunda corrida -- idempotente, no vuelve a evaluar ni duplica.
+        # n_evaluadas ahora refleja el TOTAL de outcomes del día (para que
+        # el resumen sea correcto aunque la corrida se reanude a medias),
+        # así que sigue en 1 -- lo que importa es que NO se duplicó la fila.
         report2 = eod.run_eod_evaluation("2026-08-14", provider)
-        assert report2.n_evaluadas == 0  # ya tenía outcome
+        assert report2.n_evaluadas == 1
         assert reg.has_outcome("XYZ", "2026-08-14")
+        assert len(reg.list_outcomes_for_date("2026-08-14")) == 1  # no se duplicó
     finally:
         _restore()
 
@@ -110,6 +114,33 @@ def test_run_eod_evaluation_detecta_posibles_no_detectadas():
         report = eod.run_eod_evaluation("2026-08-14", provider, last_sweep_quotes=ultimo_barrido)
         assert any(m["ticker"] == "MOONSHOT" for m in report.posibles_no_detectadas)
         assert not any(m["ticker"] == "XYZ" for m in report.posibles_no_detectadas)  # XYZ SÍ fue detectada
+    finally:
+        _restore()
+
+
+def test_direccion_correcta_y_resumen_diario():
+    _fresh()
+    try:
+        reg.record_detection("XYZ", "2026-08-14", "regular", "2026-08-14T13:32:00Z", "s1",
+                              10.5, 3.0, 1000, 500, 2.0, 10000, gates_fired=[{"name": "cambio_de_precio"}])
+        reg.set_phase_tag("XYZ", "2026-08-14", "al_comienzo", direction_at_detection="ALCISTA")
+        # velas posteriores suben con fuerza -- outcome también debería ser ALCISTA
+        prices = [10, 10.2, 10.5, 11, 12, 15, 14, 13]
+        provider = _FakeTradier({"XYZ": _df(prices)})
+        report = eod.run_eod_evaluation("2026-08-14", provider, n_estudiadas=2575)
+
+        assert report.n_estudiadas == 2575
+        assert report.n_direccion_correcta == 1
+        assert report.n_direccion_incorrecta == 0
+
+        resumen = reg.get_daily_summary("2026-08-14")
+        assert resumen is not None
+        assert resumen["n_estudiadas"] == 2575
+        assert resumen["n_candidatas"] == 1
+
+        acumulado = reg.cumulative_precision()
+        assert acumulado["n_dias"] == 1
+        assert acumulado["precision_pct"] is not None
     finally:
         _restore()
 

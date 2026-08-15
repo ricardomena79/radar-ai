@@ -107,6 +107,107 @@ def test_gates_fired_se_serializan_y_deserializan():
         _restore()
 
 
+def test_list_all_evaluated_candidates_solo_incluye_con_outcome():
+    _fresh()
+    try:
+        reg.record_detection("AAA", "2026-08-17", "regular", "2026-08-17T14:00:00Z", "s1",
+                              10.0, 5.0, 1, 1, 1.5, 10, gates_fired=[])
+        reg.record_detection("BBB", "2026-08-17", "regular", "2026-08-17T14:00:00Z", "s1",
+                              20.0, 8.0, 1, 1, 1.5, 20, gates_fired=[])
+        reg.set_phase_tag("AAA", "2026-08-17", "al_comienzo", direction_at_detection="ALCISTA")
+        reg.record_outcome("AAA", "2026-08-17", run_up_before_detection_pct=5.0,
+                            max_price_after_detection=12.0, max_return_after_detection_pct=25.0,
+                            minutes_to_max=10.0, reached_20=True, reached_50=False, reached_100=False,
+                            category="buena_oportunidad", direccion_correcta=True)
+        # BBB nunca recibe outcome -- todavía abierta, no debe aparecer
+
+        evaluados = reg.list_all_evaluated_candidates()
+        assert len(evaluados) == 1
+        assert evaluados[0]["ticker"] == "AAA"
+        assert evaluados[0]["phase_tag"] == "al_comienzo"
+        assert evaluados[0]["reached_20"] == 1
+    finally:
+        _restore()
+
+
+def test_list_daily_summaries_orden_ascendente():
+    _fresh()
+    try:
+        reg.record_daily_summary("2026-08-18", 100, 5, 3, 3, 1, 1, 0, 1, 0, 0)
+        reg.record_daily_summary("2026-08-17", 100, 4, 2, 2, 1, 0, 0, 1, 0, 0)
+        resumenes = reg.list_daily_summaries()
+        assert [r["market_date"] for r in resumenes] == ["2026-08-17", "2026-08-18"]
+    finally:
+        _restore()
+
+
+def test_recent_precision_numerador_y_denominador_explicitos():
+    _fresh()
+    try:
+        reg.record_daily_summary("2026-08-17", 100, 4, 2, 2, 1, 0, 0, 1, 0, 0)
+        reg.record_daily_summary("2026-08-18", 100, 4, 2, 3, 2, 0, 0, 1, 0, 0)
+        r = reg.recent_precision(window_days=21)
+        assert r["evaluables"] == 5
+        assert r["aciertos"] == 3
+        assert r["precision_pct"] == 60.0
+        assert r["desde"] == "2026-08-17" and r["hasta"] == "2026-08-18"
+    finally:
+        _restore()
+
+
+def test_set_experimental_signals_no_pisa_con_none():
+    _fresh()
+    try:
+        reg.record_detection("XYZ", "2026-08-17", "regular", "2026-08-17T14:00:00Z", "s1",
+                              10.0, 5.0, 1, 1, 1.5, 10, gates_fired=[])
+        reg.set_experimental_signals("XYZ", "2026-08-17", volatility_14d_pct=6.5)
+        reg.set_experimental_signals("XYZ", "2026-08-17", daily_range_pct=3.2)  # no debe borrar volatility_14d_pct
+        candidatas = reg.list_candidates_for_date("2026-08-17")
+        assert candidatas[0]["volatility_14d_pct_at_detection"] == 6.5
+        assert candidatas[0]["daily_range_pct_at_detection"] == 3.2
+    finally:
+        _restore()
+
+
+def test_early_vs_late_summary_agrupa_y_separa_direccion():
+    _fresh()
+    try:
+        casos = [
+            ("AAA", "al_comienzo", "ALCISTA", True, False, False),
+            ("BBB", "expansion_temprana", "ALCISTA", True, True, False),
+            ("CCC", "demasiado_tarde", "ALCISTA", False, False, False),
+            ("DDD", "antes_del_movimiento", "ALCISTA", False, False, False),
+            ("EEE", "al_comienzo", "BAJISTA", True, False, False),  # nunca debe sumarse con ALCISTA
+        ]
+        for ticker, phase_tag, direction, r20, r50, r100 in casos:
+            reg.record_detection(ticker, "2026-08-17", "regular", "2026-08-17T14:00:00Z", "s1",
+                                  10.0, 5.0, 1, 1, 1.5, 10, gates_fired=[])
+            reg.set_phase_tag(ticker, "2026-08-17", phase_tag, direction_at_detection=direction)
+            reg.record_outcome(ticker, "2026-08-17", run_up_before_detection_pct=5.0,
+                                max_price_after_detection=12.0, max_return_after_detection_pct=25.0,
+                                minutes_to_max=10.0, reached_20=r20, reached_50=r50, reached_100=r100,
+                                category="x")
+
+        resumen = reg.early_vs_late_summary()
+        assert resumen["ALCISTA"]["early_genuino"]["n"] == 2
+        assert resumen["ALCISTA"]["early_genuino"]["aciertos_20"] == 2
+        assert resumen["ALCISTA"]["late"]["n"] == 1
+        assert resumen["ALCISTA"]["antes_del_movimiento"]["n"] == 1
+        assert resumen["BAJISTA"]["early_genuino"]["n"] == 1
+    finally:
+        _restore()
+
+
+def test_recent_precision_sin_datos_devuelve_no_disponible():
+    _fresh()
+    try:
+        r = reg.recent_precision(window_days=21)
+        assert r["evaluables"] == 0
+        assert r["precision_pct"] is None
+    finally:
+        _restore()
+
+
 if __name__ == "__main__":
     import traceback
 

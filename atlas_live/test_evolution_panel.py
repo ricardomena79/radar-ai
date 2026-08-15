@@ -118,8 +118,9 @@ def test_aprendizaje_cuenta_trayectorias_y_muestras() -> None:
     assert apr["muestras_analizadas"] == 5, apr
     # Store vacío -> sin casos ni condiciones -> nivel "No disponible"
     assert apr["casos_similares_acumulados"] == 0
-    assert apr["nivel_aprendizaje_pct"] is None
-    assert apr["condiciones_totales_evaluadas"] > 0  # la grilla existe siempre
+    assert apr["memory_engine_condition_coverage_pct"] is None
+    assert apr["memory_engine_conditions_total"] > 0  # la grilla existe siempre
+    assert "no es el nivel de aprendizaje" in apr["memory_engine_nota"].lower()
     print("OK - trayectorias y muestras contadas desde datos reales del Exit Journal")
 
 
@@ -140,7 +141,7 @@ def test_sin_datos_no_inventa_nada() -> None:
     assert apr["trayectorias_almacenadas"] == 0
     assert apr["muestras_analizadas"] == 0
     assert apr["casos_similares_acumulados"] == 0
-    assert apr["nivel_aprendizaje_pct"] is None  # "No disponible", nunca 0 fabricado
+    assert apr["memory_engine_condition_coverage_pct"] is None  # "No disponible", nunca 0 fabricado
     print("OK - sin datos, todo queda None/'No disponible' -- ningún número inventado")
 
 

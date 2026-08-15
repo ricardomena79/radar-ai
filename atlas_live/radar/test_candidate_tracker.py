@@ -80,6 +80,76 @@ def test_aceleracion_dispara_en_barridos_sucesivos():
         _restore()
 
 
+def test_candidata_pasa_a_senal_en_el_segundo_barrido():
+    """Reinicio 2026-08-15: candidata = 1+ puerta en un barrido; señal =
+    sigue activa en un barrido posterior (no un parpadeo de un solo tick)."""
+    _fresh()
+    try:
+        h = SweepHistory()
+        tracker.process_sweep({"AAPL": _quote("AAPL", 305.0, 5.0, rvol=2.0)}, h, "2026-08-14", "regular", _now())
+        candidatas = reg.list_candidates_for_date("2026-08-14")
+        assert candidatas[0]["es_senal"] == 0  # todavía no -- es la primera vez que se ve
+
+        tracker.process_sweep({"AAPL": _quote("AAPL", 306.0, 5.3, rvol=2.1)}, h, "2026-08-14", "regular", _now())
+        candidatas = reg.list_candidates_for_date("2026-08-14")
+        assert candidatas[0]["es_senal"] == 1  # ya es la 2da vez -- pasa a señal
+    finally:
+        _restore()
+
+
+def test_candidata_tranquila_en_2do_barrido_tambien_pasa_a_senal():
+    """Mismo criterio aplica aunque el 2do barrido puntual no dispare
+    ninguna puerta -- lo que importa es que sigue siendo vista, no que siga
+    disparando."""
+    _fresh()
+    try:
+        h = SweepHistory()
+        tracker.process_sweep({"AAPL": _quote("AAPL", 305.0, 5.0, rvol=2.0)}, h, "2026-08-14", "regular", _now())
+        tracker.process_sweep({"AAPL": _quote("AAPL", 305.1, 0.2, rvol=1.0)}, h, "2026-08-14", "regular", _now())
+        candidatas = reg.list_candidates_for_date("2026-08-14")
+        assert candidatas[0]["es_senal"] == 1
+    finally:
+        _restore()
+
+
+def test_daily_range_pct_se_calcula_desde_high_low_del_quote():
+    """Experimento C (2026-08-16) -- diagnóstico puro, calculado del propio
+    Quote del barrido, sin red adicional."""
+    _fresh()
+    try:
+        h = SweepHistory()
+        q = Quote(symbol="AAPL", name="AAPL", last_price=100.0, change_percent=5.0,
+                   volume=500, open=98.0, high=104.0, low=97.0, previous_close=95.0,
+                   average_volume=500, relative_volume=2.0)
+        tracker.process_sweep({"AAPL": q}, h, "2026-08-14", "regular", _now())
+        candidatas = reg.list_candidates_for_date("2026-08-14")
+        # (104-97)/100 * 100 = 7.0
+        assert candidatas[0]["daily_range_pct_at_detection"] == 7.0
+    finally:
+        _restore()
+
+
+def test_volatility_14d_pct_sale_de_la_base_historica_si_existe():
+    """Experimento A (2026-08-16) -- usa la última lectura de
+    `reference_registry`, nunca del día en curso. Sin historial de
+    referencia para el símbolo, queda None (no se inventa nada)."""
+    _fresh()
+    try:
+        from atlas_live.reference import reference_registry as ref_reg
+
+        orig = ref_reg.latest_volatility_14d_pct
+        ref_reg.latest_volatility_14d_pct = lambda symbol: 8.5 if symbol == "AAPL" else None
+        try:
+            h = SweepHistory()
+            tracker.process_sweep({"AAPL": _quote("AAPL", 305.0, 5.0, rvol=2.0)}, h, "2026-08-14", "regular", _now())
+            candidatas = reg.list_candidates_for_date("2026-08-14")
+            assert candidatas[0]["volatility_14d_pct_at_detection"] == 8.5
+        finally:
+            ref_reg.latest_volatility_14d_pct = orig
+    finally:
+        _restore()
+
+
 def test_reset_de_dia_limpia_el_historial():
     _fresh()
     try:

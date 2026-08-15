@@ -147,7 +147,14 @@ class TradierProvider(DataProvider):
             HISTORY_PATH,
             {"symbol": symbol, "interval": tradier_interval, "start": start.isoformat(), "end": end.isoformat()},
         )
-        rows = data.get("history", {}).get("day")
+        # `data.get("history", {})` no alcanza: para símbolos sin historial
+        # (confirmados en la investigación de CAPA 1 -- ej. AL, ANZU, APLS)
+        # Tradier devuelve literalmente `{"history": null}` -- la clave
+        # EXISTE con valor None, así que el default de `.get()` nunca se
+        # usa y `.get("day")` explota con AttributeError. Encontrado en
+        # vivo (2026-08-15) corriendo el batch histórico real.
+        history = data.get("history") or {}
+        rows = history.get("day")
         if not rows:
             raise QuoteNotFoundError(symbol)
         if isinstance(rows, dict):

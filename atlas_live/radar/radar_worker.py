@@ -160,18 +160,26 @@ def maybe_run_eod_evaluation() -> bool:
         return False
 
     try:
-        report = eod.run_eod_evaluation(market_date, tradier_provider, last_sweep_quotes=_last_quotes or None)
+        n_estudiadas = int(meta.get("ultimo_n_evaluados") or 0) or len(_last_quotes) or None
+        report = eod.run_eod_evaluation(
+            market_date, tradier_provider, last_sweep_quotes=_last_quotes or None, n_estudiadas=n_estudiadas
+        )
         reg.set_meta(
             state="EOD_COMPLETO",
             eod_resumen={
                 "market_date": report.market_date,
+                "n_estudiadas": report.n_estudiadas,
                 "n_candidatas": report.n_candidatas,
+                "n_senales": report.n_senales,
                 "n_evaluadas": report.n_evaluadas,
+                "n_aciertos": report.n_aciertos,
                 "n_reached_20": report.n_reached_20,
                 "n_reached_50": report.n_reached_50,
                 "n_reached_100": report.n_reached_100,
                 "n_falsas_senales": report.n_falsas_senales,
                 "n_deteccion_tardia": report.n_deteccion_tardia,
+                "n_direccion_correcta": report.n_direccion_correcta,
+                "n_direccion_incorrecta": report.n_direccion_incorrecta,
                 "n_mejores_oportunidades": len(report.mejores_oportunidades),
                 "n_posibles_no_detectadas": len(report.posibles_no_detectadas),
             },

@@ -766,38 +766,37 @@ async function fetchMissionControl() {
 
 /* Indicadores permanentes de la barra superior: 🧠 Aprendizaje y 🎯 Confianza.
  *
- * ÚNICA FUENTE DE VERDAD (2026-08-09): se alimentan de `_evolution`
- * (/api/evolution), EXACTAMENTE la misma fuente real que la vista Evolución.
- * Antes usaban `/api/learning-status`, un stub que devolvía "Observando · 0
- * obs" pese a que el Memory Engine ya tiene 73.123 observaciones -- eso
- * generaba una contradicción visible entre la barra y Evolución. Ya no se
- * consulta ese stub. Nada se inventa: si no hay dato, "No disponible". */
+ * ÚNICA FUENTE DE VERDAD (2026-08-15): "🧠 Aprendizaje" se alimenta de
+ * `_learningMaturity` (/api/learning-maturity) -- la Madurez real (11 ejes,
+ * cuello de botella), NUNCA un porcentaje. Antes mostraba
+ * `nivel_aprendizaje_pct` (condiciones_confiables/14 del Memory Engine v1,
+ * mezclaba histórico y en vivo) -- ese cálculo generó el "71.4% (10/14)"
+ * que seguía apareciendo después del reset del aprendizaje. Ver
+ * PROPUESTA_MADUREZ_APRENDIZAJE.md. "🎯 Confianza" no cambia en esta ronda
+ * -- sigue viniendo de /api/evolution (precisión histórica del Clasificador,
+ * concepto distinto, fuera de alcance de este cambio). */
 function renderTopbarLearning() {
   const learnEl = document.getElementById("topbar-learning-text");
   const confEl = document.getElementById("topbar-confidence-text");
   if (!learnEl || !confEl) return;
 
-  if (!_evolution) {
+  if (!_learningMaturity) {
     learnEl.innerHTML = `<span class="pill-dim">cargando…</span>`;
+  } else {
+    const m = _learningMaturity.madurez || {};
+    const estado = m.estado || "Sin evidencia";
+    const nivelClass = (m.nivel >= 5) ? "pill-green" : (m.nivel >= 2 ? "pill-amber" : "pill-dim");
+    learnEl.innerHTML = `<span class="${nivelClass}">${estado}</span>` +
+      (m.eje_limitante ? ` · limita: ${m.eje_limitante}` : "");
+    document.getElementById("topbar-learning").title =
+      (m.explicacion || "Madurez del aprendizaje: mínimo de 11 ejes independientes de evidencia (nunca un promedio). Ver la vista Evolución para el detalle de cada eje.");
+  }
+
+  if (!_evolution) {
     confEl.innerHTML = `<span class="pill-dim">--</span>`;
     return;
   }
-  const a = _evolution.evolucion_aprendizaje || {};
   const p = _evolution.precision_del_modelo || {};
-
-  // 🧠 Aprendizaje: nivel real + observaciones reales (histórico + nuevas hoy)
-  // + última recalibración real. Sin "Observando" ni "0 obs" falsos.
-  const nivel = (a.nivel_aprendizaje_pct === null || a.nivel_aprendizaje_pct === undefined)
-    ? `<span class="pill-dim">Sin evidencia</span>`
-    : `<span class="pill-green">${fmtNum(a.nivel_aprendizaje_pct)}%</span>`;
-  const obs = (a.observaciones_totales !== null && a.observaciones_totales !== undefined)
-    ? Number(a.observaciones_totales).toLocaleString("es") : "--";
-  const nuevas = (a.observaciones_nuevas_hoy !== null && a.observaciones_nuevas_hoy !== undefined)
-    ? a.observaciones_nuevas_hoy : 0;
-  const act = a.ultima_actualizacion || "--";
-  learnEl.innerHTML = `${nivel} · ${obs} obs · +${nuevas} hoy · act. ${act}`;
-  document.getElementById("topbar-learning").title =
-    "Nivel de aprendizaje = condiciones con evidencia suficiente / total (Memory Engine). Misma fuente real que la vista Evolución. Observaciones históricas + nuevas de hoy, con su última recalibración real.";
 
   // 🎯 Confianza = precisión histórica real (aciertos sobre casos cerrados).
   // Si aún no hay casos cerrados evaluados -> "No disponible" (nunca inventado).
@@ -831,38 +830,59 @@ async function fetchEvolution() {
   renderEvolution();
 }
 
-// Headline de aprendizaje en tiempo real (F6, 2026-08-09). Reúne las
-// métricas clave -- aprendizaje, aciertos/fallos/precisión, histórico vs
-// nuevo, y timestamps reales -- de forma prominente. Todo sale de datos
-// reales (/api/evolution); lo que no existe todavía dice "No disponible",
-// nunca 0% ni un timestamp inventado.
+/* Aprendizaje en Vivo + Madurez (2026-08-15, ver PROPUESTA_MADUREZ_APRENDIZAJE.md).
+ * ÚNICA fuente real de la barra superior "🧠 Aprendizaje" y de la sección
+ * "Aprendizaje en Vivo" de la vista Evolución -- ya NO /api/evolution
+ * (ese cálculo -- condiciones_confiables/14 -- queda como diagnóstico
+ * interno del Memory Engine v1, nunca se presenta como "Aprendizaje"). */
+let _learningMaturity = null;
+
+async function fetchLearningMaturity() {
+  try {
+    const res = await fetch("/api/learning-maturity");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    _learningMaturity = await res.json();
+  } catch (err) {
+    console.error("fetchLearningMaturity:", err);
+    _learningMaturity = null;
+  }
+  renderTopbarLearning();
+  renderLearningHeadline();
+  renderMaturityAxes();
+}
+
+/* Base Histórica de Referencia -- NUNCA es aprendizaje de Atlas, solo
+ * contexto para comparar patrones (siempre etiquetado como tal). */
+let _historicalReference = null;
+
+async function fetchHistoricalReference() {
+  try {
+    const res = await fetch("/api/historical-reference-summary");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    _historicalReference = await res.json();
+  } catch (err) {
+    console.error("fetchHistoricalReference:", err);
+    _historicalReference = null;
+  }
+  renderHistoricalReference();
+}
+
+// Aprendizaje en Vivo (2026-08-15, ver PROPUESTA_MADUREZ_APRENDIZAJE.md).
+// SOLO datos de /api/learning-maturity (radar CAPA 2, en vivo, arranca en
+// cero tras el reset) -- nunca mezcla la Base Histórica de Referencia.
+// Cada precisión viaja SIEMPRE con numerador/denominador, nunca un % aislado.
 function renderLearningHeadline() {
   const el = document.getElementById("learning-headline");
   if (!el) return;
-  if (!_evolution) { el.innerHTML = ""; return; }
+  if (!_learningMaturity) { el.innerHTML = `<div class="empty-state">Cargando…</div>`; return; }
 
-  const a = _evolution.evolucion_aprendizaje || {};
-  const p = _evolution.precision_del_modelo || {};
+  const hoy = _learningMaturity.hoy || {};
+  const acum = _learningMaturity.acumulada || {};
+  const reciente = _learningMaturity.reciente || {};
+  const m = _learningMaturity.madurez || {};
 
   const numOr = (v) => (v === null || v === undefined) ? '<span class="dim">No disponible</span>' : v;
-  const pctOr = (v) => (v === null || v === undefined) ? '<span class="dim">No disponible</span>' : (fmtNum(v) + "%");
-  // Timestamp real: HH:MM:SS ET para fecha-hora; fecha tal cual si es solo día.
-  const tsOr = (v) => {
-    if (v === null || v === undefined) return '<span class="dim">No disponible</span>';
-    if (typeof v === "string" && v.length <= 10) return v + " (fecha)";
-    return fmtTimeSec(v) + " ET";
-  };
-
-  // Aciertos: si no hay casos cerrados evaluados, "No disponible" -- NUNCA 0%.
-  const muestra = p.muestra_historica;
-  const aciertos = p.aciertos_historico;
-  const sinCasos = (muestra === null || muestra === undefined || muestra === 0);
-  const fallos = sinCasos ? null : (muestra - aciertos);
-  const aciertosCard = sinCasos
-    ? '<span class="dim">No disponible</span>'
-    : numOr(aciertos);
-  const fallosCard = sinCasos ? '<span class="dim">No disponible</span>' : numOr(fallos);
-  const precisionCard = sinCasos ? '<span class="dim">No disponible</span>' : pctOr(p.precision_historica_pct);
+  const precOr = (v) => (v === null || v === undefined) ? '<span class="dim">No disponible</span>' : v; // ya viene como "X/Y = Z%"
 
   const card = (icon, label, value, sub) => `
     <div class="lh-card">
@@ -873,23 +893,67 @@ function renderLearningHeadline() {
     </div>`;
 
   el.innerHTML =
-    card("🧠", "Nivel de aprendizaje", pctOr(a.nivel_aprendizaje_pct),
-         (a.condiciones_evidencia_suficiente == null ? "" : `${a.condiciones_evidencia_suficiente} / ${a.condiciones_totales_evaluadas} condiciones`)) +
-    card("🎯", "Aciertos", aciertosCard, sinCasos ? "0 casos cerrados evaluados" : `de ${numOr(muestra)} casos`) +
-    card("❌", "Fallos", fallosCard, "") +
-    card("📊", "Precisión", precisionCard, "acierto = EXPLOSION real") +
-    card("📥", "Observaciones nuevas hoy", numOr(a.observaciones_nuevas_hoy), "incorporadas en vivo") +
-    card("📚", "Observaciones históricas", numOr(a.observaciones_historicas), "seed, no cuentan como nuevas") +
-    card("📚", "Observaciones totales", numOr(a.observaciones_totales), `${numOr(a.observaciones_live_total)} live + histórico`) +
-    card("🕐", "Última observación", tsOr(a.ultima_observacion_at), "última incorporación live") +
-    card("🕐", "Último acierto", tsOr(a.ultimo_acierto_at), "") +
-    card("🕐", "Último fallo", tsOr(a.ultimo_fallo_at), "") +
-    card("🧠", "Última recalibración", tsOr(a.ultima_actualizacion), "");
+    card("🔎", "Estudiadas hoy", numOr(hoy.estudiadas), "universo escaneado") +
+    card("🕵️", "Candidatas hoy", numOr(hoy.candidatas), "") +
+    card("✅", "Señales hoy", numOr(hoy.senales), "sobrevivieron confirmación") +
+    card("📋", "Casos evaluables hoy", numOr(hoy.evaluables), "ya con resultado cerrado") +
+    card("🎯", "Aciertos hoy", numOr(hoy.aciertos), `${numOr(hoy.fallos)} fallos`) +
+    card("⏱", "Tardías hoy", numOr(hoy.tardias), "no cuentan como acierto") +
+    card("📊", "Precisión del día", precOr(hoy.precision), "num/denom siempre") +
+    card("📊", "Precisión acumulada", precOr(acum.precision), `${numOr(acum.dias)} días con resumen`) +
+    card("📊", "Precisión reciente", precOr(reciente.precision), reciente.dias_incluidos ? `últimos ${reciente.dias_incluidos} días` : "sin ventana todavía") +
+    card("🧠", "Madurez actual", m.estado || "Sin evidencia", `limita: ${m.eje_limitante || "--"}`);
+}
+
+// Los 11 ejes de Madurez, con su evidencia real -- nunca un promedio, la
+// madurez global es el MÍNIMO de estos 11 (cuello de botella).
+function renderMaturityAxes() {
+  const el = document.getElementById("madurez-ejes");
+  if (!el) return;
+  if (!_learningMaturity) { el.innerHTML = `<div class="empty-state">Cargando…</div>`; return; }
+
+  const ejes = (_learningMaturity.madurez && _learningMaturity.madurez.ejes) || [];
+  const limitante = (_learningMaturity.madurez || {}).eje_limitante;
+  const rows = ejes.map((a) => `
+    <tr>
+      <td>${a.nombre}${a.nombre === limitante ? ' <span class="pill-amber">⛔ limita</span>' : ""}</td>
+      <td>${a.estado}</td>
+      <td class="dim" style="font-size:12px">${a.explicacion}</td>
+    </tr>`).join("");
+  el.innerHTML = `
+    <div class="table-wrap">
+      <table class="data-table">
+        <thead><tr><th>Eje</th><th>Estado</th><th>Evidencia</th></tr></thead>
+        <tbody>${rows || '<tr><td class="empty-state" colspan="3">Sin datos.</td></tr>'}</tbody>
+      </table>
+    </div>
+    <div class="detail-note" style="margin-top:8px">La Madurez global es el MÍNIMO de estos 11 estados, nunca un promedio -- subirla exige cerrar la brecha del eje más débil, no acumular más de lo que ya sobra.</div>`;
+}
+
+// Base Histórica de Referencia (2026-08-15) -- NUNCA se presenta como
+// aprendizaje de Atlas, solo contexto para comparar patrones.
+function renderHistoricalReference() {
+  const el = document.getElementById("historico-referencia");
+  if (!el) return;
+  if (!_historicalReference) { el.innerHTML = `<div class="empty-state">Cargando…</div>`; return; }
+
+  const h = _historicalReference;
+  const card = (icon, label, value, sub) => `
+    <div class="lh-card">
+      <div class="lh-icon">${icon}</div>
+      <div class="lh-label">${label}</div>
+      <div class="lh-value">${value}</div>
+      ${sub ? `<div class="lh-sub">${sub}</div>` : ""}
+    </div>`;
+  el.innerHTML =
+    `<div class="detail-note" style="margin-bottom:8px">${h.nota || ""}</div>` +
+    card("📚", "Símbolos estudiados", h.simbolos_procesados ?? "--", h.universo_total ? `de ${h.universo_total} del universo` : "") +
+    card("📚", "Casos históricos evaluables", Number(h.observaciones_evaluables || 0).toLocaleString("es"), "backtest, no en vivo");
 }
 
 function renderEvolution() {
   renderLearningHeadline();
-  renderTopbarLearning();  // barra superior desde la MISMA fuente real (/api/evolution)
+  renderTopbarLearning();  // re-render idempotente: el badge "Aprendizaje" sigue leyendo _learningMaturity (/api/learning-maturity), NUNCA _evolution -- solo "Confianza" usa _evolution
   const nd = (v, suf = "") => (v === null || v === undefined) ? '<span class="dim">No disponible</span>' : (v + suf);
   const ndPct = (v) => (v === null || v === undefined) ? '<span class="dim">No disponible</span>' : (fmtNum(v) + "%");
   const precEl = document.getElementById("evolucion-precision");
@@ -928,20 +992,23 @@ function renderEvolution() {
     </div>
     <div class="detail-note" style="margin-top:8px">El drawdown es una curva de capital <b>hipotética</b> -- no representa dinero real, Atlas no gestiona una cuenta.</div>`;
 
+  // Memory Engine v1 -- SOLO diagnóstico interno (2026-08-15). NO es la
+  // Madurez de Atlas (eso vive en #madurez-ejes, desde /api/learning-maturity).
   const a = _evolution.evolucion_aprendizaje;
-  const condiciones = (a.condiciones_evidencia_suficiente === null || a.condiciones_evidencia_suficiente === undefined)
+  const condiciones = (a.memory_engine_conditions_reliable === null || a.memory_engine_conditions_reliable === undefined)
     ? '<span class="dim">No disponible</span>'
-    : `${a.condiciones_evidencia_suficiente} / ${a.condiciones_totales_evaluadas}`;
+    : `${a.memory_engine_conditions_reliable} / ${a.memory_engine_conditions_total}`;
   aprEl.innerHTML = `
+    <div class="detail-note" style="margin-bottom:8px">⚠️ Diagnóstico interno del Memory Engine v1 -- NO es la Madurez de Atlas. Ver "🧠 Madurez del aprendizaje" más abajo para la métrica real.</div>
     <div class="detail-grid">
       <div class="detail-metric"><div class="detail-metric-label">Trayectorias almacenadas</div><div class="detail-metric-value">${nd(a.trayectorias_almacenadas)}</div></div>
       <div class="detail-metric"><div class="detail-metric-label">Muestras analizadas</div><div class="detail-metric-value">${nd(a.muestras_analizadas)}</div></div>
       <div class="detail-metric"><div class="detail-metric-label">Casos similares acumulados</div><div class="detail-metric-value">${nd(a.casos_similares_acumulados)}</div></div>
-      <div class="detail-metric"><div class="detail-metric-label">Condiciones con evidencia</div><div class="detail-metric-value">${condiciones}</div></div>
-      <div class="detail-metric"><div class="detail-metric-label">Nivel de aprendizaje</div><div class="detail-metric-value">${ndPct(a.nivel_aprendizaje_pct)}</div></div>
+      <div class="detail-metric"><div class="detail-metric-label">Condiciones con evidencia (Memory Engine v1)</div><div class="detail-metric-value">${condiciones}</div></div>
+      <div class="detail-metric"><div class="detail-metric-label">Cobertura de condiciones (Memory Engine v1)</div><div class="detail-metric-value">${ndPct(a.memory_engine_condition_coverage_pct)}</div></div>
       <div class="detail-metric"><div class="detail-metric-label">Última actualización</div><div class="detail-metric-value">${nd(a.ultima_actualizacion)}</div></div>
     </div>
-    <div class="detail-note" style="margin-top:8px">"Nivel de aprendizaje" = fracción de las condiciones evaluadas que ya alcanzaron confiabilidad estadística (límite de Wilson). Crece a medida que Atlas acumula evidencia real.</div>`;
+    <div class="detail-note" style="margin-top:8px">${a.memory_engine_nota || ""}</div>`;
 }
 
 // Marcador Histórico de Explosiones (2026-08-09). Todo dato real de
@@ -1300,13 +1367,17 @@ function startPanelStatusPolling() {
   fetchExitJournal();
   fetchMissionControl();
   fetchPerformance();
-  fetchEvolution();  // alimenta también la barra superior (renderTopbarLearning)
+  fetchEvolution();
+  fetchLearningMaturity();  // alimenta la barra superior (renderTopbarLearning) + Aprendizaje en Vivo + Madurez
+  fetchHistoricalReference();  // Base Histórica de Referencia, siempre separada
   setInterval(fetchMemoryEngine, PANEL_STATUS_POLL_MS);
   setInterval(fetchPredictionJournal, PANEL_STATUS_POLL_MS);
   setInterval(fetchExitJournal, PANEL_STATUS_POLL_MS);
   setInterval(fetchMissionControl, PANEL_STATUS_POLL_MS);
   setInterval(fetchPerformance, PANEL_STATUS_POLL_MS);
   setInterval(fetchEvolution, PANEL_STATUS_POLL_MS);
+  setInterval(fetchLearningMaturity, PANEL_STATUS_POLL_MS);
+  setInterval(fetchHistoricalReference, PANEL_STATUS_POLL_MS);
   setInterval(fetchExplosionHistory, PANEL_STATUS_POLL_MS);
   setInterval(fetchSignals, PANEL_STATUS_POLL_MS);
   setInterval(fetchEstudio, PANEL_STATUS_POLL_MS);
