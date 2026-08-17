@@ -339,6 +339,34 @@ def api_admin_build_historical_reference_status():
     return jsonify(bhr.build_status())
 
 
+@app.route("/api/admin/data-dir-diagnostics")
+def api_admin_data_dir_diagnostics():
+    """Solo lectura (2026-08-17): ruta real de ATLAS_DATA_DIR, si existe y
+    es escribible, tamaño/fecha de `historical_reference.db`, y si el
+    marcador de persistencia está presente -- ver
+    `atlas_live/data_dir_diagnostics.py` para la prueba completa
+    (marcador + redeploy) que confirma si el Volume realmente persiste."""
+    if not _admin_token_ok():
+        return jsonify({"error": "no autorizado"}), 403
+
+    from atlas_live import data_dir_diagnostics as ddd
+
+    return jsonify(ddd.diagnostics())
+
+
+@app.route("/api/admin/data-dir-diagnostics/marker", methods=["POST"])
+def api_admin_write_persistence_marker():
+    """Escribe el marcador de persistencia UNA SOLA VEZ (nunca lo
+    sobrescribe si ya existe) -- comparar `marker_id` antes y después de un
+    redeploy real es la única prueba aceptada de que el Volume persiste."""
+    if not _admin_token_ok():
+        return jsonify({"error": "no autorizado"}), 403
+
+    from atlas_live import data_dir_diagnostics as ddd
+
+    return jsonify(ddd.write_marker_once())
+
+
 @app.route("/api/signals")
 def api_signals():
     """Historial de señales registradas (validación en vivo). Solo lectura,

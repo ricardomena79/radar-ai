@@ -69,3 +69,8 @@ atlas_live/predictive_engine/*.db-shm
 # output regenerable con scripts/run_experiments_abc.py, no código fuente.
 # Los resultados importantes quedan documentados en EXPERIMENTOS_A_B_C.md.
 experiments_abc_resultado.json
+
+# Marcador de la prueba de persistencia del Volume (2026-08-17) -- se
+# escribe en ATLAS_DATA_DIR vía /api/admin/data-dir-diagnostics/marker,
+# nunca es código fuente ni dato de Atlas.
+atlas_live/persistence_marker.json
