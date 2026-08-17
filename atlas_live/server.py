@@ -322,8 +322,16 @@ def api_admin_build_historical_reference():
     workers = request.args.get("workers", default=8, type=int)
     delay_ms = request.args.get("delay_ms", default=80, type=int)
     period = request.args.get("period", default="3mo")
+    # batch_timeout_s=0 desactiva el timeout de as_completed() -- necesario
+    # para corridas de varias horas (universo de mercado completo,
+    # 2026-08-17): con el default de 3600s, ThreadPoolExecutor.__exit__
+    # sigue esperando a que terminen todos los hilos igual (shutdown(wait=True)),
+    # así que un timeout bajo solo produce un build_state=ERROR confuso
+    # sin cortar el trabajo real.
+    batch_timeout_s = request.args.get("batch_timeout_s", default=3600, type=int)
 
-    result = bhr.start_background_build(limit=limit, workers=workers, delay_ms=delay_ms, period=period)
+    result = bhr.start_background_build(limit=limit, workers=workers, delay_ms=delay_ms, period=period,
+                                         batch_timeout_s=batch_timeout_s)
     return jsonify(result), (202 if result.get("started") else 409)
 
 

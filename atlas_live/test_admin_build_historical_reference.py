@@ -61,6 +61,32 @@ def test_token_correcto_dispara_y_devuelve_202():
         del os.environ["ATLAS_ADMIN_TOKEN"]
 
 
+def test_batch_timeout_s_default_3600_si_no_se_pasa():
+    os.environ["ATLAS_ADMIN_TOKEN"] = "secreto-real"
+    orig = bhr.start_background_build
+    captured = {}
+    bhr.start_background_build = lambda **kwargs: captured.update(kwargs) or {"started": True}
+    try:
+        _client().post("/api/admin/build-historical-reference?token=secreto-real")
+        assert captured["batch_timeout_s"] == 3600
+    finally:
+        bhr.start_background_build = orig
+        del os.environ["ATLAS_ADMIN_TOKEN"]
+
+
+def test_batch_timeout_s_0_desactiva_el_limite():
+    os.environ["ATLAS_ADMIN_TOKEN"] = "secreto-real"
+    orig = bhr.start_background_build
+    captured = {}
+    bhr.start_background_build = lambda **kwargs: captured.update(kwargs) or {"started": True}
+    try:
+        _client().post("/api/admin/build-historical-reference?token=secreto-real&batch_timeout_s=0")
+        assert captured["batch_timeout_s"] == 0
+    finally:
+        bhr.start_background_build = orig
+        del os.environ["ATLAS_ADMIN_TOKEN"]
+
+
 def test_ya_en_curso_devuelve_409():
     os.environ["ATLAS_ADMIN_TOKEN"] = "secreto-real"
     orig = bhr.start_background_build
