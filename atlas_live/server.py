@@ -347,6 +347,21 @@ def api_admin_build_historical_reference_status():
     return jsonify(bhr.build_status())
 
 
+@app.route("/api/admin/historical-scoring-report")
+def api_admin_historical_scoring_report():
+    """Solo lectura (2026-08-17, Fase 3): reporte estadístico real sobre la
+    Base Histórica ya construida -- ver `atlas_live/learning/historical_scoring.py`.
+    Standalone: no toca candidate_gates.py, el score en vivo ni
+    DecisionEngine. Admin porque puede ser una consulta pesada sobre toda
+    la base, no pensada para el refresco frecuente de la Cabina."""
+    if not _admin_token_ok():
+        return jsonify({"error": "no autorizado"}), 403
+
+    from atlas_live.learning import historical_scoring as hsc
+
+    return jsonify(hsc.generate_report())
+
+
 @app.route("/api/admin/data-dir-diagnostics")
 def api_admin_data_dir_diagnostics():
     """Solo lectura (2026-08-17): ruta real de ATLAS_DATA_DIR, si existe y

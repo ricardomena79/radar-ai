@@ -153,3 +153,48 @@ def false_positive_report(table: Dict[GroupKey, GroupReference], rows: List[Dict
             "max_drawdown_pct_promedio_en_fallos": round(sum(drawdowns) / len(drawdowns), 1) if drawdowns else None,
         })
     return out
+
+
+REPORT_FEATURE_COLS = ("volatility_14d_pct", "daily_range_pct")
+
+
+def _load_rows_from_db() -> List[Dict[str, Any]]:
+    """Lee `daily_features` UNIDO con `daily_outcome` (mismo symbol+date)
+    directo de `reference_registry.DB_PATH` -- mismo join que ya usa
+    `scripts/run_experiments_abc.py`. Import local: evita que este módulo
+    dependa de sqlite/DB_PATH cuando se usa solo con filas sintéticas
+    (como en los tests)."""
+    import sqlite3
+
+    from atlas_live.reference.reference_registry import DB_PATH
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            "SELECT f.*, o.max_advance_pct, o.max_drawdown_pct, o.days_to_max, "
+            "o.continuo, o.outcome_direction "
+            "FROM daily_features f JOIN daily_outcome o "
+            "ON o.symbol = f.symbol AND o.date = f.date"
+        ).fetchall()
+    finally:
+        conn.close()
+    return [dict(r) for r in rows]
+
+
+def generate_report(feature_cols: Sequence[str] = REPORT_FEATURE_COLS,
+                     min_rows: int = MIN_PRIOR_ROWS_FOR_CUTS) -> Dict[str, Any]:
+    """Reporte completo sobre la Base Histórica real ya construida (todo el
+    universo de mercado procesado hasta el momento) -- evidencia real,
+    nunca inventada: si la base todavía no tiene datos, `n_filas=0` y las
+    listas quedan vacías, no se fabrica ningún hallazgo."""
+    rows = _load_rows_from_db()
+    table = compute_reference_table(rows, feature_cols, min_rows=min_rows)
+    return {
+        "n_filas": len(rows),
+        "n_simbolos": len({r["symbol"] for r in rows}),
+        "feature_cols": list(feature_cols),
+        "min_rows_piso_de_muestra": min_rows,
+        "tabla_por_grupo": [ref.to_dict() for _, ref in sorted(table.items())],
+        "falsos_positivos": false_positive_report(table, rows, min_rows=min_rows),
+    }
