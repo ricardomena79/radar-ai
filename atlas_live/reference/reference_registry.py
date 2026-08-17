@@ -83,6 +83,13 @@ def _connect() -> sqlite3.Connection:
         _ensure_column(conn, "daily_features", "timing_deteccion", "TEXT")
         _ensure_column(conn, "daily_features", "peak_gain_10d_pct", "REAL")
         _ensure_column(conn, "daily_outcome", "outcome_direction", "TEXT")
+        # Identidad + operabilidad Racional (2026-08-17, universo de mercado
+        # completo): se completan una vez por símbolo al procesarlo -- ver
+        # record_symbol_identity(). racional_available es la ÚNICA función
+        # de Racional acá: nunca limita qué se procesa, solo etiqueta.
+        _ensure_column(conn, "reference_checkpoint", "exchange", "TEXT")
+        _ensure_column(conn, "reference_checkpoint", "name", "TEXT")
+        _ensure_column(conn, "reference_checkpoint", "racional_available", "INTEGER")
         _schema_ready_for = str(DB_PATH)
     return conn
 
@@ -114,14 +121,41 @@ def processed_ok_symbols() -> List[str]:
         return [r["symbol"] for r in rows]
 
 
-def mark_processed(symbol: str, status: str, n_features: int, n_outcomes: int, note: Optional[str] = None) -> None:
+def mark_processed(symbol: str, status: str, n_features: int, n_outcomes: int, note: Optional[str] = None,
+                    exchange: Optional[str] = None, name: Optional[str] = None,
+                    racional_available: Optional[bool] = None) -> None:
+    """Marca el checkpoint de un símbolo. `exchange`/`name`/`racional_available`
+    son la identidad real (universo de mercado completo, 2026-08-17) --
+    `racional_available` es SOLO una etiqueta de operabilidad posterior,
+    nunca decide si el símbolo se procesa."""
     with _connect() as conn:
         conn.execute(
-            "INSERT OR REPLACE INTO reference_checkpoint (symbol, status, processed_at, n_features, n_outcomes, note) "
-            "VALUES (?,?,?,?,?,?)",
-            (symbol, status, _now(), n_features, n_outcomes, note),
+            "INSERT OR REPLACE INTO reference_checkpoint "
+            "(symbol, status, processed_at, n_features, n_outcomes, note, exchange, name, racional_available) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (symbol, status, _now(), n_features, n_outcomes, note, exchange, name,
+             None if racional_available is None else int(racional_available)),
         )
         conn.commit()
+
+
+def universe_breakdown() -> Dict[str, int]:
+    """Desglose real de la Base Histórica ya construida: cuántos símbolos
+    procesados quedaron con racional_available=true/false/desconocido --
+    para exponer en el resumen sin inventar un número (2026-08-17)."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT racional_available, COUNT(*) AS n FROM reference_checkpoint GROUP BY racional_available"
+        ).fetchall()
+        out = {"racional_available": 0, "racional_no_disponible": 0, "racional_desconocido": 0}
+        for r in rows:
+            if r["racional_available"] == 1:
+                out["racional_available"] = r["n"]
+            elif r["racional_available"] == 0:
+                out["racional_no_disponible"] = r["n"]
+            else:
+                out["racional_desconocido"] = r["n"]
+        return out
 
 
 # --------------------------- features / outcome ---------------------------

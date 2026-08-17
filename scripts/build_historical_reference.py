@@ -8,6 +8,17 @@ Pide ~3 meses de barras diarias por símbolo vía Tradier (normalizado con
 `tradier_symbol_map`), calcula features/resultado con anti-leakage estricto
 (`atlas_live.reference.daily_reference`) y persiste (`reference_registry`).
 
+Universo (2026-08-17, ampliado a mercado completo -- pedido explícito del
+usuario): ya NO se limita al universo Racional. Se usa
+`atlas_live.market_study.universe.fetch_broad_universe_meta()` (listados
+oficiales NASDAQ Trader, ~13.000 símbolos, ya clasificados por
+`classify_instrument_type` en EQUITY/ETF/WARRANT/UNIT/RIGHT/PREFERRED/DEBT)
+y se procesan SOLO los EQUITY -- acciones ordinarias, todas las
+capitalizaciones, sin filtro de sector. ETFs y derivados quedan excluidos
+de este batch (contados, nunca descartados en silencio). Racional
+(`racional_symbols()`) es SOLO una etiqueta de operabilidad que viaja con
+cada símbolo (`racional_available`) -- nunca decide qué se procesa.
+
 Uso:
     python scripts/build_historical_reference.py --limit 300 --workers 8
 """
@@ -21,23 +32,28 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from atlas.data.providers.tradier_symbol_map import normalize
-from atlas.data.universe import get_equities, get_etfs
 from atlas_live.data_fusion.universe_quotes import build_tradier_provider
+from atlas_live.market_study import universe as broad_universe
 from atlas_live.radar import phase_classifier as pc
 from atlas_live.reference import daily_reference as dr
 from atlas_live.reference import reference_registry as reg
 
 
-def _process_one(symbol: str, provider, period: str) -> dict:
+def _process_one(symbol: str, provider, period: str, identity: Optional[dict] = None,
+                  racional_available: Optional[bool] = None) -> dict:
+    exchange = (identity or {}).get("exchange")
+    name = (identity or {}).get("name")
     query_symbol = normalize(symbol).query_symbol
     try:
         df = provider.get_history(query_symbol, period=period, interval="1d")
     except Exception as exc:
-        reg.mark_processed(symbol, "error", 0, 0, note=f"{type(exc).__name__}: {exc}")
+        reg.mark_processed(symbol, "error", 0, 0, note=f"{type(exc).__name__}: {exc}",
+                            exchange=exchange, name=name, racional_available=racional_available)
         return {"status": "error"}
 
     if df is None or df.empty or len(df) < dr.MIN_BASELINE_DAYS + 1:
-        reg.mark_processed(symbol, "sin_datos", 0, 0, note=f"solo {len(df) if df is not None else 0} velas")
+        reg.mark_processed(symbol, "sin_datos", 0, 0, note=f"solo {len(df) if df is not None else 0} velas",
+                            exchange=exchange, name=name, racional_available=racional_available)
         return {"status": "sin_datos"}
 
     n_feat = n_out = 0
@@ -56,7 +72,8 @@ def _process_one(symbol: str, provider, period: str) -> dict:
         if outcome is not None and reg.record_outcome(symbol, outcome):
             n_out += 1
 
-    reg.mark_processed(symbol, "ok", n_feat, n_out)
+    reg.mark_processed(symbol, "ok", n_feat, n_out, exchange=exchange, name=name,
+                       racional_available=racional_available)
     return {"status": "ok", "n_features": n_feat, "n_outcomes": n_out}
 
 
@@ -126,15 +143,27 @@ def recompute_timing_for_processed(workers: int, delay_ms: int, period: str, bat
 
 
 def run_batch(limit: int, workers: int, delay_ms: int, period: str, batch_timeout_s: int) -> dict:
-    universo = sorted({a.symbol for a in get_equities() + get_etfs()})
+    """Universo = mercado completo (NASDAQ Trader), filtrado a EQUITY
+    solamente (2026-08-17) -- ver docstring del módulo. `clasificacion`
+    reporta cuántos símbolos de cada tipo trajo la fuente, para que la
+    exclusión de ETFs/derivados quede visible y auditable, nunca en
+    silencio."""
+    meta = broad_universe.fetch_broad_universe_meta()
+    clasificacion: Dict[str, int] = {}
+    for info in meta.values():
+        t = info.get("type", "EQUITY")
+        clasificacion[t] = clasificacion.get(t, 0) + 1
+    universo = sorted(s for s, info in meta.items() if info.get("type") == "EQUITY")
+    racional = broad_universe.racional_symbols()
+
     ya = reg.processed_symbols()
     pendientes = [s for s in universo if s not in ya][:limit]
 
-    reg.set_meta(universe_total=len(universo))
+    reg.set_meta(universe_total=len(universo), universe_total_bruto=len(meta), clasificacion=clasificacion)
 
     if not pendientes:
         return {"universo_total": len(universo), "ya_procesados": len(ya), "procesados_esta_corrida": 0,
-                "nota": "universo completo -- nada pendiente"}
+                "clasificacion": clasificacion, "nota": "universo completo -- nada pendiente"}
 
     provider = build_tradier_provider()
     if provider is None:
@@ -146,7 +175,9 @@ def run_batch(limit: int, workers: int, delay_ms: int, period: str, batch_timeou
     with ThreadPoolExecutor(max_workers=workers) as ex:
         futures = {}
         for sym in pendientes:
-            futures[ex.submit(_process_one, sym, provider, period)] = sym
+            identity = meta.get(sym) or {}
+            racional_available = sym.upper() in racional
+            futures[ex.submit(_process_one, sym, provider, period, identity, racional_available)] = sym
             if delay_ms > 0:
                 time.sleep(delay_ms / 1000.0)
         for fut in as_completed(futures, timeout=batch_timeout_s if batch_timeout_s > 0 else None):
@@ -165,11 +196,14 @@ def run_batch(limit: int, workers: int, delay_ms: int, period: str, batch_timeou
 
     return {
         "universo_total": len(universo),
+        "universo_total_bruto": len(meta),
+        "clasificacion": clasificacion,
         "ya_procesados_antes": len(ya),
         "procesados_esta_corrida": len(pendientes),
         "ok": ok, "sin_datos": sin_datos, "errores": errores,
         "tiempo_s": round(time.time() - t0, 2),
         "conteos_totales": reg.counts(),
+        "universo_breakdown_racional": reg.universe_breakdown(),
     }
 
 

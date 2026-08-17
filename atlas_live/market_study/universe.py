@@ -14,6 +14,17 @@ lee de la caché SIN red, para que la ruta operativa no dispare descargas.
 Se cachea a un archivo para no re-descargar en cada corrida. `racional_symbols`
 devuelve el universo de Racional existente (get_symbols()) para el cruce de
 operabilidad -- NO se toca ese universo, solo se lee.
+
+Clasificación de instrumentos (2026-08-17, pedido explícito: no mezclar
+acciones ordinarias con ETFs/warrants/units/rights/preferidas en la misma
+población de aprendizaje). Ambos archivos fuente traen una columna `ETF`
+(Y/N) explícita -- se captura tal cual, es dato real de la fuente, no una
+heurística. Para el resto de los tipos (warrant, unit, right, preferida,
+nota/deuda) esos archivos NO traen una columna dedicada: se clasifican por
+patrones de texto sobre `Security Name`, el enfoque estándar para estos
+feeds. Es una heurística basada en texto, documentada como tal -- por
+defecto (ninguna señal reconocida) el símbolo queda como EQUITY, nunca se
+inventa una categoría más específica sin evidencia en el nombre.
 """
 
 import json
@@ -65,13 +76,48 @@ def _valid_symbol(sym: str) -> bool:
     return bool(sym) and sym.replace(".", "").replace("-", "").isalnum()
 
 
+# Patrones de texto sobre `Security Name` para instrumentos que NO son
+# acciones ordinarias y que los archivos fuente no marcan con columna
+# propia (a diferencia de ETF, que sí trae su columna real). Orden
+# importa: se evalúan en secuencia, gana el primer patrón que matchee.
+_NAME_TYPE_PATTERNS = (
+    ("WARRANT", "WARRANT"),
+    ("RIGHT", "RIGHT"),
+    ("UNIT", "UNIT"),
+    ("DEPOSITARY SHARES", "PREFERRED"),
+    ("PREFERRED", "PREFERRED"),
+    (" PFD", "PREFERRED"),
+    ("DEBENTURE", "DEBT"),
+    ("NOTES", "DEBT"),
+    ("BOND", "DEBT"),
+)
+
+
+def classify_instrument_type(symbol: str, name: str, etf_flag: bool) -> str:
+    """Clasifica un símbolo del universo amplio en EQUITY/ETF/WARRANT/UNIT/
+    RIGHT/PREFERRED/DEBT -- para no mezclar acciones ordinarias con
+    instrumentos que distorsionarían el aprendizaje de movimientos
+    explosivos (2026-08-17). `etf_flag` es dato real de la fuente (columna
+    ETF). El resto es heurística de texto sobre `name`, documentada como
+    tal: si ninguna señal aplica, el símbolo queda como EQUITY -- nunca se
+    inventa una categoría más específica sin evidencia en el nombre."""
+    if etf_flag:
+        return "ETF"
+    upper_name = (name or "").upper()
+    for pattern, label in _NAME_TYPE_PATTERNS:
+        if pattern in upper_name:
+            return label
+    return "EQUITY"
+
+
 def _parse_pipe_meta(text: str, symbol_col: int, name_col: int, test_col: int,
                      exchange: Optional[str] = None,
-                     exchange_col: Optional[int] = None) -> List[Dict[str, str]]:
-    """Parsea un archivo pipe-delimitado en registros {symbol, name, exchange},
+                     exchange_col: Optional[int] = None,
+                     etf_col: Optional[int] = None) -> List[Dict[str, str]]:
+    """Parsea un archivo pipe-delimitado en registros {symbol, name, exchange, etf},
     saltando header y el footer de 'File Creation Time' y descartando test issues."""
     out: List[Dict[str, str]] = []
-    needed = max(c for c in (symbol_col, name_col, test_col, exchange_col or 0))
+    needed = max(c for c in (symbol_col, name_col, test_col, exchange_col or 0, etf_col or 0))
     for line in text.strip().split("\n")[1:]:  # saltar header
         if line.startswith("File Creation Time") or not line.strip():
             continue
@@ -86,32 +132,47 @@ def _parse_pipe_meta(text: str, symbol_col: int, name_col: int, test_col: int,
         exch = exchange
         if exchange_col is not None:
             exch = _EXCHANGE_CODES.get(parts[exchange_col].strip().upper(), parts[exchange_col].strip())
-        out.append({"symbol": sym, "name": parts[name_col].strip(), "exchange": exch or ""})
+        etf = parts[etf_col].strip().upper() == "Y" if etf_col is not None else False
+        out.append({"symbol": sym, "name": parts[name_col].strip(), "exchange": exch or "", "etf": etf})
     return out
 
 
 def fetch_broad_universe_meta(use_cache: bool = True) -> Dict[str, Dict[str, str]]:
-    """Descarga (o lee de caché) el universo amplio US CON identidad.
-    Devuelve {symbol: {"exchange": ..., "name": ...}}. Si la red falla y hay
-    caché, usa la caché. Ante símbolo duplicado, gana la primera aparición
-    (NASDAQ antes que otherlisted)."""
+    """Descarga (o lee de caché) el universo amplio US CON identidad y
+    clasificación de instrumento. Devuelve
+    {symbol: {"exchange": ..., "name": ..., "type": ...}} -- `type` es
+    EQUITY/ETF/WARRANT/UNIT/RIGHT/PREFERRED/DEBT (ver
+    `classify_instrument_type`). Si la red falla y hay caché, usa la
+    caché. Ante símbolo duplicado, gana la primera aparición (NASDAQ antes
+    que otherlisted)."""
     if use_cache and _CACHE_META.exists():
         try:
-            return json.loads(_CACHE_META.read_text(encoding="utf-8"))
+            cached = json.loads(_CACHE_META.read_text(encoding="utf-8"))
+            # Caché de una versión anterior a la clasificación (2026-08-17)
+            # no tiene "type" -- se descarta y se re-descarga en vez de
+            # devolver registros incompletos que romperían el filtro EQUITY.
+            if cached and all("type" in v for v in cached.values()):
+                return cached
         except Exception:
             pass
     meta: Dict[str, Dict[str, str]] = {}
     try:
         r1 = requests.get(_NASDAQ_URL, timeout=_TIMEOUT)
         if r1.status_code == 200:
-            # nasdaqlisted: Symbol(0)|Security Name(1)|...|Test Issue(3)
-            for rec in _parse_pipe_meta(r1.text, symbol_col=0, name_col=1, test_col=3, exchange="NASDAQ"):
-                meta.setdefault(rec["symbol"], {"exchange": rec["exchange"], "name": rec["name"]})
+            # nasdaqlisted: Symbol(0)|Security Name(1)|Market Category(2)|Test Issue(3)|Financial Status(4)|Round Lot Size(5)|ETF(6)|NextShares(7)
+            for rec in _parse_pipe_meta(r1.text, symbol_col=0, name_col=1, test_col=3, exchange="NASDAQ", etf_col=6):
+                meta.setdefault(rec["symbol"], {
+                    "exchange": rec["exchange"], "name": rec["name"],
+                    "type": classify_instrument_type(rec["symbol"], rec["name"], rec["etf"]),
+                })
         r2 = requests.get(_OTHER_URL, timeout=_TIMEOUT)
         if r2.status_code == 200:
-            # otherlisted: ACT Symbol(0)|Security Name(1)|Exchange(2)|...|Test Issue(6)
-            for rec in _parse_pipe_meta(r2.text, symbol_col=0, name_col=1, test_col=6, exchange_col=2):
-                meta.setdefault(rec["symbol"], {"exchange": rec["exchange"], "name": rec["name"]})
+            # otherlisted: ACT Symbol(0)|Security Name(1)|Exchange(2)|CQS Symbol(3)|ETF(4)|Round Lot Size(5)|Test Issue(6)|NASDAQ Symbol(7)
+            for rec in _parse_pipe_meta(r2.text, symbol_col=0, name_col=1, test_col=6, exchange_col=2, etf_col=4):
+                meta.setdefault(rec["symbol"], {
+                    "exchange": rec["exchange"], "name": rec["name"],
+                    "type": classify_instrument_type(rec["symbol"], rec["name"], rec["etf"]),
+                })
     except Exception:
         if _CACHE_META.exists():
             return json.loads(_CACHE_META.read_text(encoding="utf-8"))

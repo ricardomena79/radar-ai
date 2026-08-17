@@ -100,6 +100,12 @@ def get_historical_reference_summary() -> Dict[str, Any]:
         "nota": "Referencia histórica (backtest), no precisión en vivo -- ver PROPUESTA_MADUREZ_APRENDIZAJE.md.",
         "simbolos_procesados": counts.get("simbolos_procesados") or 0,
         "universo_total": meta.get("universe_total"),
+        # Universo BRUTO de la fuente (NASDAQ Trader, todos los tipos) vs.
+        # EQUITY (lo que realmente se procesa) -- 2026-08-17, universo de
+        # mercado completo. Racional NUNCA limita esto, solo etiqueta.
+        "universo_total_bruto": meta.get("universe_total_bruto"),
+        "clasificacion_universo": meta.get("clasificacion"),
+        "universo_breakdown_racional": ref.universe_breakdown(),
         # Evaluables reales = filas con features Y outcome para el mismo
         # symbol+date (nunca el conteo crudo de daily_outcome -- infla el
         # número con días que no tienen timing_deteccion clasificado).
