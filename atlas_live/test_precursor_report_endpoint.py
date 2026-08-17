@@ -51,6 +51,29 @@ def test_con_token_devuelve_el_reporte_real():
         del os.environ["ATLAS_ADMIN_TOKEN"]
 
 
+def test_separation_report_sin_token_rechaza():
+    old = os.environ.pop("ATLAS_ADMIN_TOKEN", None)
+    try:
+        r = _client().get("/api/admin/separation-report")
+        assert r.status_code == 403
+    finally:
+        if old is not None:
+            os.environ["ATLAS_ADMIN_TOKEN"] = old
+
+
+def test_separation_report_con_token_devuelve_el_reporte_real():
+    os.environ["ATLAS_ADMIN_TOKEN"] = "secreto-real"
+    orig = pa.generate_separation_report
+    pa.generate_separation_report = lambda **kwargs: {"n_onsets_por_categoria": {"A_20_49": 7}}
+    try:
+        r = _client().get("/api/admin/separation-report?token=secreto-real")
+        assert r.status_code == 200
+        assert r.get_json()["n_onsets_por_categoria"]["A_20_49"] == 7
+    finally:
+        pa.generate_separation_report = orig
+        del os.environ["ATLAS_ADMIN_TOKEN"]
+
+
 if __name__ == "__main__":
     import traceback
 

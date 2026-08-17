@@ -265,3 +265,176 @@ def generate_precursor_report(feature_cols: Sequence[str] = DEFAULT_FEATURE_COLS
 
         report["por_umbral"][f"+{th}%"] = entry
     return report
+
+
+# ---------------------------------------------------------------------------
+# Estudio de separación A/B/C (2026-08-17) -- "relative_volume alto" solo
+# dice que un movimiento fuerte es más probable, no distingue cuánto va a
+# durar. Este bloque compara, con evidencia real (mediana + percentiles,
+# no solo promedio), los onsets de +20% que se quedan cortos (A) contra los
+# que continúan a +50-99% (B) o +100%+ (C) -- qué es distinto ANTES de que
+# se sepa en cuál de las 3 categorías va a terminar cada uno.
+# ---------------------------------------------------------------------------
+
+CATEGORY_LABELS = ("A_20_49", "B_50_99", "C_100_mas")
+VOLUME_ELEVATED_THRESHOLD = 2.0  # relative_volume >= esto = "día con volumen anormal"
+
+
+def categorize_onsets(rows_by_symbol: Dict[str, List[Dict[str, Any]]],
+                       onsets_20: Dict[str, List[str]]) -> Dict[str, List[Dict[str, Any]]]:
+    """Parte los onsets de +20% en 3 grupos MUTUAMENTE EXCLUYENTES según
+    hasta dónde llegó cada movimiento realmente: A (se quedó en 20-49%),
+    B (llegó a 50-99%), C (llegó a 100% o más)."""
+    out: Dict[str, List[Dict[str, Any]]] = {k: [] for k in CATEGORY_LABELS}
+    for sym, dates in onsets_20.items():
+        by_date = {r["date"]: r for r in rows_by_symbol.get(sym, [])}
+        for d in dates:
+            r = by_date.get(d)
+            if r is None:
+                continue
+            adv = r.get("max_advance_pct") or 0
+            if adv >= 100:
+                out["C_100_mas"].append(r)
+            elif adv >= 50:
+                out["B_50_99"].append(r)
+            else:
+                out["A_20_49"].append(r)
+    return out
+
+
+def _percentile(values: List[float], p: float) -> Optional[float]:
+    if not values:
+        return None
+    s = sorted(values)
+    idx = min(len(s) - 1, max(0, int(round(p / 100 * (len(s) - 1)))))
+    return round(s[idx], 3)
+
+
+def distribution_stats(values: List[Optional[float]]) -> Dict[str, Any]:
+    """`n`, promedio, mediana y percentiles p10/p25/p75/p90 -- nunca solo
+    un promedio (pedido explícito: el promedio esconde outliers en
+    features de cola larga como relative_volume)."""
+    vals = [v for v in values if v is not None]
+    if not vals:
+        return {"n": 0, "promedio": None, "mediana": None, "p10": None, "p25": None,
+                "p75": None, "p90": None, "min": None, "max": None}
+    return {
+        "n": len(vals), "promedio": round(sum(vals) / len(vals), 3), "mediana": _percentile(vals, 50),
+        "p10": _percentile(vals, 10), "p25": _percentile(vals, 25),
+        "p75": _percentile(vals, 75), "p90": _percentile(vals, 90),
+        "min": round(min(vals), 3), "max": round(max(vals), 3),
+    }
+
+
+def _onset_keys(rows: List[Dict[str, Any]]) -> set:
+    return {(r["symbol"], r["date"]) for r in rows}
+
+
+def category_precursor_stats(precursor_rows: List[Dict[str, Any]], categories: Dict[str, List[Dict[str, Any]]],
+                              feature_cols: Sequence[str], lookback_days: int = DEFAULT_LOOKBACK_DAYS) -> Dict[str, Any]:
+    """Por categoría (A/B/C) y por offset T-1..T-lookback_days, distribución
+    completa (no solo promedio) de cada feature -- responde "qué es
+    distinto, ANTES del hecho, entre lo que se queda corto y lo que sigue
+    escalando"."""
+    keys_by_cat = {cat: _onset_keys(rows) for cat, rows in categories.items()}
+    result: Dict[str, Any] = {}
+    for cat, keys in keys_by_cat.items():
+        cat_rows = [r for r in precursor_rows if (r["symbol"], r["onset_date"]) in keys]
+        por_offset: Dict[str, Any] = {}
+        for offset in range(1, lookback_days + 1):
+            offset_rows = [r for r in cat_rows if r["offset"] == offset]
+            n_episodios = len({(r["symbol"], r["onset_date"]) for r in offset_rows})
+            features = {col: distribution_stats([r.get(col) for r in offset_rows]) for col in feature_cols}
+            por_offset[f"T-{offset}"] = {"n_episodios": n_episodios, "features": features}
+        result[cat] = {"n_onsets": len(keys), "por_offset": por_offset}
+    return result
+
+
+def volume_persistence(precursor_rows: List[Dict[str, Any]], categories: Dict[str, List[Dict[str, Any]]],
+                        threshold: float = VOLUME_ELEVATED_THRESHOLD) -> Dict[str, Any]:
+    """Por categoría, cuántos de los días `T-1..T-5` disponibles (0 a 5)
+    tenían `relative_volume >= threshold` -- "persistencia" real del
+    volumen anormal, no solo un pico de un día."""
+    keys_by_cat = {cat: _onset_keys(rows) for cat, rows in categories.items()}
+    result: Dict[str, Any] = {}
+    for cat, keys in keys_by_cat.items():
+        by_onset: Dict[Any, List[Dict[str, Any]]] = {}
+        for r in precursor_rows:
+            key = (r["symbol"], r["onset_date"])
+            if key in keys:
+                by_onset.setdefault(key, []).append(r)
+        counts = [sum(1 for r in rows if (r.get("relative_volume") or 0) >= threshold) for rows in by_onset.values()]
+        dist: Dict[str, int] = {}
+        for c in counts:
+            dist[str(c)] = dist.get(str(c), 0) + 1
+        result[cat] = {
+            "n_onsets_con_ventana_previa": len(counts),
+            "distribucion_dias_con_volumen_elevado": dist,
+            "promedio_dias_elevados": round(sum(counts) / len(counts), 2) if counts else None,
+        }
+    return result
+
+
+def volume_acceleration(precursor_rows: List[Dict[str, Any]], categories: Dict[str, List[Dict[str, Any]]]) -> Dict[str, Any]:
+    """Por categoría, `relative_volume` en T-1 menos `relative_volume` en
+    T-5 (mismo onset) -- aceleración real del volumen entre el inicio de
+    la ventana y el día previo al onset."""
+    keys_by_cat = {cat: _onset_keys(rows) for cat, rows in categories.items()}
+    result: Dict[str, Any] = {}
+    for cat, keys in keys_by_cat.items():
+        by_onset: Dict[Any, Dict[int, Optional[float]]] = {}
+        for r in precursor_rows:
+            key = (r["symbol"], r["onset_date"])
+            if key in keys:
+                by_onset.setdefault(key, {})[r["offset"]] = r.get("relative_volume")
+        deltas = [
+            offsets[1] - offsets[5] for offsets in by_onset.values()
+            if offsets.get(1) is not None and offsets.get(5) is not None
+        ]
+        result[cat] = distribution_stats(deltas)
+    return result
+
+
+def category_racional_split(precursor_rows: List[Dict[str, Any]], categories: Dict[str, List[Dict[str, Any]]],
+                             feature_cols: Sequence[str]) -> Dict[str, Any]:
+    """Dentro de cada categoría (A/B/C), separa racional_available
+    true/false/desconocido en T-1 -- para saber si la separación entre
+    categorías también existe DENTRO de lo operable en Racional, o si es
+    un efecto que solo aparece fuera de ese universo."""
+    keys_by_cat = {cat: _onset_keys(rows) for cat, rows in categories.items()}
+    result: Dict[str, Any] = {}
+    for cat, keys in keys_by_cat.items():
+        t1_rows = [r for r in precursor_rows if r["offset"] == 1 and (r["symbol"], r["onset_date"]) in keys]
+        split: Dict[str, List[Dict[str, Any]]] = {"true": [], "false": [], "desconocido": []}
+        for r in t1_rows:
+            v = r.get("racional_available")
+            k = "true" if v == 1 else ("false" if v == 0 else "desconocido")
+            split[k].append(r)
+        result[cat] = {
+            k: {"n": len(rows), **{col: distribution_stats([r.get(col) for r in rows]) for col in feature_cols}}
+            for k, rows in split.items()
+        }
+    return result
+
+
+def generate_separation_report(feature_cols: Sequence[str] = DEFAULT_FEATURE_COLS,
+                                lookback_days: int = DEFAULT_LOOKBACK_DAYS) -> Dict[str, Any]:
+    """Reporte completo del estudio de separación A(20-49%)/B(50-99%)/C(100%+)
+    sobre la Base Histórica real -- distribución completa por feature y
+    offset, persistencia y aceleración del volumen, y el cruce con
+    racional_available dentro de cada categoría."""
+    rows = _load_rows_from_db()
+    rows_by_symbol = group_by_symbol_sorted(rows)
+    onsets_20 = find_episode_onsets(rows_by_symbol, 20)
+    categories = categorize_onsets(rows_by_symbol, onsets_20)
+    precursor_rows = precursor_rows_for_onsets(rows_by_symbol, onsets_20, lookback_days)
+
+    return {
+        "n_filas_totales": len(rows), "n_simbolos": len(rows_by_symbol),
+        "feature_cols": list(feature_cols), "lookback_days": lookback_days,
+        "n_onsets_por_categoria": {k: len(v) for k, v in categories.items()},
+        "por_categoria": category_precursor_stats(precursor_rows, categories, feature_cols, lookback_days),
+        "persistencia_volumen": volume_persistence(precursor_rows, categories),
+        "aceleracion_volumen_t1_menos_t5": volume_acceleration(precursor_rows, categories),
+        "comparacion_racional_por_categoria": category_racional_split(precursor_rows, categories, feature_cols),
+    }

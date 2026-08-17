@@ -378,6 +378,24 @@ def api_admin_precursor_report():
     return jsonify(pa.generate_precursor_report())
 
 
+@app.route("/api/admin/separation-report")
+def api_admin_separation_report():
+    """Solo lectura (2026-08-17, Fase 3b): compara con evidencia real
+    (mediana + percentiles, no solo promedio) los onsets de +20% que se
+    quedan cortos (A: 20-49%) contra los que continúan a +50-99% (B) o
+    +100%+ (C) -- persistencia y aceleración del volumen, y el cruce con
+    racional_available dentro de cada categoría. Ver
+    `atlas_live/learning/precursor_analysis.py::generate_separation_report`.
+    Standalone: no toca candidate_gates.py, el score en vivo ni
+    DecisionEngine."""
+    if not _admin_token_ok():
+        return jsonify({"error": "no autorizado"}), 403
+
+    from atlas_live.learning import precursor_analysis as pa
+
+    return jsonify(pa.generate_separation_report())
+
+
 @app.route("/api/admin/data-dir-diagnostics")
 def api_admin_data_dir_diagnostics():
     """Solo lectura (2026-08-17): ruta real de ATLAS_DATA_DIR, si existe y
