@@ -674,6 +674,14 @@ html, body {
   gap: 10px;
   margin-bottom: 20px;
 }
+/* Bug visual (2026-08-16): sin esta regla, un .detail-note suelto dentro de
+   .learning-headline (ej. la nota de "Base Histórica de Referencia") caía
+   en la grilla como si fuera una tarjeta más -- se comprimía al ancho de
+   una sola columna (~150-200px) en vez de ocupar todo el ancho disponible,
+   y el texto quedaba amontonado/cortado visualmente. */
+.learning-headline > .detail-note {
+  grid-column: 1 / -1;
+}
 .lh-card {
   background: var(--card, #131824);
   border: 1px solid var(--border);
