@@ -159,11 +159,13 @@ REPORT_FEATURE_COLS = ("volatility_14d_pct", "daily_range_pct")
 
 
 def _load_rows_from_db() -> List[Dict[str, Any]]:
-    """Lee `daily_features` UNIDO con `daily_outcome` (mismo symbol+date)
-    directo de `reference_registry.DB_PATH` -- mismo join que ya usa
-    `scripts/run_experiments_abc.py`. Import local: evita que este módulo
-    dependa de sqlite/DB_PATH cuando se usa solo con filas sintéticas
-    (como en los tests)."""
+    """Lee `daily_features` UNIDO con `daily_outcome` (mismo symbol+date) --
+    mismo join que ya usa `scripts/run_experiments_abc.py` -- y con
+    `reference_checkpoint` (por símbolo, LEFT JOIN) para traer
+    `racional_available` a cada fila (2026-08-17, comparación
+    Racional-disponible vs no-disponible). Import local: evita que este
+    módulo dependa de sqlite/DB_PATH cuando se usa solo con filas
+    sintéticas (como en los tests)."""
     import sqlite3
 
     from atlas_live.reference.reference_registry import DB_PATH
@@ -173,9 +175,10 @@ def _load_rows_from_db() -> List[Dict[str, Any]]:
     try:
         rows = conn.execute(
             "SELECT f.*, o.max_advance_pct, o.max_drawdown_pct, o.days_to_max, "
-            "o.continuo, o.outcome_direction "
+            "o.continuo, o.outcome_direction, c.racional_available "
             "FROM daily_features f JOIN daily_outcome o "
-            "ON o.symbol = f.symbol AND o.date = f.date"
+            "ON o.symbol = f.symbol AND o.date = f.date "
+            "LEFT JOIN reference_checkpoint c ON c.symbol = f.symbol"
         ).fetchall()
     finally:
         conn.close()

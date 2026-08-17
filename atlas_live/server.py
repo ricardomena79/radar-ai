@@ -362,6 +362,22 @@ def api_admin_historical_scoring_report():
     return jsonify(hsc.generate_report())
 
 
+@app.route("/api/admin/precursor-report")
+def api_admin_precursor_report():
+    """Solo lectura (2026-08-17, Fase 3b): análisis de ALERTA TEMPRANA --
+    qué características tenía cada símbolo en los días previos (T-1..T-5)
+    al inicio real de un movimiento fuerte, comparado contra el baseline
+    del mercado y contra racional_available. Ver
+    `atlas_live/learning/precursor_analysis.py`. Standalone: no toca
+    candidate_gates.py, el score en vivo ni DecisionEngine."""
+    if not _admin_token_ok():
+        return jsonify({"error": "no autorizado"}), 403
+
+    from atlas_live.learning import precursor_analysis as pa
+
+    return jsonify(pa.generate_precursor_report())
+
+
 @app.route("/api/admin/data-dir-diagnostics")
 def api_admin_data_dir_diagnostics():
     """Solo lectura (2026-08-17): ruta real de ATLAS_DATA_DIR, si existe y
