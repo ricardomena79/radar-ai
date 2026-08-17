@@ -211,6 +211,20 @@ def get_features_for_symbol(symbol: str) -> List[Dict[str, Any]]:
         return [_row(r) for r in rows]
 
 
+def recent_daily_features(symbol: str, n: int = 5) -> List[Dict[str, Any]]:
+    """Últimos `n` días YA guardados para el símbolo, más reciente
+    primero (índice 0 = el día más reciente disponible) -- usado por la
+    capa de ALERTA TEMPRANA en vivo (2026-08-17) para medir persistencia y
+    aceleración de `relative_volume` sin recalcular nada. Nunca incluye el
+    día en curso (la Base Histórica solo tiene días ya cerrados)."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM daily_features WHERE symbol=? ORDER BY date DESC LIMIT ?",
+            (symbol, n),
+        ).fetchall()
+        return [_row(r) for r in rows]
+
+
 def latest_volatility_14d_pct(symbol: str) -> Optional[float]:
     """Última `volatility_14d_pct` conocida para el símbolo (el día más
     reciente ya guardado en la Base Histórica) -- usada por CAPA 2 en vivo

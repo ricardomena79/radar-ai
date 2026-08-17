@@ -111,6 +111,27 @@ CREATE TABLE IF NOT EXISTS radar_meta (
     value TEXT
 );
 
+-- Capa observacional de ALERTA TEMPRANA (Fase 4, 2026-08-17) --
+-- append-only, una fila por CAMBIO de ventana (no por sweep) --
+-- ver atlas_live/radar/alert_stage.py. Nunca la lee candidate_gates.py,
+-- el score en vivo ni decision_engine.py.
+CREATE TABLE IF NOT EXISTS alert_stage_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker TEXT NOT NULL,
+    market_date TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    stage TEXT NOT NULL,
+    relative_volume_hoy REAL,
+    volatility_14d_pct REAL,
+    dias_volumen_elevado INTEGER,
+    aceleracion_volumen REAL,
+    timing_deteccion_hoy TEXT,
+    racional_available INTEGER,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_alert_ticker_date ON alert_stage_log(ticker, market_date);
+CREATE INDEX IF NOT EXISTS idx_alert_date_stage ON alert_stage_log(market_date, stage);
+
 -- Reinicio del aprendizaje (2026-08-15): resumen auditable de cada día de
 -- mercado -- estudiadas/candidatas/señales/aciertos/falsos positivos/
 -- tardías/bandas, para que el informe de cierre y la precisión acumulada
@@ -326,6 +347,180 @@ def count_signals_for_date(market_date: str) -> int:
             "SELECT COUNT(*) AS n FROM candidate_detection WHERE market_date=? AND es_senal=1", (market_date,)
         ).fetchone()
         return row["n"] if row else 0
+
+
+# --------------------------- alerta temprana (Fase 4, 2026-08-17) ---------------------------
+
+def latest_alert_stage(ticker: str, market_date: str) -> Optional[str]:
+    """Última ventana registrada para esta candidata hoy, o `None` si
+    todavía no tiene ninguna -- usado por `candidate_tracker` para saber si
+    hay que insertar una fila nueva (solo ante un CAMBIO real de ventana)."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT stage FROM alert_stage_log WHERE ticker=? AND market_date=? ORDER BY observed_at DESC LIMIT 1",
+            (ticker, market_date),
+        ).fetchone()
+        return row["stage"] if row else None
+
+
+def record_alert_stage(
+    ticker: str, market_date: str, observed_at: str, stage: str,
+    relative_volume_hoy: Optional[float] = None, volatility_14d_pct: Optional[float] = None,
+    dias_volumen_elevado: Optional[int] = None, aceleracion_volumen: Optional[float] = None,
+    timing_deteccion_hoy: Optional[str] = None, racional_available: Optional[bool] = None,
+) -> bool:
+    """Registra una nueva fila SOLO si `stage` es distinto del último
+    registrado para esta candidata hoy (evita miles de filas duplicadas por
+    sweep -- append-only de TRANSICIONES, no de cada observación). Devuelve
+    True si se insertó."""
+    if latest_alert_stage(ticker, market_date) == stage:
+        return False
+    with _connect() as conn:
+        conn.execute(
+            """INSERT INTO alert_stage_log
+               (ticker, market_date, observed_at, stage, relative_volume_hoy, volatility_14d_pct,
+                dias_volumen_elevado, aceleracion_volumen, timing_deteccion_hoy, racional_available, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (ticker, market_date, observed_at, stage, relative_volume_hoy, volatility_14d_pct,
+             dias_volumen_elevado, aceleracion_volumen, timing_deteccion_hoy,
+             None if racional_available is None else int(racional_available), _now()),
+        )
+        conn.commit()
+        return True
+
+
+def alert_stage_history_for_date(market_date: str) -> List[Dict[str, Any]]:
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM alert_stage_log WHERE market_date=? ORDER BY ticker, observed_at",
+            (market_date,),
+        ).fetchall()
+        return [_row(r) for r in rows]
+
+
+def alert_stage_effectiveness_report(market_date: Optional[str] = None) -> Dict[str, Any]:
+    """Mide con evidencia real qué tan efectiva fue cada ventana: cuántas
+    ALERTA_TEMPRANA/ALERTA_FUERTE avanzan a INICIO/CONFIRMACION, cuántas
+    terminan con `candidate_outcome.reached_20/50/100`, tiempo real (en
+    minutos) desde la alerta hasta el inicio, cuántas ALERTA_FUERTE nunca
+    llegan a +20% (falso positivo), y el mismo desglose separado por
+    `racional_available` (capturado EN VIVO en cada fila, no una foto de la
+    Base Histórica). `market_date=None` -- toda la historia registrada.
+    Solo lectura, nunca escribe nada."""
+    from atlas_live.radar.alert_stage import ALERT_STAGES
+
+    with _connect() as conn:
+        if market_date:
+            rows = conn.execute(
+                "SELECT * FROM alert_stage_log WHERE market_date=? ORDER BY ticker, market_date, observed_at",
+                (market_date,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM alert_stage_log ORDER BY ticker, market_date, observed_at"
+            ).fetchall()
+    log = [_row(r) for r in rows]
+
+    por_candidata: Dict[tuple, List[Dict[str, Any]]] = {}
+    for r in log:
+        por_candidata.setdefault((r["ticker"], r["market_date"]), []).append(r)
+
+    outcomes: Dict[tuple, Dict[str, Any]] = {}
+    with _connect() as conn:
+        for ticker, md in por_candidata:
+            row = conn.execute(
+                "SELECT reached_20, reached_50, reached_100 FROM candidate_outcome WHERE ticker=? AND market_date=?",
+                (ticker, md),
+            ).fetchone()
+            if row:
+                outcomes[(ticker, md)] = _row(row)
+
+    def _empty_bucket() -> Dict[str, Any]:
+        return {
+            "n_candidatas": 0, "n_avanza_a_inicio_o_confirmacion": 0,
+            "n_con_outcome_cerrado": 0, "n_reached_20": 0, "n_reached_50": 0, "n_reached_100": 0,
+            "n_falso_positivo": 0, "_tiempos_min": [],
+        }
+
+    general = {s: _empty_bucket() for s in ALERT_STAGES}
+    racional = {
+        "true": {s: _empty_bucket() for s in ALERT_STAGES},
+        "false": {s: _empty_bucket() for s in ALERT_STAGES},
+        "desconocido": {s: _empty_bucket() for s in ALERT_STAGES},
+    }
+
+    for (ticker, md), transiciones in por_candidata.items():
+        vistos: set = set()
+        outcome = outcomes.get((ticker, md))
+        racional_val = transiciones[0].get("racional_available")
+        racional_key = "true" if racional_val == 1 else ("false" if racional_val == 0 else "desconocido")
+
+        for i, t in enumerate(transiciones):
+            stage = t["stage"]
+            if stage not in ALERT_STAGES or stage in vistos:
+                continue  # una sola vez por candidata, la PRIMERA vez que llegó a esa ventana
+            vistos.add(stage)
+
+            for bucket in (general[stage], racional[racional_key][stage]):
+                bucket["n_candidatas"] += 1
+                avanza = any(t2["stage"] in ("INICIO", "CONFIRMACION") for t2 in transiciones[i + 1:])
+                if stage in ("ALERTA_TEMPRANA", "ALERTA_FUERTE") and avanza:
+                    bucket["n_avanza_a_inicio_o_confirmacion"] += 1
+                    inicio = next((t2 for t2 in transiciones[i + 1:] if t2["stage"] in ("INICIO", "CONFIRMACION")), None)
+                    if inicio is not None:
+                        try:
+                            dt1 = datetime.fromisoformat(t["observed_at"])
+                            dt2 = datetime.fromisoformat(inicio["observed_at"])
+                            bucket["_tiempos_min"].append(round((dt2 - dt1).total_seconds() / 60.0, 1))
+                        except (ValueError, TypeError):
+                            pass
+                if outcome is not None:
+                    bucket["n_con_outcome_cerrado"] += 1
+                    if outcome.get("reached_20"):
+                        bucket["n_reached_20"] += 1
+                    if outcome.get("reached_50"):
+                        bucket["n_reached_50"] += 1
+                    if outcome.get("reached_100"):
+                        bucket["n_reached_100"] += 1
+                    if stage == "ALERTA_FUERTE" and not outcome.get("reached_20"):
+                        bucket["n_falso_positivo"] += 1
+
+    def _finalize(buckets: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+        out = {}
+        for stage, b in buckets.items():
+            tiempos = b.pop("_tiempos_min")
+            b["tiempo_promedio_hasta_inicio_min"] = round(sum(tiempos) / len(tiempos), 1) if tiempos else None
+            b["tiempo_mediana_hasta_inicio_min"] = (
+                round(sorted(tiempos)[len(tiempos) // 2], 1) if tiempos else None
+            )
+            out[stage] = b
+        return out
+
+    return {
+        "market_date": market_date,
+        "general": _finalize(general),
+        "racional_available_true": _finalize(racional["true"]),
+        "racional_available_false": _finalize(racional["false"]),
+        "racional_available_desconocido": _finalize(racional["desconocido"]),
+    }
+
+
+def current_alert_stages_for_date(market_date: str) -> List[Dict[str, Any]]:
+    """La última ventana de cada candidata que tuvo alguna alerta hoy --
+    una fila por ticker, la más reciente -- para el panel en vivo de la
+    Cabina (estado actual, no el historial completo de transiciones)."""
+    with _connect() as conn:
+        rows = conn.execute(
+            """SELECT a.* FROM alert_stage_log a
+               JOIN (
+                   SELECT ticker, MAX(observed_at) AS max_observed_at
+                   FROM alert_stage_log WHERE market_date=? GROUP BY ticker
+               ) latest ON latest.ticker = a.ticker AND latest.max_observed_at = a.observed_at
+               WHERE a.market_date=?
+               ORDER BY a.observed_at DESC""",
+            (market_date, market_date),
+        ).fetchall()
+        return [_row(r) for r in rows]
 
 
 # --------------------------- análisis 1 minuto ---------------------------

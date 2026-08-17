@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 from atlas.data.models.quote import Quote
+from atlas_live.radar import alert_stage as als
 from atlas_live.radar import candidate_gates as gates
 from atlas_live.radar import candidate_registry as reg
 from atlas_live.radar import phase_classifier as pc
@@ -93,6 +94,71 @@ def _tag_experimental_signals_at_detection(symbol: str, market_date: str, quote:
     )
 
 
+def _tag_alert_stage(
+    symbol: str, market_date: str, observed_at: str, quote: Optional[Quote],
+    gates_fired_payload: list, session: str,
+) -> None:
+    """Capa OBSERVACIONAL de ALERTA TEMPRANA (Fase 4, 2026-08-17) -- calcula
+    y registra la ventana actual (`alert_stage.classify_alert_stage`) en
+    CADA sweep de una candidata ya vista (no solo la primera detección, a
+    diferencia de `_tag_phase_at_detection`), para que el panel en vivo
+    muestre el estado real mientras la candidata sigue activa.
+
+    Puramente aditiva: solo lee `reference_registry` (histórico, ya
+    construido) y `Quote` (ya disponible en este sweep), y solo ESCRIBE en
+    `alert_stage_log` (tabla nueva, propia). Nunca toca `gates_fired`, el
+    resultado de `evaluate_all_gates()`, `candidate_detection` ni ninguna
+    columna que lea el score en vivo o `DecisionEngine`."""
+    try:
+        from atlas_live.reference import reference_registry as ref_reg
+
+        percentile_90 = ref_reg.percentile_change_pct(symbol, 0.9)
+        recent = ref_reg.recent_daily_features(symbol, n=5)
+        volatility_14d_pct = ref_reg.latest_volatility_14d_pct(symbol)
+    except Exception:
+        percentile_90 = None
+        recent = []
+        volatility_14d_pct = None
+
+    change_pct = quote.change_percent if quote is not None else None
+    relative_volume_hoy = quote.relative_volume if quote is not None else None
+    gate_names = [g["name"] for g in gates_fired_payload]
+    tag = pc.from_live_detection(change_pct, gate_names, percentile_90, session)
+
+    dias_volumen_elevado = sum(
+        1 for r in recent if (r.get("relative_volume") or 0) >= als.VOLUME_ELEVATED_THRESHOLD
+    )
+    aceleracion_volumen = None
+    if len(recent) >= 2:
+        mas_reciente = recent[0].get("relative_volume")
+        mas_antiguo = recent[-1].get("relative_volume")
+        if mas_reciente is not None and mas_antiguo is not None:
+            aceleracion_volumen = round(mas_reciente - mas_antiguo, 3)
+
+    stage = als.classify_alert_stage(
+        relative_volume_hoy=relative_volume_hoy, dias_volumen_elevado=dias_volumen_elevado,
+        aceleracion_volumen=aceleracion_volumen, volatility_14d_pct=volatility_14d_pct,
+        timing_deteccion_hoy=tag.timing_deteccion,
+    )
+    if stage is None:
+        return
+
+    racional_available = None
+    try:
+        from atlas.data.universe import is_available
+
+        racional_available = is_available(symbol)
+    except Exception:
+        racional_available = None
+
+    reg.record_alert_stage(
+        symbol, market_date, observed_at, stage,
+        relative_volume_hoy=relative_volume_hoy, volatility_14d_pct=volatility_14d_pct,
+        dias_volumen_elevado=dias_volumen_elevado, aceleracion_volumen=aceleracion_volumen,
+        timing_deteccion_hoy=tag.timing_deteccion, racional_available=racional_available,
+    )
+
+
 def process_sweep(
     quotes: Dict[str, Quote],
     history: SweepHistory,
@@ -146,6 +212,7 @@ def process_sweep(
                 current.price, current.change_pct, current.volume, current.relative_volume,
                 gates_fired_payload,
             )
+            _tag_alert_stage(symbol, market_date, observed_at, quote, gates_fired_payload, session)
             n_obs += 1
         elif reg.is_detected(symbol, market_date):
             # Ya es candidata de un barrido anterior -- sigue con seguimiento
@@ -159,6 +226,7 @@ def process_sweep(
                 current.price, current.change_pct, current.volume, current.relative_volume,
                 [],
             )
+            _tag_alert_stage(symbol, market_date, observed_at, quote, [], session)
             n_obs += 1
 
         history.push(symbol, current)

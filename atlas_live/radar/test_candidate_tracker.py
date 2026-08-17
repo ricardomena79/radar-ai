@@ -164,6 +164,79 @@ def test_reset_de_dia_limpia_el_historial():
         _restore()
 
 
+def test_tag_alert_stage_registra_preparacion_con_volatilidad_elevada():
+    """Fase 4 (2026-08-17) -- capa observacional, nunca toca gates_fired ni
+    candidate_detection. Con volatilidad de régimen alta y sin volumen
+    elevado todavía, la ventana debe ser PREPARACION."""
+    _fresh()
+    try:
+        from atlas_live.reference import reference_registry as ref_reg
+
+        orig_vol = ref_reg.latest_volatility_14d_pct
+        orig_recent = ref_reg.recent_daily_features
+        orig_pct = ref_reg.percentile_change_pct
+        ref_reg.latest_volatility_14d_pct = lambda symbol: 15.0
+        ref_reg.recent_daily_features = lambda symbol, n=5: []  # sin historial de volumen
+        ref_reg.percentile_change_pct = lambda symbol, p: None
+        try:
+            h = SweepHistory()
+            # change_pct=5.0 dispara gate_price_change (>=3.0%) para que
+            # process_sweep entre a la rama de deteccion y llame a
+            # _tag_alert_stage -- rvol=1.0 (bajo el piso de 2.0) evita que
+            # el volumen de HOY por si solo empuje a ALERTA_TEMPRANA.
+            tracker.process_sweep({"AAPL": _quote("AAPL", 305.0, 5.0, rvol=1.0)}, h, "2026-08-14", "regular", _now())
+            assert reg.latest_alert_stage("AAPL", "2026-08-14") == "PREPARACION"
+        finally:
+            ref_reg.latest_volatility_14d_pct = orig_vol
+            ref_reg.recent_daily_features = orig_recent
+            ref_reg.percentile_change_pct = orig_pct
+    finally:
+        _restore()
+
+
+def test_tag_alert_stage_registra_alerta_fuerte_con_persistencia_y_aceleracion():
+    _fresh()
+    try:
+        from atlas_live.reference import reference_registry as ref_reg
+
+        orig_vol = ref_reg.latest_volatility_14d_pct
+        orig_recent = ref_reg.recent_daily_features
+        orig_pct = ref_reg.percentile_change_pct
+        ref_reg.latest_volatility_14d_pct = lambda symbol: 15.0
+        # recent_daily_features: mas reciente primero (T-1..T-5) -- 3 dias
+        # elevados (>=2.0) y aceleracion positiva (T-1=6.0 menos T-5=2.0)
+        ref_reg.recent_daily_features = lambda symbol, n=5: [
+            {"relative_volume": 6.0}, {"relative_volume": 5.0}, {"relative_volume": 3.0},
+            {"relative_volume": 1.0}, {"relative_volume": 2.0},
+        ]
+        ref_reg.percentile_change_pct = lambda symbol, p: None
+        try:
+            h = SweepHistory()
+            tracker.process_sweep({"AAPL": _quote("AAPL", 305.0, 5.0, rvol=1.0)}, h, "2026-08-14", "regular", _now())
+            assert reg.latest_alert_stage("AAPL", "2026-08-14") == "ALERTA_FUERTE"
+        finally:
+            ref_reg.latest_volatility_14d_pct = orig_vol
+            ref_reg.recent_daily_features = orig_recent
+            ref_reg.percentile_change_pct = orig_pct
+    finally:
+        _restore()
+
+
+def test_tag_alert_stage_no_toca_gates_fired_ni_candidate_detection():
+    """Confirma explícitamente que la capa observacional no altera nada de
+    lo que ya escribía process_sweep antes de esta fase."""
+    _fresh()
+    try:
+        h = SweepHistory()
+        result = tracker.process_sweep({"AAPL": _quote("AAPL", 305.0, 5.0, rvol=2.0)}, h, "2026-08-14", "regular", _now())
+        candidatas = reg.list_candidates_for_date("2026-08-14")
+        assert "AAPL" in result.n_nuevas_detecciones
+        assert candidatas[0]["gates_fired"]  # sigue disparando puertas normalmente
+        assert "stage" not in candidatas[0]  # alert_stage vive en su propia tabla, no mezclada acá
+    finally:
+        _restore()
+
+
 if __name__ == "__main__":
     import traceback
 

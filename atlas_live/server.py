@@ -268,6 +268,28 @@ def api_radar_informe_dia():
     })
 
 
+@app.route("/api/radar-alert-stages")
+def api_radar_alert_stages():
+    """Capa OBSERVACIONAL de ALERTA TEMPRANA (Fase 4, 2026-08-17) -- ventana
+    actual (PREPARACION/ALERTA_TEMPRANA/ALERTA_FUERTE/INICIO/CONFIRMACION/
+    NO_PERSEGUIR) de cada candidata con alerta hoy, más un conteo por
+    ventana. Solo lectura, mismo patrón que `/api/radar-universo`. Nunca
+    bloquea ni prioriza candidatas -- ver `atlas_live/radar/alert_stage.py`."""
+    from atlas_live.memory import market_hours as _mh
+    from atlas_live.radar import candidate_registry as radar_registry
+
+    market_date = _mh.market_date()
+    actuales = radar_registry.current_alert_stages_for_date(market_date)
+    conteos = {}
+    for c in actuales:
+        conteos[c["stage"]] = conteos.get(c["stage"], 0) + 1
+    return jsonify({
+        "market_date": market_date,
+        "candidatas_con_alerta": actuales,
+        "conteos_por_ventana": conteos,
+    })
+
+
 @app.route("/api/learning-maturity")
 def api_learning_maturity():
     """Aprendizaje en Vivo + Madurez (2026-08-15, ver
@@ -376,6 +398,26 @@ def api_admin_precursor_report():
     from atlas_live.learning import precursor_analysis as pa
 
     return jsonify(pa.generate_precursor_report())
+
+
+@app.route("/api/admin/alert-effectiveness-report")
+def api_admin_alert_effectiveness_report():
+    """Solo lectura (Fase 4, 2026-08-17): mide con evidencia real qué tan
+    efectiva fue cada ventana de ALERTA TEMPRANA en vivo -- cuántas
+    avanzan a INICIO/CONFIRMACION, cuántas llegan a +20/+50/+100%, tiempo
+    real hasta el inicio, falsos positivos, y el mismo desglose separado
+    por racional_available (capturado en vivo). `?date=YYYY-MM-DD` limita a
+    un día; sin parámetro, toda la historia registrada. Ver
+    `atlas_live/radar/candidate_registry.py::alert_stage_effectiveness_report`.
+    Admin porque puede ser una consulta pesada, no pensada para el refresco
+    frecuente de la Cabina."""
+    if not _admin_token_ok():
+        return jsonify({"error": "no autorizado"}), 403
+
+    from atlas_live.radar import candidate_registry as radar_registry
+
+    market_date = request.args.get("date")
+    return jsonify(radar_registry.alert_stage_effectiveness_report(market_date))
 
 
 @app.route("/api/admin/separation-report")

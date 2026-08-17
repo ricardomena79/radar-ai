@@ -80,6 +80,32 @@ def test_universe_breakdown_vacio():
         _restore()
 
 
+def test_recent_daily_features_devuelve_mas_reciente_primero():
+    _fresh()
+    try:
+        with reg._connect() as conn:
+            for date, rv in [("2026-06-01", 1.0), ("2026-06-02", 2.0), ("2026-06-03", 3.0),
+                              ("2026-06-04", 4.0), ("2026-06-05", 5.0), ("2026-06-06", 6.0)]:
+                conn.execute(
+                    "INSERT INTO daily_features (symbol, date, relative_volume, created_at) VALUES (?,?,?,?)",
+                    ("AAPL", date, rv, reg._now()),
+                )
+            conn.commit()
+        recent = reg.recent_daily_features("AAPL", n=5)
+        assert [r["date"] for r in recent] == ["2026-06-06", "2026-06-05", "2026-06-04", "2026-06-03", "2026-06-02"]
+        assert recent[0]["relative_volume"] == 6.0
+    finally:
+        _restore()
+
+
+def test_recent_daily_features_simbolo_sin_historial():
+    _fresh()
+    try:
+        assert reg.recent_daily_features("NOPE", n=5) == []
+    finally:
+        _restore()
+
+
 if __name__ == "__main__":
     import traceback
 

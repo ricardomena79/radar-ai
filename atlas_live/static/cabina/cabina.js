@@ -1357,8 +1357,71 @@ function renderRadarUniverso() {
   }
 }
 
+let _alertStages = null;
+
+async function fetchAlertStages() {
+  try {
+    const res = await fetch("/api/radar-alert-stages");
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    _alertStages = await res.json();
+  } catch (err) {
+    console.error("fetchAlertStages:", err);
+    _alertStages = null;
+  }
+  renderAlertStages();
+}
+
+const ALERT_STAGE_STYLE = {
+  PREPARACION: { label: "Preparación", color: "var(--text-dim)" },
+  ALERTA_TEMPRANA: { label: "Alerta Temprana", color: "var(--amber)" },
+  ALERTA_FUERTE: { label: "Alerta Fuerte", color: "var(--amber)", bold: true },
+  INICIO: { label: "Inicio", color: "var(--green)" },
+  CONFIRMACION: { label: "Confirmación", color: "var(--green)", bold: true },
+  NO_PERSEGUIR: { label: "No Perseguir", color: "var(--red)" },
+};
+const ALERT_STAGE_ORDER = ["PREPARACION", "ALERTA_TEMPRANA", "ALERTA_FUERTE", "INICIO", "CONFIRMACION", "NO_PERSEGUIR"];
+
+function renderAlertStages() {
+  const conteosEl = document.getElementById("alert-stage-conteos");
+  const tablaEl = document.getElementById("alert-stage-tabla");
+  if (!conteosEl || !tablaEl) return;
+  if (!_alertStages) {
+    conteosEl.innerHTML = tablaEl.innerHTML = `<div class="empty-state">No disponible.</div>`;
+    return;
+  }
+  const conteos = _alertStages.conteos_por_ventana || {};
+  const card = (icon, label, value) =>
+    `<div class="lh-card"><div class="lh-icon">${icon}</div><div class="lh-label">${label}</div><div class="lh-value">${value}</div></div>`;
+  conteosEl.innerHTML = ALERT_STAGE_ORDER.map(stage => {
+    const st = ALERT_STAGE_STYLE[stage];
+    return card("🔔", st.label, conteos[stage] || 0);
+  }).join("");
+
+  const candidatas = _alertStages.candidatas_con_alerta || [];
+  if (!candidatas.length) {
+    tablaEl.innerHTML = `<div class="empty-state">Sin alertas activas en este momento (capa observacional -- nunca bloquea el radar principal).</div>`;
+    return;
+  }
+  tablaEl.innerHTML = `<div style="overflow-x:auto"><table class="data-table">
+    <thead><tr><th>Ticker</th><th>Ventana</th><th>Actualizado</th><th style="text-align:right">RVOL hoy</th><th style="text-align:right">Volatilidad 14d</th><th style="text-align:right">Días vol. elevado</th><th>Timing hoy</th><th>Racional</th></tr></thead>
+    <tbody>${candidatas.map(c => {
+      const st = ALERT_STAGE_STYLE[c.stage] || { label: c.stage, color: "var(--text-dim)" };
+      return `<tr>
+        <td>${c.ticker}</td>
+        <td><span style="color:${st.color};font-weight:${st.bold ? 700 : 600}">${st.label}</span></td>
+        <td>${c.observed_at ? fmtTimeSec(c.observed_at) + " ET" : "—"}</td>
+        <td style="text-align:right">${c.relative_volume_hoy != null ? fmtNum(c.relative_volume_hoy) + "x" : "—"}</td>
+        <td style="text-align:right">${c.volatility_14d_pct != null ? fmtNum(c.volatility_14d_pct) + "%" : "—"}</td>
+        <td style="text-align:right">${c.dias_volumen_elevado != null ? c.dias_volumen_elevado : "—"}</td>
+        <td>${c.timing_deteccion_hoy || "—"}</td>
+        <td>${c.racional_available === 1 ? "Sí" : (c.racional_available === 0 ? "No" : "—")}</td>
+      </tr>`;
+    }).join("")}</tbody></table></div>`;
+}
+
 function startPanelStatusPolling() {
   fetchRadarUniverso();
+  fetchAlertStages();
   fetchEstudio();
   fetchSignals();
   fetchExplosionHistory();
@@ -1382,6 +1445,7 @@ function startPanelStatusPolling() {
   setInterval(fetchSignals, PANEL_STATUS_POLL_MS);
   setInterval(fetchEstudio, PANEL_STATUS_POLL_MS);
   setInterval(fetchRadarUniverso, PANEL_STATUS_POLL_MS);
+  setInterval(fetchAlertStages, PANEL_STATUS_POLL_MS);
 }
 
 /* 📸 Guardar Estado del Día -- aprobado el 2026-08-02, último elemento
