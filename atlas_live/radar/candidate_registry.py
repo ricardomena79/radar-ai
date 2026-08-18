@@ -288,6 +288,43 @@ def max_price_today(ticker: str, market_date: str) -> Optional[float]:
         return row["maxp"] if row and row["maxp"] is not None else None
 
 
+def movers_since_detection(market_date: str, min_pct: float = 10.0) -> List[Dict[str, Any]]:
+    """Investigación (2026-08-18, caso real XOS validado externamente con
+    TradingView): para CADA candidata detectada hoy (todo el universo
+    Tradier, nunca solo Racional), calcula el % real desde
+    `price_at_detection` hasta el precio MÁXIMO efectivamente observado
+    (`MAX(candidate_observation.price)`) -- ambos ya persistidos, ningún
+    dato nuevo ni inventado. Devuelve solo las que llegaron a >= `min_pct`,
+    ordenadas de mayor a menor. Puramente de solo lectura -- no escribe
+    nada, no participa en ningún gate ni clasificación."""
+    with _connect() as conn:
+        rows = conn.execute(
+            """SELECT d.ticker, d.detected_at, d.price_at_detection, d.session,
+                      d.relative_volume_at_detection, MAX(o.price) AS max_price
+               FROM candidate_detection d
+               JOIN candidate_observation o ON o.ticker = d.ticker AND o.market_date = d.market_date
+               WHERE d.market_date = ? AND d.price_at_detection IS NOT NULL AND d.price_at_detection > 0
+               GROUP BY d.ticker""",
+            (market_date,),
+        ).fetchall()
+    out: List[Dict[str, Any]] = []
+    for r in rows:
+        price_at_detection = r["price_at_detection"]
+        max_price = r["max_price"]
+        if max_price is None:
+            continue
+        max_pct_gain = round((max_price - price_at_detection) / price_at_detection * 100, 2)
+        if max_pct_gain >= min_pct:
+            out.append({
+                "ticker": r["ticker"], "detected_at": r["detected_at"],
+                "price_at_detection": price_at_detection, "max_price": max_price,
+                "max_pct_gain": max_pct_gain, "session": r["session"],
+                "relative_volume_at_detection": r["relative_volume_at_detection"],
+            })
+    out.sort(key=lambda m: -m["max_pct_gain"])
+    return out
+
+
 def get_detection(ticker: str, market_date: str) -> Optional[Dict[str, Any]]:
     with _connect() as conn:
         row = conn.execute(

@@ -296,6 +296,50 @@ def api_radar_universo():
     })
 
 
+@app.route("/api/radar-movers")
+def api_radar_movers():
+    """Investigación de solo lectura (2026-08-18, caso real XOS validado
+    externamente con TradingView, +110%): para CADA candidata detectada
+    hoy en TODO el universo Tradier (nunca solo Racional -- Atlas debe
+    poder mostrar de qué aprendió aunque no se pueda operar en Racional),
+    calcula el % real desde el precio de detección hasta el máximo
+    efectivamente observado (`candidate_registry.movers_since_detection`,
+    ambos ya persistidos, sin inventar ni recalcular nada). `?min_pct=X`
+    (default 10.0) filtra el piso; `?date=YYYY-MM-DD` para otro día.
+    Público, sin token -- mismo patrón que `/api/radar-universo`."""
+    from atlas_live.memory import market_hours as _mh
+    from atlas_live.radar import candidate_registry as radar_registry
+
+    try:
+        from atlas.data.universe import is_available
+    except Exception:
+        is_available = None
+
+    def _es_racional(ticker: str):
+        if is_available is None:
+            return None
+        try:
+            return bool(is_available(ticker))
+        except Exception:
+            return None
+
+    market_date = request.args.get("date") or _mh.market_date()
+    try:
+        min_pct = float(request.args.get("min_pct", 10.0))
+    except (TypeError, ValueError):
+        min_pct = 10.0
+
+    movers = radar_registry.movers_since_detection(market_date, min_pct=min_pct)
+    stages_by_ticker = {a["ticker"]: a for a in radar_registry.current_alert_stages_for_date(market_date)}
+    for m in movers:
+        stage_row = stages_by_ticker.get(m["ticker"])
+        m["stage"] = stage_row["stage"] if stage_row else None
+        m["direction"] = stage_row.get("direction") if stage_row else None
+        m["racional_available"] = _es_racional(m["ticker"])
+
+    return jsonify({"market_date": market_date, "min_pct": min_pct, "n": len(movers), "movers": movers})
+
+
 @app.route("/api/radar-informe-dia")
 def api_radar_informe_dia():
     """Informe de cierre del radar (2026-08-14): condiciones en detección vs.

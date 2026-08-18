@@ -4,6 +4,8 @@ import tempfile
 import uuid as _uuid
 from pathlib import Path
 
+import pytest
+
 from atlas_live.radar import candidate_registry as reg
 
 _ORIG = reg.DB_PATH
@@ -361,6 +363,56 @@ def test_max_price_today_no_mezcla_dias_ni_tickers_distintos():
         reg.record_observation("YYAI", "2026-08-18", "2026-08-18T10:00:00Z", "s2", 1.22, 0.0, 1000, 1.0, [])
         reg.record_observation("OTRO", "2026-08-18", "2026-08-18T10:00:00Z", "s3", 99.0, 0.0, 1000, 1.0, [])
         assert reg.max_price_today("YYAI", "2026-08-18") == 1.22
+    finally:
+        _restore()
+
+
+def test_movers_since_detection_caso_xos_real():
+    """Reproduce el patrón real de XOS (2026-08-18): detectada a $2.09,
+    observaciones posteriores reales hasta un máximo de $4.60 (+120.1%) --
+    debe aparecer en movers_since_detection con el % correcto."""
+    _fresh()
+    try:
+        reg.record_detection("XOS", "2026-08-18", "premarket", "2026-08-18T08:53:38Z", "s1",
+                              2.09, 0.0, 1000, 500, 1.74, 2000, gates_fired=[])
+        reg.record_observation("XOS", "2026-08-18", "2026-08-18T08:53:38Z", "s1", 2.09, 0.0, 1000, 1.74, [])
+        reg.record_observation("XOS", "2026-08-18", "2026-08-18T13:16:52Z", "s2", 4.595, 119.9, 60000000, 20.0, [])
+        reg.record_observation("XOS", "2026-08-18", "2026-08-18T17:00:00Z", "s3", 4.60, 120.1, 65000000, 15.0, [])
+
+        movers = reg.movers_since_detection("2026-08-18", min_pct=10.0)
+        assert len(movers) == 1
+        assert movers[0]["ticker"] == "XOS"
+        assert movers[0]["max_price"] == 4.60
+        assert movers[0]["max_pct_gain"] == pytest.approx(120.1, abs=0.1)
+    finally:
+        _restore()
+
+
+def test_movers_since_detection_filtra_por_piso_minimo():
+    _fresh()
+    try:
+        reg.record_detection("AAPL", "2026-08-18", "regular", "t1", "s1",
+                              100.0, 0.0, 1000, 500, 1.0, 1000, gates_fired=[])
+        reg.record_observation("AAPL", "2026-08-18", "t1", "s1", 100.0, 0.0, 1000, 1.0, [])
+        reg.record_observation("AAPL", "2026-08-18", "t2", "s2", 105.0, 5.0, 1000, 1.0, [])  # +5%, bajo el piso
+
+        assert reg.movers_since_detection("2026-08-18", min_pct=10.0) == []
+        assert len(reg.movers_since_detection("2026-08-18", min_pct=3.0)) == 1
+    finally:
+        _restore()
+
+
+def test_movers_since_detection_orden_de_mayor_a_menor():
+    _fresh()
+    try:
+        for ticker, det_price, max_price in [("A", 10.0, 15.0), ("B", 10.0, 30.0), ("C", 10.0, 12.0)]:
+            reg.record_detection(ticker, "2026-08-18", "regular", "t1", "s1",
+                                  det_price, 0.0, 1000, 500, 1.0, 1000, gates_fired=[])
+            reg.record_observation(ticker, "2026-08-18", "t1", "s1", det_price, 0.0, 1000, 1.0, [])
+            reg.record_observation(ticker, "2026-08-18", "t2", "s2", max_price, 0.0, 1000, 1.0, [])
+
+        movers = reg.movers_since_detection("2026-08-18", min_pct=10.0)
+        assert [m["ticker"] for m in movers] == ["B", "A", "C"]  # +200%, +50%, +20%
     finally:
         _restore()
 
