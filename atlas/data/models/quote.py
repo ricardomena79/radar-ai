@@ -48,3 +48,13 @@ class Quote:
     # todavía) -- para que un futuro proveedor del Data Fusion Engine
     # pueda poblarlo sin tocar este archivo ni ningún consumidor.
     price_overnight: Optional[float] = None
+
+    # STALE_SESSION_FALLBACK (Fase 8, 2026-08-18, caso real PTEN): True
+    # cuando se esperaba precio de premarket/after-hours (según
+    # `market_state`) pero el proveedor no lo tenía y el `price_type`
+    # realmente usado terminó siendo "regular" -- el precio mostrado
+    # pertenece a la sesión ANTERIOR, no a la actual. Nunca `True` para
+    # Tradier (concepto exclusivo del pipeline Yahoo en vivo). Puramente
+    # informativo acá -- quién decide qué hacer con esto vive en
+    # `scan_worker.py`, no en este modelo.
+    stale_session_fallback: bool = False

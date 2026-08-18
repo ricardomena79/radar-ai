@@ -16,6 +16,7 @@ aprobado. Lo único que hace este módulo es orquestar el orden de esas
 llamadas y darle forma de JSON al resultado.
 """
 
+import dataclasses
 import threading
 import time
 import traceback
@@ -26,6 +27,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import yfinance as yf
 
 from atlas.data.collectors.data_collector import DataCollector
+from atlas.data.models.quote import Quote
 from atlas.data.universe import Asset, get_equities, get_etfs
 from atlas.decision_journal import DecisionJournal
 from atlas.decision_recorder import DecisionRecorder
@@ -38,6 +40,7 @@ from atlas.knowledge import NORMAL, KnowledgeEngine
 
 from atlas_live import explosive_diagnostics, explosive_engine
 from atlas_live.data_fusion.registry import get_default_provider
+from atlas_live.explosive_engine import ExplosiveResult
 from atlas_live.explosive_config import load_config as load_explosive_config
 from atlas_live.mission_control import timeline
 
@@ -128,6 +131,45 @@ def _display_decision(decision: str, confidence: float) -> Dict[str, str]:
     if confidence >= VIGILAR_SPLIT_CONFIDENCE:
         return {"code": "ESPERARIA", "emoji": "🟡", "label": "Esperaría"}
     return {"code": "SOLO_OBSERVARIA", "emoji": "🟠", "label": "Solo observaría"}
+
+
+# --- STALE_SESSION_FALLBACK (Fase 8, 2026-08-18, caso real PTEN) ---
+# Un Quote con `stale_session_fallback=True` (ver
+# `atlas_live/data_fusion/yahoo_finance_live_provider.py`) significa que
+# Yahoo esperaba dar un precio de premarket/after-hours y no lo tenía --
+# el precio efectivamente usado es el cierre de la sesión REGULAR
+# ANTERIOR, no de la sesión en curso. Atlas sigue detectando y mostrando
+# el símbolo (nunca desaparece de "Radar Completo"), pero no puede
+# presentarlo como una oportunidad de compra actual mientras ese sea el
+# caso. Esta función NO toca `DecisionEngine.decide()` ni recalcula nada
+# -- solo corrige qué se PRESENTA como recomendación, con la MISMA lógica
+# de consenso ya existente (`eligible_radar`/`radar_excluded_reason`) que
+# ya usan Explosivas/Momentum/Oportunidad del Día.
+STALE_SESSION_EXCLUDED_REASON = (
+    "Datos de sesión actual no disponibles -- precio de fallback a cierre "
+    "anterior (STALE_SESSION_FALLBACK)"
+)
+STALE_SESSION_DISPLAY_DECISION = {
+    "code": "DATOS_ANTIGUOS", "emoji": "⏳", "label": "Datos antiguos -- no recomendar",
+}
+
+
+def _apply_stale_fallback_guard(
+    quote: Quote, explosive_result: ExplosiveResult, display_decision: Dict[str, str],
+) -> Tuple[ExplosiveResult, Dict[str, str]]:
+    """Si `quote.stale_session_fallback` es True, fuerza `eligible=False`
+    (con el motivo explícito, SOLO si todavía no estaba excluida por otro
+    motivo real -- nunca se pisa un motivo genuino de Radar Explosivo) y
+    reemplaza `display_decision` por el aviso de datos antiguos. Si no es
+    stale, devuelve ambos argumentos sin tocar -- comportamiento idéntico
+    al de antes de esta fase."""
+    if not getattr(quote, "stale_session_fallback", False):
+        return explosive_result, display_decision
+    if explosive_result.eligible:
+        explosive_result = dataclasses.replace(
+            explosive_result, eligible=False, excluded_reason=STALE_SESSION_EXCLUDED_REASON,
+        )
+    return explosive_result, dict(STALE_SESSION_DISPLAY_DECISION)
 
 
 # --- Nivel de riesgo de presentación ---
@@ -434,6 +476,8 @@ def _score_symbol(asset: Asset, collector: DataCollector, money_flow_engine: Mon
             sector_money_flow_score=money_flow_score,
             config=explosive_cfg,
         )
+        display_decision = _display_decision(decision_result.decision, decision_result.confidence)
+        explosive_result, display_decision = _apply_stale_fallback_guard(quote, explosive_result, display_decision)
 
         return {
             "symbol": asset.symbol,
@@ -446,7 +490,8 @@ def _score_symbol(asset: Asset, collector: DataCollector, money_flow_engine: Mon
             "money_flow_score": money_flow_score,
             "decision": decision_result.decision,
             "confidence": decision_result.confidence,
-            "display_decision": _display_decision(decision_result.decision, decision_result.confidence),
+            "display_decision": display_decision,
+            "stale_session_fallback": getattr(quote, "stale_session_fallback", False),
             "risk_level": _risk_level(atr_score, context.vix_price if context else None),
             "explosive": {
                 "eligible": explosive_result.eligible,
@@ -759,6 +804,10 @@ def get_symbol_detail(symbol: str) -> Dict[str, Any]:
     decision_engine = DecisionEngine(collector=collector, money_flow_engine=money_flow_engine)
     decision_result = decision_engine.decide(symbol)
 
+    display_decision = _display_decision(decision_result.decision, decision_result.confidence)
+    if getattr(quote, "stale_session_fallback", False):
+        display_decision = dict(STALE_SESSION_DISPLAY_DECISION)
+
     atr_component = atlas_score.component("atr")
     risk_level = _risk_level(atr_component.score if atr_component else None, context.vix_price)
 
@@ -809,7 +858,8 @@ def get_symbol_detail(symbol: str) -> Dict[str, Any]:
             "next_events": decision_result.next_events,
             "unavailable_conditions": decision_result.unavailable_conditions,
         },
-        "display_decision": _display_decision(decision_result.decision, decision_result.confidence),
+        "display_decision": display_decision,
+        "stale_session_fallback": getattr(quote, "stale_session_fallback", False),
         "risk_level": risk_level,
         "context_used": {
             "spy_price": context.spy_price, "spy_change_percent": context.spy_change_percent,

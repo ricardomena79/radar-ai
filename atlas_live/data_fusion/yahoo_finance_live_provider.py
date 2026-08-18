@@ -107,6 +107,15 @@ class YahooFinanceLiveProvider(YahooFinanceProvider):
         market_state = info.get("marketState")
         price_type, selected_price, epoch = _select_session_price(info, market_state)
 
+        # STALE_SESSION_FALLBACK (Fase 8, 2026-08-18, caso real PTEN): si se
+        # esperaba premarket/after-hours (según `market_state`) y no había
+        # ese precio, `_select_session_price` ya cayó a "regular" -- acá se
+        # marca esa caída explícitamente. Nunca `True` cuando `market_state`
+        # ya es REGULAR/CLOSED: ahí "regular" es la sesión correcta, no un
+        # fallback.
+        expected_price_type = MARKET_STATE_TO_PRICE_TYPE.get(market_state or "", "regular")
+        stale_session_fallback = expected_price_type != "regular" and price_type == "regular"
+
         # `change_percent` se recalcula con la MISMA fórmula que ya usa
         # `YahooFinanceProvider` (precio actual vs. cierre del día
         # anterior) -- no se redefine su significado, solo se le pasa un
@@ -133,4 +142,5 @@ class YahooFinanceLiveProvider(YahooFinanceProvider):
             price_regular=info.get("regularMarketPrice") or info.get("currentPrice"),
             price_premarket=info.get("preMarketPrice"),
             price_afterhours=info.get("postMarketPrice"),
+            stale_session_fallback=stale_session_fallback,
         )

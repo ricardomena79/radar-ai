@@ -199,6 +199,12 @@ def evaluate(
         "price_afterhours": quote.price_afterhours,
         "price_overnight": quote.price_overnight,
         "price_as_of": quote.timestamp.isoformat() if quote.timestamp else None,
+        # Fase 8 (2026-08-18) -- mismo pass-through puro de arriba, ver
+        # `Quote.stale_session_fallback`. No participa en ningún gate de
+        # este archivo (todas las ramas `_fail(...)`/umbrales de abajo
+        # quedan exactamente igual); el guard que actúa sobre esto vive en
+        # `scan_worker.py`.
+        "stale_session_fallback": quote.stale_session_fallback,
     }
 
     stage_trace: List[str] = []
