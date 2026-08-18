@@ -327,3 +327,53 @@ def test_live_opportunities_racional_available_se_recalcula_en_vivo(monkeypatch)
         assert ops[0]["racional_available"] is True  # refleja el valor EN VIVO, no el guardado
     finally:
         _restore()
+
+
+# --- Retroceso desde máximo intradía (2026-08-18, caso real YYAI) ---
+
+def test_max_price_today_sin_observaciones_es_none():
+    _fresh()
+    try:
+        assert reg.max_price_today("YYAI", "2026-08-18") is None
+    finally:
+        _restore()
+
+
+def test_max_price_today_lee_el_maximo_real_persistido():
+    """Simula el patrón real YYAI: sube a un pico, después baja -- el
+    máximo debe seguir siendo el pico, aunque las observaciones más
+    recientes tengan un precio menor. Lee de `candidate_observation`, la
+    misma tabla que ya se puebla en cada barrido -- nada nuevo que romper."""
+    _fresh()
+    try:
+        reg.record_observation("YYAI", "2026-08-18", "2026-08-18T10:00:00Z", "s1", 1.22, 0.0, 1000, 1.0, [])
+        reg.record_observation("YYAI", "2026-08-18", "2026-08-18T12:00:00Z", "s2", 1.57, 28.7, 5000, 10.0, [])
+        reg.record_observation("YYAI", "2026-08-18", "2026-08-18T13:00:00Z", "s3", 1.36, 11.5, 4000, 8.0, [])
+        assert reg.max_price_today("YYAI", "2026-08-18") == 1.57
+    finally:
+        _restore()
+
+
+def test_max_price_today_no_mezcla_dias_ni_tickers_distintos():
+    _fresh()
+    try:
+        reg.record_observation("YYAI", "2026-08-17", "2026-08-17T10:00:00Z", "s1", 5.0, 0.0, 1000, 1.0, [])
+        reg.record_observation("YYAI", "2026-08-18", "2026-08-18T10:00:00Z", "s2", 1.22, 0.0, 1000, 1.0, [])
+        reg.record_observation("OTRO", "2026-08-18", "2026-08-18T10:00:00Z", "s3", 99.0, 0.0, 1000, 1.0, [])
+        assert reg.max_price_today("YYAI", "2026-08-18") == 1.22
+    finally:
+        _restore()
+
+
+def test_record_alert_stage_persiste_retroceso_desde_maximo():
+    _fresh()
+    try:
+        reg.record_detection("YYAI", "2026-08-18", "regular", "2026-08-18T10:20:00Z", "s1",
+                              1.22, 0.0, 1000, 500, 1.0, 1000, gates_fired=[])
+        reg.record_alert_stage("YYAI", "2026-08-18", "2026-08-18T14:00:00Z", "NO_PERSEGUIR",
+                                relative_volume_hoy=11.7, direction="ALCISTA",
+                                retroceso_desde_maximo_pct=12.739)
+        ops = reg.live_opportunities("2026-08-18")
+        assert ops[0]["retroceso_desde_maximo_pct"] == 12.739
+    finally:
+        _restore()

@@ -1582,10 +1582,16 @@ function renderAlertStages() {
         if (o.spread_pct != null) priceTooltipParts.push(`Spread ${fmtNum(o.spread_pct)}%`);
       }
       const priceTooltip = priceTooltipParts.join(" — ").replace(/"/g, "&quot;");
+      // Retroceso desde máximo intradía (2026-08-18): explica por qué una
+      // candidata que sigue positiva en el día puede estar en NO_PERSEGUIR
+      // -- caso real YYAI (pico $1,57, cayendo, pero +13% vs cierre de ayer).
+      const etapaTooltip = o.retroceso_desde_maximo_pct != null
+        ? `Retrocedió ${fmtNum(o.retroceso_desde_maximo_pct)}% desde su máximo de hoy`.replace(/"/g, "&quot;")
+        : "";
       return `<tr>
         <td>${o.ticker}</td>
         <td title="${motivoTooltip}"><span style="color:${fs.color};font-weight:${fs.bold ? 700 : 600}">${fs.label}</span></td>
-        <td><span style="color:${st.color};font-weight:${st.bold ? 700 : 600}">${st.label}</span></td>
+        <td title="${etapaTooltip}"><span style="color:${st.color};font-weight:${st.bold ? 700 : 600}">${st.label}</span></td>
         <td>${dir ? `<span style="color:${dir.color}">${dir.label}</span>` : "—"}</td>
         <td class="dim" title="${o.dinero_entra_sector ? "Sector con flujo de dinero activo" : ""}">${sector}</td>
         <td style="text-align:right" title="${priceTooltip}">${o.price_actual != null ? "$" + fmtNum(o.price_actual) : "—"}</td>

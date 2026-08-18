@@ -137,6 +137,60 @@ def test_valores_none_no_rompen_nada():
     ) is None
 
 
+# --- Retroceso desde máximo intradía (2026-08-18, caso real YYAI) ---
+
+def test_retroceso_fuerte_gana_sobre_confirmacion():
+    """Caso real YYAI (2026-08-18): pico $1,57, cayó a ~$1,36-1,38 --
+    seguía +13% vs cierre de ayer (direction=ALCISTA, timing habría dado
+    CONFIRMACION), pero retrocedió ~12-13% desde su propio máximo de hoy.
+    Debe ganar NO_PERSEGUIR sin importar que el timing diga lo contrario."""
+    assert als.classify_alert_stage(
+        relative_volume_hoy=11.7, dias_volumen_elevado=1, aceleracion_volumen=1.0,
+        volatility_14d_pct=64.6, timing_deteccion_hoy="recorrido_significativo_ya_hecho",
+        direction="ALCISTA", retroceso_desde_maximo_pct=12.7,
+    ) == "NO_PERSEGUIR"
+
+
+def test_retroceso_fuerte_gana_sobre_inicio():
+    assert als.classify_alert_stage(
+        relative_volume_hoy=5.0, dias_volumen_elevado=1, aceleracion_volumen=1.0,
+        volatility_14d_pct=20.0, timing_deteccion_hoy="al_comienzo",
+        direction="ALCISTA", retroceso_desde_maximo_pct=15.0,
+    ) == "NO_PERSEGUIR"
+
+
+def test_retroceso_justo_en_el_umbral_dispara():
+    assert als.classify_alert_stage(
+        relative_volume_hoy=5.0, dias_volumen_elevado=0, aceleracion_volumen=None,
+        volatility_14d_pct=None, timing_deteccion_hoy="al_comienzo",
+        direction="ALCISTA", retroceso_desde_maximo_pct=als.DRAWDOWN_FROM_PEAK_THRESHOLD_PCT,
+    ) == "NO_PERSEGUIR"
+
+
+def test_retroceso_debajo_del_umbral_no_dispara_sigue_logica_normal():
+    """Un retroceso chico (ruido normal de una microcap volátil) NO debe
+    forzar NO_PERSEGUIR -- la clasificación sigue como si no existiera."""
+    assert als.classify_alert_stage(
+        relative_volume_hoy=5.0, dias_volumen_elevado=0, aceleracion_volumen=None,
+        volatility_14d_pct=None, timing_deteccion_hoy="al_comienzo",
+        direction="ALCISTA", retroceso_desde_maximo_pct=3.5,
+    ) == "INICIO"
+
+
+def test_retroceso_none_no_cambia_el_comportamiento_existente():
+    """Compatibilidad hacia atrás: sin pasar el parámetro nuevo, el
+    resultado es idéntico al de antes de este cambio."""
+    assert als.classify_alert_stage(
+        relative_volume_hoy=1.0, dias_volumen_elevado=0, aceleracion_volumen=None,
+        volatility_14d_pct=None, timing_deteccion_hoy="al_comienzo", direction="ALCISTA",
+    ) == "INICIO"
+    assert als.classify_alert_stage(
+        relative_volume_hoy=1.0, dias_volumen_elevado=0, aceleracion_volumen=None,
+        volatility_14d_pct=None, timing_deteccion_hoy="al_comienzo", direction="ALCISTA",
+        retroceso_desde_maximo_pct=None,
+    ) == "INICIO"
+
+
 if __name__ == "__main__":
     import traceback
 

@@ -23,6 +23,7 @@ candidatas -- solo se registra para poder medir su resultado real después
 (ver `candidate_registry.record_alert_stage`).
 """
 
+import os
 from typing import Optional
 
 ALERT_STAGES = ("PREPARACION", "ALERTA_TEMPRANA", "ALERTA_FUERTE", "INICIO", "CONFIRMACION", "NO_PERSEGUIR", "FLUJO_VENDEDOR")
@@ -32,6 +33,20 @@ ALERT_STAGES = ("PREPARACION", "ALERTA_TEMPRANA", "ALERTA_FUERTE", "INICIO", "CO
 VOLATILITY_ELEVATED_THRESHOLD = 10.0   # volatility_14d_pct -- mediana categoría B (continúa) fue ~10.1-11.4
 VOLUME_ELEVATED_THRESHOLD = 2.0        # relative_volume -- mismo umbral usado en el estudio de persistencia
 DIAS_ELEVADOS_PARA_ALERTA_FUERTE = 2   # 2+ de los últimos 5 días -- separó B (35% con 2+) de A (7% con 2+)
+
+# Retroceso desde máximo intradía (2026-08-18, pedido explícito del usuario
+# -- caso real YYAI: pico $1,57, luego $1,36 -- seguía +13% vs cierre de
+# ayer, pero cayendo fuerte desde su propio máximo del día, y Atlas la
+# seguía mostrando como oportunidad porque `direction` solo compara contra
+# el cierre de AYER, nunca contra el máximo de HOY). A diferencia de
+# `VOLATILITY_ELEVATED_THRESHOLD`/`VOLUME_ELEVATED_THRESHOLD` (que salen de
+# un estudio histórico con n grande, ver docstring del módulo), este valor
+# es un punto de partida razonado, no un backtest con n grande todavía --
+# lo suficientemente por encima del ruido normal de una microcap volátil
+# (2-5% intradía) como para no disparar por variaciones normales, pero
+# comparable al retroceso real medido en YYAI (~12-13% desde el pico).
+# Configurable, para poder ajustarlo con más evidencia sin tocar código.
+DRAWDOWN_FROM_PEAK_THRESHOLD_PCT = float(os.environ.get("ATLAS_DRAWDOWN_FROM_PEAK_THRESHOLD_PCT", 8.0))
 
 _TARDIO_O_AGOTAMIENTO = ("demasiado_tarde", "agotamiento")
 
@@ -43,6 +58,7 @@ def classify_alert_stage(
     volatility_14d_pct: Optional[float],
     timing_deteccion_hoy: Optional[str],
     direction: Optional[str] = None,
+    retroceso_desde_maximo_pct: Optional[float] = None,
 ) -> Optional[str]:
     """Devuelve una de `ALERT_STAGES`, o `None` si la candidata no cumple
     ninguna condición de alerta (no se registra nada en ese caso -- nunca
@@ -59,21 +75,35 @@ def classify_alert_stage(
     (`None`/`NEUTRAL`/`INDEFINIDA`), no alcanza el timing solo para
     anunciar una señal de compra; se sigue evaluando por volumen/volatilidad.
 
+    `retroceso_desde_maximo_pct` (2026-08-18, caso real YYAI): % de caída
+    desde el precio máximo alcanzado HOY por este símbolo (ver
+    `candidate_registry.max_price_today`, calculado sobre observaciones
+    persistidas -- nunca memoria efímera). Es una señal DISTINTA de
+    `timing_deteccion_hoy` -- el timing compara contra el cierre de AYER;
+    esto compara contra el propio máximo de HOY, así que detecta una
+    reversión real aunque el símbolo siga positivo en el día.
+
     Orden de evaluación (el primero que matchea gana):
-    1. `timing_deteccion_hoy` ya avanzado (demasiado_tarde/agotamiento) -> NO_PERSEGUIR.
-    2. `recorrido_significativo_ya_hecho` -> CONFIRMACION si `direction=="ALCISTA"`,
+    1. Retroceso fuerte desde el máximo de hoy
+       (>= `DRAWDOWN_FROM_PEAK_THRESHOLD_PCT`) -> NO_PERSEGUIR, sin importar
+       qué diga el resto -- si ya está revirtiendo desde su propio pico, no
+       hay timing ni volumen que lo compense.
+    2. `timing_deteccion_hoy` ya avanzado (demasiado_tarde/agotamiento) -> NO_PERSEGUIR.
+    3. `recorrido_significativo_ya_hecho` -> CONFIRMACION si `direction=="ALCISTA"`,
        FLUJO_VENDEDOR si `direction=="BAJISTA"` -- si no, sigue evaluando abajo.
-    3. `al_comienzo` -> INICIO si `direction=="ALCISTA"`, FLUJO_VENDEDOR si
+    4. `al_comienzo` -> INICIO si `direction=="ALCISTA"`, FLUJO_VENDEDOR si
        `direction=="BAJISTA"` -- si no, sigue evaluando abajo.
-    4. Volumen persistente (2+ días elevados) + volatilidad de régimen
+    5. Volumen persistente (2+ días elevados) + volatilidad de régimen
        elevada + aceleración positiva -> ALERTA_FUERTE (FLUJO_VENDEDOR si
        `direction=="BAJISTA"`).
-    5. Al menos 1 día con volumen elevado, o volumen elevado HOY ->
+    6. Al menos 1 día con volumen elevado, o volumen elevado HOY ->
        ALERTA_TEMPRANA (FLUJO_VENDEDOR si `direction=="BAJISTA"`).
-    6. Solo volatilidad de régimen elevada, sin nada de volumen todavía ->
+    7. Solo volatilidad de régimen elevada, sin nada de volumen todavía ->
        PREPARACION (direccionalmente neutral por diseño -- "hay actividad,
        observando").
-    7. Nada de lo anterior -> `None` (sin alerta)."""
+    8. Nada de lo anterior -> `None` (sin alerta)."""
+    if retroceso_desde_maximo_pct is not None and retroceso_desde_maximo_pct >= DRAWDOWN_FROM_PEAK_THRESHOLD_PCT:
+        return "NO_PERSEGUIR"
     if timing_deteccion_hoy in _TARDIO_O_AGOTAMIENTO:
         return "NO_PERSEGUIR"
     if timing_deteccion_hoy == "recorrido_significativo_ya_hecho":

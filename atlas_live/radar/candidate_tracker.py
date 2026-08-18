@@ -133,6 +133,20 @@ def _tag_alert_stage(
     gate_names = [g["name"] for g in gates_fired_payload]
     tag = pc.from_live_detection(change_pct, gate_names, percentile_90, session, relative_volume=relative_volume_hoy)
 
+    # Retroceso desde máximo intradía (2026-08-18, pedido explícito del
+    # usuario, caso real YYAI): `reg.record_observation()` de ESTE mismo
+    # barrido ya se ejecutó antes de llamar acá (ver process_sweep), así
+    # que `max_price_today()` ya incluye el precio actual -- si es un
+    # máximo nuevo, el retroceso da 0/None correctamente, nunca negativo.
+    retroceso_desde_maximo_pct = None
+    if quote is not None and quote.last_price:
+        try:
+            peak = reg.max_price_today(symbol, market_date)
+        except Exception:
+            peak = None
+        if peak and peak > 0 and quote.last_price < peak:
+            retroceso_desde_maximo_pct = round((peak - quote.last_price) / peak * 100, 3)
+
     dias_volumen_elevado = sum(
         1 for r in recent if (r.get("relative_volume") or 0) >= als.VOLUME_ELEVATED_THRESHOLD
     )
@@ -147,6 +161,7 @@ def _tag_alert_stage(
         relative_volume_hoy=relative_volume_hoy, dias_volumen_elevado=dias_volumen_elevado,
         aceleracion_volumen=aceleracion_volumen, volatility_14d_pct=volatility_14d_pct,
         timing_deteccion_hoy=tag.timing_deteccion, direction=tag.direction,
+        retroceso_desde_maximo_pct=retroceso_desde_maximo_pct,
     )
     if stage is None:
         return
@@ -165,6 +180,7 @@ def _tag_alert_stage(
         dias_volumen_elevado=dias_volumen_elevado, aceleracion_volumen=aceleracion_volumen,
         timing_deteccion_hoy=tag.timing_deteccion, racional_available=racional_available,
         direction=tag.direction, change_pct_confiable=tag.change_pct_confiable,
+        retroceso_desde_maximo_pct=retroceso_desde_maximo_pct,
     )
 
 

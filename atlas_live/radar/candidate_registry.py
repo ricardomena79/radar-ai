@@ -193,6 +193,11 @@ def _connect() -> sqlite3.Connection:
         # disponible (Tradier en premarket muy ilíquido).
         _ensure_column(conn, "alert_stage_log", "direction", "TEXT")
         _ensure_column(conn, "alert_stage_log", "change_pct_confiable", "INTEGER")
+        # Eje de retroceso desde máximo intradía (2026-08-18, caso real YYAI:
+        # pico $1.57, luego $1.36 -- todavía +13% vs cierre de ayer, pero
+        # cayendo fuerte -- ver alert_stage.py). Puramente informativo/de
+        # trazabilidad acá; la decisión real vive en classify_alert_stage().
+        _ensure_column(conn, "alert_stage_log", "retroceso_desde_maximo_pct", "REAL")
         _schema_ready_for = str(DB_PATH)
     return conn
 
@@ -265,6 +270,22 @@ def get_observations(ticker: str, market_date: str) -> List[Dict[str, Any]]:
             (ticker, market_date),
         ).fetchall()
         return [_row(r) for r in rows]
+
+
+def max_price_today(ticker: str, market_date: str) -> Optional[float]:
+    """Precio máximo observado hoy para este ticker (2026-08-18, eje de
+    retroceso desde máximo intradía -- ver alert_stage.py). Lee
+    `candidate_observation`, que ya se puebla en CADA barrido desde antes
+    de esta función -- nunca depende de memoria efímera (`SweepHistory`),
+    así que un reinicio del contenedor NUNCA le hace "olvidar" el máximo
+    real ya alcanzado hoy. `None` si todavía no hay ninguna observación
+    con precio."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT MAX(price) AS maxp FROM candidate_observation WHERE ticker=? AND market_date=? AND price IS NOT NULL",
+            (ticker, market_date),
+        ).fetchone()
+        return row["maxp"] if row and row["maxp"] is not None else None
 
 
 def get_detection(ticker: str, market_date: str) -> Optional[Dict[str, Any]]:
@@ -388,11 +409,17 @@ def record_alert_stage(
     dias_volumen_elevado: Optional[int] = None, aceleracion_volumen: Optional[float] = None,
     timing_deteccion_hoy: Optional[str] = None, racional_available: Optional[bool] = None,
     direction: Optional[str] = None, change_pct_confiable: Optional[bool] = None,
+    retroceso_desde_maximo_pct: Optional[float] = None,
 ) -> bool:
     """Registra una nueva fila SOLO si `stage` es distinto del último
     registrado para esta candidata hoy (evita miles de filas duplicadas por
     sweep -- append-only de TRANSICIONES, no de cada observación). Devuelve
-    True si se insertó."""
+    True si se insertó.
+
+    `retroceso_desde_maximo_pct` (2026-08-18): puramente informativo/de
+    trazabilidad -- para cuando `stage=="NO_PERSEGUIR"` por haber caído
+    fuerte desde su máximo de hoy, poder explicar exactamente cuánto (ver
+    `alert_stage.classify_alert_stage`)."""
     if latest_alert_stage(ticker, market_date) == stage:
         return False
     with _connect() as conn:
@@ -400,12 +427,13 @@ def record_alert_stage(
             """INSERT INTO alert_stage_log
                (ticker, market_date, observed_at, stage, relative_volume_hoy, volatility_14d_pct,
                 dias_volumen_elevado, aceleracion_volumen, timing_deteccion_hoy, racional_available,
-                direction, change_pct_confiable, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                direction, change_pct_confiable, retroceso_desde_maximo_pct, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (ticker, market_date, observed_at, stage, relative_volume_hoy, volatility_14d_pct,
              dias_volumen_elevado, aceleracion_volumen, timing_deteccion_hoy,
              None if racional_available is None else int(racional_available),
-             direction, None if change_pct_confiable is None else int(change_pct_confiable), _now()),
+             direction, None if change_pct_confiable is None else int(change_pct_confiable),
+             retroceso_desde_maximo_pct, _now()),
         )
         conn.commit()
         return True
@@ -654,6 +682,7 @@ def live_opportunities(market_date: str) -> List[Dict[str, Any]]:
             "direction": stage_row.get("direction") if stage_row else d.get("direction_at_detection"),
             "direction_at_detection": d.get("direction_at_detection"),
             "change_pct_confiable": stage_row.get("change_pct_confiable") if stage_row else None,
+            "retroceso_desde_maximo_pct": stage_row.get("retroceso_desde_maximo_pct") if stage_row else None,
             "racional_available": racional_available,
             # Cierre de arquitectura (2026-08-18): ya se guardaban en
             # candidate_detection (tarea de detección temprana, 2026-08-16),

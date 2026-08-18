@@ -295,6 +295,94 @@ def test_tag_alert_stage_no_toca_gates_fired_ni_candidate_detection():
         _restore()
 
 
+# --- Retroceso desde máximo intradía (2026-08-18, caso real YYAI) ---
+
+def test_caso_real_yyai_pico_y_caida_fuerza_no_perseguir():
+    """Reproduce el patrón real de YYAI (2026-08-18): sube a un pico
+    ($1,57), después retrocede fuerte ($1,36) -- todavía positiva contra el
+    precio base, con timing/dirección que SIN el eje de retroceso darían
+    INICIO (se simula fijando from_live_detection, ya testeado aparte en
+    test_phase_classifier.py -- acá se prueba el WIRING nuevo end-to-end:
+    candidate_tracker calcula el retroceso desde `candidate_observation`
+    persistida y se lo pasa a classify_alert_stage, que debe ganarle a
+    INICIO)."""
+    _fresh()
+    try:
+        from atlas_live.radar import phase_classifier as pc_module
+        from atlas_live.reference import reference_registry as ref_reg
+
+        orig_from_live = tracker.pc.from_live_detection
+        orig_vol = ref_reg.latest_volatility_14d_pct
+        orig_recent = ref_reg.recent_daily_features
+        orig_pct = ref_reg.percentile_change_pct
+        # Fija timing="al_comienzo"/direction="ALCISTA" -- SIN el eje de
+        # retroceso, esto daría INICIO (ver test_al_comienzo_da_inicio en
+        # test_alert_stage.py). El objetivo es probar que el retroceso real
+        # calculado del historial persistido le gana a esto.
+        tracker.pc.from_live_detection = lambda *a, **k: pc_module.PhaseTag(
+            timing_deteccion="al_comienzo", direction="ALCISTA",
+            comportamiento_post_apertura="desconocido", reason="test", change_pct_confiable=True,
+        )
+        ref_reg.latest_volatility_14d_pct = lambda symbol: None
+        ref_reg.recent_daily_features = lambda symbol, n=5: []
+        ref_reg.percentile_change_pct = lambda symbol, p: None
+        try:
+            h = SweepHistory()
+            # sweep 1: precio base, dispara detección (change_pct >= 3.0%)
+            tracker.process_sweep({"YYAI": _quote("YYAI", 1.22, 11.5, rvol=10.0)}, h, "2026-08-18", "regular", _now())
+            assert reg.latest_alert_stage("YYAI", "2026-08-18") == "INICIO"  # sin retroceso todavía -- INICIO normal
+
+            # sweep 2: sube a su pico real de hoy
+            tracker.process_sweep({"YYAI": _quote("YYAI", 1.57, 28.7, rvol=15.0)}, h, "2026-08-18", "regular", _now())
+            assert reg.max_price_today("YYAI", "2026-08-18") == 1.57
+
+            # sweep 3: retrocede fuerte desde el pico (~13.4%) -- sigue
+            # positiva contra el precio base, timing/dirección seguirían
+            # dando INICIO si no fuera por el retroceso nuevo.
+            tracker.process_sweep({"YYAI": _quote("YYAI", 1.36, 11.5, rvol=11.7)}, h, "2026-08-18", "regular", _now())
+            assert reg.latest_alert_stage("YYAI", "2026-08-18") == "NO_PERSEGUIR"
+
+            ops = reg.live_opportunities("2026-08-18")
+            yyai = next(o for o in ops if o["ticker"] == "YYAI")
+            assert yyai["retroceso_desde_maximo_pct"] is not None
+            assert yyai["retroceso_desde_maximo_pct"] > 8.0  # por encima del umbral real
+        finally:
+            tracker.pc.from_live_detection = orig_from_live
+            ref_reg.latest_volatility_14d_pct = orig_vol
+            ref_reg.recent_daily_features = orig_recent
+            ref_reg.percentile_change_pct = orig_pct
+    finally:
+        _restore()
+
+
+def test_retroceso_no_se_dispara_si_el_precio_actual_es_el_nuevo_maximo():
+    """Un nuevo máximo (o precio estable) nunca puede dar un retroceso
+    positivo -- confirma que no se inventa una caída donde no la hay."""
+    _fresh()
+    try:
+        from atlas_live.reference import reference_registry as ref_reg
+
+        orig_vol = ref_reg.latest_volatility_14d_pct
+        orig_recent = ref_reg.recent_daily_features
+        orig_pct = ref_reg.percentile_change_pct
+        ref_reg.latest_volatility_14d_pct = lambda symbol: None
+        ref_reg.recent_daily_features = lambda symbol, n=5: []
+        ref_reg.percentile_change_pct = lambda symbol, p: None
+        try:
+            h = SweepHistory()
+            tracker.process_sweep({"AAPL": _quote("AAPL", 100.0, 5.0, rvol=3.0)}, h, "2026-08-18", "regular", _now())
+            tracker.process_sweep({"AAPL": _quote("AAPL", 105.0, 5.0, rvol=3.0)}, h, "2026-08-18", "regular", _now())
+            ops = reg.live_opportunities("2026-08-18")
+            aapl = next(o for o in ops if o["ticker"] == "AAPL")
+            assert aapl["retroceso_desde_maximo_pct"] is None
+        finally:
+            ref_reg.latest_volatility_14d_pct = orig_vol
+            ref_reg.recent_daily_features = orig_recent
+            ref_reg.percentile_change_pct = orig_pct
+    finally:
+        _restore()
+
+
 if __name__ == "__main__":
     import traceback
 
