@@ -252,6 +252,31 @@ def is_price_stale(price_as_of_iso: Optional[str], now: Optional[datetime] = Non
     return age is None or age > max_age_seconds
 
 
+# Tolerancia de VALIDACIÓN DE DATOS (2026-08-18, cierre de confiabilidad,
+# punto 8) -- NO es un umbral de trading nuevo. Es la tolerancia aritmética
+# para comparar el % de cambio que reporta un proveedor contra el que se
+# desprende de sus propios last_price/previous_close -- cubre el redondeo
+# normal a centavos, nunca decide si algo "se movió lo suficiente".
+CHANGE_PCT_COHERENCE_TOLERANCE_PP = 1.0  # puntos porcentuales
+
+
+def is_change_pct_coherent(
+    last_price: Optional[float], previous_close: Optional[float], change_percent: Optional[float],
+    tolerance_pp: float = CHANGE_PCT_COHERENCE_TOLERANCE_PP,
+) -> bool:
+    """Valida que `change_percent` sea aritméticamente consistente con
+    `(last_price - previous_close) / previous_close * 100` -- una
+    comprobación de INTEGRIDAD del dato (¿el proveedor entregó números que
+    encajan entre sí?), no una regla de trading. Si falta algún dato para
+    poder verificar (previous_close ausente o cero, o cualquiera de los 3
+    campos en None), no se puede afirmar que sea incoherente -- devuelve
+    `True`: nunca se inventa un fallo por falta de evidencia."""
+    if last_price is None or previous_close is None or not previous_close or change_percent is None:
+        return True
+    esperado = ((last_price - previous_close) / previous_close) * 100
+    return abs(esperado - change_percent) <= tolerance_pp
+
+
 def apply_serving_freshness_to_ranking_row(row: Dict[str, Any], now: Optional[datetime] = None) -> Dict[str, Any]:
     """Se llama desde `server.py` AL SERVIR `/api/ranking` -- nunca en el
     momento del escaneo. `row` puede llevar minutos en `STATE.ranking` (el

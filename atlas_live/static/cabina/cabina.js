@@ -1474,7 +1474,7 @@ function renderAlertStages() {
     return (b.detected_at || "").localeCompare(a.detected_at || "");
   });
   tablaEl.innerHTML = `<div style="overflow-x:auto"><table class="data-table">
-    <thead><tr><th>Ticker</th><th>Estado</th><th>Etapa</th><th>Dirección</th><th>Sector</th><th style="text-align:right">Precio actual</th><th style="text-align:right">Precio detección</th><th>Hora detección</th><th style="text-align:right">Min. desde detección</th><th style="text-align:right">Cambio desde detección</th><th>Fuente</th><th style="text-align:right">RVOL detección</th><th>Evidencia</th><th>Racional</th></tr></thead>
+    <thead><tr><th>Ticker</th><th>Estado</th><th>Etapa</th><th>Dirección</th><th>Sector</th><th style="text-align:right">Precio actual</th><th>Antigüedad</th><th style="text-align:right">Precio detección</th><th>Hora detección</th><th style="text-align:right">Min. desde detección</th><th style="text-align:right">Cambio desde detección</th><th>Fuente</th><th style="text-align:right">RVOL detección</th><th>Evidencia</th><th>Racional</th></tr></thead>
     <tbody>${oportunidades.map(o => {
       const st = ALERT_STAGE_STYLE[o.stage] || { label: o.stage, color: "var(--text-dim)" };
       const fs = FINAL_STATE_STYLE[o.estado_final] || { label: o.estado_final || "—", color: "var(--text-dim)" };
@@ -1491,6 +1491,7 @@ function renderAlertStages() {
         <td>${dir ? `<span style="color:${dir.color}">${dir.label}</span>` : "—"}</td>
         <td class="dim" title="${o.dinero_entra_sector ? "Sector con flujo de dinero activo" : ""}">${sector}</td>
         <td style="text-align:right">${o.price_actual != null ? "$" + fmtNum(o.price_actual) : "—"}</td>
+        <td class="dim" title="${o.price_actual_as_of ? fmtTimeSec(o.price_actual_as_of) + " ET" : ""}">${o.price_age_seconds != null ? fmtAge(o.price_age_seconds) : "—"}</td>
         <td style="text-align:right">${o.price_at_detection != null ? "$" + fmtNum(o.price_at_detection) : "—"}</td>
         <td>${o.detected_at ? fmtTimeSec(o.detected_at) + " ET" : "—"}</td>
         <td style="text-align:right">${o.minutos_desde_deteccion != null ? fmtNum(o.minutos_desde_deteccion, 0) + " min" : "—"}</td>

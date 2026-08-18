@@ -337,7 +337,16 @@ def api_radar_oportunidades():
     visual: un ticker sin disponibilidad en Racional nunca llega al JSON,
     aunque Tradier lo haya detectado con una señal fuerte. `total_detectadas_hoy`/
     `total_disponibles_racional` exponen ambos números para que el filtro
-    sea auditable, no silencioso."""
+    sea auditable, no silencioso.
+
+    Cadena de confiabilidad del precio (2026-08-18, caso real SBLK/BATL):
+    cada oportunidad trae `price_actual_as_of` (timestamp real de Tradier)
+    y `price_age_seconds` (antigüedad recalculada EN CADA REQUEST, nunca en
+    el momento del barrido) + `estado_validacion` (OK/SIN_PRECIO_ACTUAL/
+    SIN_TIMESTAMP/VENCIDO/CAMBIO_PCT_INCOHERENTE). Un `estado_validacion`
+    distinto de OK fuerza `estado_final=NO_TOCAR` con prioridad sobre
+    cualquier etapa -- una OPORTUNIDAD_PRIORITARIA nunca puede tener un
+    precio vencido, sin timestamp o con % de cambio incoherente."""
     from datetime import datetime, timezone
 
     from atlas_live.learning import historical_scoring as hsc
@@ -372,6 +381,32 @@ def api_radar_oportunidades():
         o["change_pct_actual"] = q.change_percent if q else None
         o["price_actual_source"] = "tradier" if q else None
 
+        # Cierre de la cadena de confiabilidad (2026-08-18, caso real
+        # SBLK/BATL, ahora también para este pipeline Tradier): antigüedad
+        # recalculada AHORA -- nunca en el momento del barrido -- para que
+        # un precio congelado en `radar_worker._last_quotes` (si Tradier
+        # empieza a fallar y el barrido no logra refrescarlo, ver
+        # `radar_worker.py::run_sweep_once()`, el `except` no limpia
+        # `_last_quotes`) nunca se presente como dato actual. Reutiliza
+        # `scan_worker.compute_price_age_seconds()`/`is_price_stale()`/
+        # `is_change_pct_coherent()` tal cual -- mismas funciones que ya
+        # cierran esto en el pipeline Yahoo, sin duplicar lógica.
+        price_actual_as_of = q.timestamp.isoformat() if (q and q.timestamp) else None
+        o["price_actual_as_of"] = price_actual_as_of
+        o["price_age_seconds"] = scan_worker.compute_price_age_seconds(price_actual_as_of, now=now)
+
+        if q is None:
+            estado_validacion = pc.VALIDACION_SIN_PRECIO_ACTUAL
+        elif price_actual_as_of is None:
+            estado_validacion = pc.VALIDACION_SIN_TIMESTAMP
+        elif scan_worker.is_price_stale(price_actual_as_of, now=now):
+            estado_validacion = pc.VALIDACION_VENCIDO
+        elif not scan_worker.is_change_pct_coherent(q.last_price, q.previous_close, q.change_percent):
+            estado_validacion = pc.VALIDACION_CAMBIO_PCT_INCOHERENTE
+        else:
+            estado_validacion = pc.VALIDACION_OK
+        o["estado_validacion"] = estado_validacion
+
         sector = symbol_sector_map.get(o["ticker"])
         o["sector"] = sector
         o["dinero_entra_sector"] = bool(sector) and sector in top_sectores
@@ -400,6 +435,7 @@ def api_radar_oportunidades():
             tiene_precio_actual=o["price_actual"] is not None,
             sector_flow_active=o["dinero_entra_sector"],
             historical_evidence=historical,
+            estado_validacion=estado_validacion,
         )
         o["estado_final"] = estado_final
         o["motivo_estado_final"] = motivo_estado_final

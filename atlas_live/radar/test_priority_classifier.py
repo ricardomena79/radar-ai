@@ -1,8 +1,16 @@
-"""Tests reales (puros, sin DB/red) de `priority_classifier.classify_final_priority`."""
+"""Tests reales (puros, sin DB/red) de `priority_classifier.classify_final_priority`.
+
+Extendido 2026-08-18 (cierre de la cadena de confiabilidad, caso real
+SBLK/BATL): casos B/D/E/G del pedido del usuario -- estado_validacion
+tiene prioridad sobre CUALQUIER etapa, incluida INICIO/CONFIRMACION."""
 
 from atlas_live.radar.priority_classifier import (
     FINAL_STATES,
     SIN_PRECIO_ACTUAL_MOTIVO,
+    VALIDACION_CAMBIO_PCT_INCOHERENTE,
+    VALIDACION_OK,
+    VALIDACION_SIN_TIMESTAMP,
+    VALIDACION_VENCIDO,
     classify_final_priority,
 )
 
@@ -129,6 +137,85 @@ def test_inicio_sin_direccion_alcista_confirmada_nunca_es_prioritaria():
         stage="INICIO", direction=None, change_pct_confiable=True, tiene_precio_actual=True,
     )
     assert estado != "OPORTUNIDAD_PRIORITARIA"
+
+
+# --- Cierre de la cadena de confiabilidad (2026-08-18, casos B/D/E/G) ---
+
+def test_caso_a_estado_validacion_ok_no_bloquea_una_oportunidad_prioritaria():
+    """A: Quote Tradier fresco -> puede seguir siendo elegible."""
+    estado, motivo = classify_final_priority(
+        stage="INICIO", direction="ALCISTA", change_pct_confiable=True,
+        tiene_precio_actual=True, estado_validacion=VALIDACION_OK,
+    )
+    assert estado == "OPORTUNIDAD_PRIORITARIA"
+
+
+def test_caso_b_precio_vencido_fuerza_no_tocar():
+    """B: Quote Tradier viejo -> NO RECOMENDAR."""
+    estado, motivo = classify_final_priority(
+        stage="ALERTA_TEMPRANA", direction=None, change_pct_confiable=True,
+        tiene_precio_actual=True, estado_validacion=VALIDACION_VENCIDO,
+    )
+    assert estado == "NO_TOCAR"
+    assert "DATOS NO CONFIABLES" in motivo
+    assert "vencido" in motivo
+
+
+def test_caso_d_sin_timestamp_fuerza_no_tocar():
+    """D: Quote sin timestamp -> NO RECOMENDAR."""
+    estado, motivo = classify_final_priority(
+        stage="ALERTA_FUERTE", direction=None, change_pct_confiable=True,
+        tiene_precio_actual=True, estado_validacion=VALIDACION_SIN_TIMESTAMP,
+    )
+    assert estado == "NO_TOCAR"
+    assert "timestamp" in motivo
+
+
+def test_caso_e_cambio_pct_incoherente_fuerza_no_tocar():
+    """E: Cambio porcentual incoherente -> DATOS NO CONFIABLES."""
+    estado, motivo = classify_final_priority(
+        stage="PREPARACION", direction=None, change_pct_confiable=True,
+        tiene_precio_actual=True, estado_validacion=VALIDACION_CAMBIO_PCT_INCOHERENTE,
+    )
+    assert estado == "NO_TOCAR"
+    assert "DATOS NO CONFIABLES" in motivo
+    assert "incoherente" in motivo
+
+
+def test_caso_g_oportunidad_prioritaria_nunca_existe_con_precio_vencido():
+    """G: una OPORTUNIDAD_PRIORITARIA nunca puede existir con
+    price_age_seconds vencido -- misma señal que normalmente daría
+    OPORTUNIDAD_PRIORITARIA (INICIO + ALCISTA), pero con estado_validacion
+    vencido queda en NO_TOCAR de todas formas."""
+    estado_fresco, _ = classify_final_priority(
+        stage="INICIO", direction="ALCISTA", change_pct_confiable=True,
+        tiene_precio_actual=True, estado_validacion=VALIDACION_OK,
+    )
+    estado_vencido, motivo_vencido = classify_final_priority(
+        stage="INICIO", direction="ALCISTA", change_pct_confiable=True,
+        tiene_precio_actual=True, estado_validacion=VALIDACION_VENCIDO,
+    )
+    assert estado_fresco == "OPORTUNIDAD_PRIORITARIA"
+    assert estado_vencido == "NO_TOCAR"
+    assert estado_vencido != "OPORTUNIDAD_PRIORITARIA"
+
+
+def test_estado_validacion_tiene_prioridad_sobre_vigilar_y_preparacion_tambien():
+    for stage in ("ALERTA_TEMPRANA", "ALERTA_FUERTE", "PREPARACION", "DETECCION_TEMPRANA"):
+        estado, _ = classify_final_priority(
+            stage=stage, direction=None, change_pct_confiable=True,
+            tiene_precio_actual=True, estado_validacion=VALIDACION_VENCIDO,
+        )
+        assert estado == "NO_TOCAR", f"stage={stage} debería quedar NO_TOCAR con precio vencido"
+
+
+def test_default_estado_validacion_es_ok_compatibilidad_hacia_atras():
+    """Llamadas existentes que no pasan estado_validacion (default) no
+    cambian de comportamiento -- mismo resultado que antes de este cierre."""
+    estado, _ = classify_final_priority(
+        stage="INICIO", direction="ALCISTA", change_pct_confiable=True, tiene_precio_actual=True,
+    )
+    assert estado == "OPORTUNIDAD_PRIORITARIA"
 
 
 def test_todos_los_estados_devueltos_pertenecen_a_final_states():

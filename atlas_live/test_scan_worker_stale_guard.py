@@ -26,6 +26,7 @@ from atlas_live.scan_worker import (
     apply_serving_freshness_to_memory_candidate,
     apply_serving_freshness_to_ranking_row,
     compute_price_age_seconds,
+    is_change_pct_coherent,
     is_price_stale,
 )
 
@@ -233,3 +234,34 @@ def test_apply_serving_freshness_a_memory_candidate_fresco_no_cambia_nada():
 
     assert out["eligible_radar"] is True
     assert out["semaforo"] == "verde"
+
+
+# --- Coherencia del % de cambio (2026-08-18, caso E, punto 8) ---
+# Tolerancia de VALIDACIÓN DE DATOS (redondeo), no un umbral de trading.
+
+def test_is_change_pct_coherent_caso_coherente():
+    # (30.02 - 29.06) / 29.06 * 100 = 3.303...% -- Tradier reporta 3.30%
+    assert is_change_pct_coherent(30.02, 29.06, 3.30) is True
+
+
+def test_is_change_pct_coherent_caso_e_incoherente():
+    # Tradier reporta +3.3% pero last_price/previous_close implican -8.7%
+    # -- diferencia de ~12 puntos porcentuales, muy por encima de la
+    # tolerancia de redondeo (1.0 pp).
+    assert is_change_pct_coherent(30.02, 32.9, 3.3) is False
+
+
+def test_is_change_pct_coherent_dentro_de_la_tolerancia_de_redondeo():
+    # (30.02 - 29.06) / 29.06 * 100 = 3.303...% -- Tradier reporta 3.9%
+    # (0.6pp de diferencia, dentro de la tolerancia de 1.0pp).
+    assert is_change_pct_coherent(30.02, 29.06, 3.9) is True
+
+
+def test_is_change_pct_coherent_sin_previous_close_no_se_puede_verificar():
+    # Nunca se inventa un fallo por falta de evidencia.
+    assert is_change_pct_coherent(30.02, None, 3.3) is True
+    assert is_change_pct_coherent(30.02, 0, 3.3) is True
+
+
+def test_is_change_pct_coherent_sin_change_percent_no_se_puede_verificar():
+    assert is_change_pct_coherent(30.02, 29.06, None) is True
