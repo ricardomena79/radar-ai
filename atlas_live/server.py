@@ -93,7 +93,16 @@ def static_files(filename):
 
 @app.route("/api/ranking")
 def api_ranking():
-    return jsonify(scan_worker.STATE.snapshot())
+    """Antigüedad de precio recalculada EN CADA REQUEST (2026-08-18,
+    punto 4 -- caso real SBLK): `STATE.ranking` puede llevar minutos
+    congelado si el ciclo siguiente falló (`_run_scan_once_locked()`
+    conserva el último valor bueno a propósito, ver ese docstring) -- acá
+    se corrige que nunca se presente como precio actual sin decirlo."""
+    snapshot = scan_worker.STATE.snapshot()
+    snapshot["ranking"] = [
+        scan_worker.apply_serving_freshness_to_ranking_row(r) for r in snapshot.get("ranking", [])
+    ]
+    return jsonify(snapshot)
 
 
 @app.route("/api/symbol/<symbol>")
@@ -119,10 +128,16 @@ def api_explosive_diagnostics():
 @app.route("/api/memory-ranking")
 def api_memory_ranking():
     """Ranking del Memory Engine (Ranking Score de desempate sobre Radar
-    Explosivo) del último ciclo -- Cabina del Piloto, Panel 2 en adelante.
-    Mismo mecanismo ya validado en atlas_live/memory/live_integration.py,
-    servido tal cual, sin recalcular nada acá."""
-    return jsonify(scan_worker.get_memory_ranking())
+    Explosivo) del último ciclo -- Cabina del Piloto, Panel 2 en adelante
+    (alimenta también "Radar Completo"). Mismo mecanismo ya validado en
+    atlas_live/memory/live_integration.py. La antigüedad de cada precio
+    se recalcula EN CADA REQUEST (2026-08-18, punto 4) -- ver
+    `apply_serving_freshness_to_memory_candidate`."""
+    data = scan_worker.get_memory_ranking()
+    data["candidates"] = [
+        scan_worker.apply_serving_freshness_to_memory_candidate(c) for c in data.get("candidates", [])
+    ]
+    return jsonify(data)
 
 
 @app.route("/api/memory-engine")

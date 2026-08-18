@@ -38,18 +38,35 @@ function fmtNum(value, decimals = 1) {
   return value.toFixed(decimals);
 }
 
+// Corrección 2026-08-18 (punto 5 del cierre de arquitectura): el backend
+// entrega SIEMPRE timestamps UTC (`datetime.now(timezone.utc).isoformat()`)
+// -- hasta acá `fmtTime`/`fmtTimeSec` solo recortaban el substring HH:MM
+// del UTC crudo y lo etiquetaban "ET" sin convertir, lo que hacía ver un
+// dato de hace horas como si fuera reciente. Se usa `Intl.DateTimeFormat`
+// (soporta DST automáticamente, sin tabla de offsets a mano) con
+// `hourCycle: "h23"` para evitar el "24:00" que algunos motores devuelven
+// con `hour12:false` en medianoche.
+const _ET_TIME_FMT = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/New_York", hourCycle: "h23", hour: "2-digit", minute: "2-digit",
+});
+const _ET_TIME_SEC_FMT = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/New_York", hourCycle: "h23", hour: "2-digit", minute: "2-digit", second: "2-digit",
+});
+
 function fmtTime(isoString) {
   if (!isoString) return '<span class="dim">--</span>';
-  return isoString.slice(11, 16);
+  const d = new Date(isoString);
+  if (isNaN(d.getTime())) return '<span class="dim">--</span>';
+  return _ET_TIME_FMT.format(d);
 }
 
 // Igual que fmtTime pero con segundos (HH:MM:SS) -- lo pide el indicador de
-// frescura del canal rápido, donde el segundo exacto importa. Misma
-// convención de la Cabina (se muestra el reloj tal cual viaja, etiquetado
-// "ET"), para no mezclar dos horas distintas en la misma tarjeta.
+// frescura del canal rápido, donde el segundo exacto importa.
 function fmtTimeSec(isoString) {
   if (!isoString) return "--";
-  return isoString.slice(11, 19);
+  const d = new Date(isoString);
+  if (isNaN(d.getTime())) return "--";
+  return _ET_TIME_SEC_FMT.format(d);
 }
 
 /* Indicadores de frescura del dato (2026-08-07, ver DECISION_LOG.md
@@ -96,7 +113,7 @@ function fmtMoney(value) {
  * discrepancia -- son sesiones distintas, por eso esta etiqueta siempre
  * viaja junto al número. */
 const PRICE_TYPE_LABEL = { regular: "Regular", premarket: "Premarket", afterhours: "After-hours", unknown: "Sin clasificar" };
-const PRICE_SOURCE_LABEL = { yahoo_finance: "Yahoo Finance" };
+const PRICE_SOURCE_LABEL = { yahoo_finance: "Yahoo Finance", tradier: "Tradier", finnhub: "Finnhub" };
 
 // Indicador visual del estado real de mercado (2026-08-02, UX) -- se lee
 // de `market_state` (el valor CRUDO del proveedor: REGULAR/PRE/POST/
@@ -1961,9 +1978,27 @@ function renderNoTocar() {
 }
 
 function renderRadarCompleto() {
+  // Conteos honestos (2026-08-18, punto 6): ya NO se afirma "universo
+  // completo, sin filtrar" sin evidencia -- se muestran los números reales
+  // del último ciclo de scan_worker (mismo `_systemStatus` que ya trae
+  // fetchSystemStatus() de /api/ranking).
+  const statsEl = document.getElementById("radar-completo-stats");
+  if (statsEl) {
+    const s = _systemStatus;
+    if (!s) {
+      statsEl.textContent = "Esperando el primer ciclo de escaneo...";
+    } else {
+      statsEl.textContent =
+        `Símbolos recibidos: ${s.symbols_scanned ?? "--"} · ` +
+        `Con dato de Tradier: ${s.symbols_tradier_source ?? "--"} · ` +
+        `Con dato de respaldo (Yahoo/Finnhub): ${s.symbols_fallback_source ?? "--"} · ` +
+        `Sin datos (excluidos): ${s.errors ?? "--"}`;
+    }
+  }
   renderGenericTable("radar-completo-table", _memoryRanking.candidates, [
     { label: "Símbolo", render: r => `<span class="sym">${r.symbol}</span>` },
     { label: "Precio", render: r => `${fmtMoney(r.price)}<br>${priceContextLine(r)}` },
+    { label: "Antigüedad", render: r => r.price_age_seconds != null ? fmtAge(r.price_age_seconds) : '<span class="dim">--</span>' },
     { label: "Cambio", render: r => fmtPct(r.change_pct) },
     { label: "Score Radar", render: r => fmtNum(r.score) },
     { label: "Elegible", render: r => r.eligible_radar

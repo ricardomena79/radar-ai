@@ -40,6 +40,7 @@ from atlas.knowledge import NORMAL, KnowledgeEngine
 
 from atlas_live import explosive_diagnostics, explosive_engine
 from atlas_live.data_fusion.registry import get_default_provider
+from atlas_live.data_fusion.tradier_first_provider import TradierFirstProvider
 from atlas_live.explosive_engine import ExplosiveResult
 from atlas_live.explosive_config import load_config as load_explosive_config
 from atlas_live.mission_control import timeline
@@ -170,6 +171,121 @@ def _apply_stale_fallback_guard(
             explosive_result, eligible=False, excluded_reason=STALE_SESSION_EXCLUDED_REASON,
         )
     return explosive_result, dict(STALE_SESSION_DISPLAY_DECISION)
+
+
+# --- Tradier como fuente operativa única de precio (2026-08-18, cierre
+# definitivo del caso SBLK/WMG) ---
+# Diagnóstico real de producción que motiva esto: `finnhub_authentication:
+# "rate_limited"` + Yahoo fallando simultáneamente dejaba `scan_worker.py`
+# (Dashboard, Radar Completo, precio de cada símbolo) mostrando precios de
+# hasta 48 min de antigüedad como si fueran actuales, mientras el Radar
+# Universo (Tradier, CAPA1/2) seguía sano con 0 errores. A partir de acá el
+# `collector` de `_score_symbol()`/`get_symbol_detail()` usa
+# `TradierFirstProvider` (ver `atlas_live/data_fusion/tradier_first_provider.py`,
+# ya construido en la sesión 2026-08-17): Tradier primero, Yahoo/Finnhub
+# SOLO como respaldo interno para lo que Tradier no resuelve -- pero ese
+# respaldo nunca puede alimentar una recomendación en silencio.
+NO_TRADIER_SOURCE_EXCLUDED_REASON = "Sin precio de Tradier -- DATOS NO DISPONIBLES, NO RECOMENDAR"
+NO_TRADIER_SOURCE_DISPLAY_DECISION = {
+    "code": "DATOS_NO_DISPONIBLES", "emoji": "🚫", "label": "Datos no disponibles -- no recomendar",
+}
+
+
+def _apply_non_tradier_source_guard(
+    quote: Quote, explosive_result: ExplosiveResult, display_decision: Dict[str, str],
+) -> Tuple[ExplosiveResult, Dict[str, str]]:
+    """Si el Quote NO vino de Tradier (`quote.source != "tradier"` --
+    TradierFirstProvider cayó a su respaldo interno Yahoo/Finnhub porque
+    Tradier no tenía el símbolo o falló), fuerza `eligible=False` y el
+    aviso `DATOS NO DISPONIBLES -- NO RECOMENDAR`. Tradier sigue siendo la
+    ÚNICA fuente autorizada para mostrar/recomendar un precio -- el
+    respaldo existe solo para que el símbolo no desaparezca del todo del
+    escaneo, nunca para alimentar una recomendación en silencio."""
+    if getattr(quote, "source", None) == "tradier":
+        return explosive_result, display_decision
+    if explosive_result.eligible:
+        explosive_result = dataclasses.replace(
+            explosive_result, eligible=False, excluded_reason=NO_TRADIER_SOURCE_EXCLUDED_REASON,
+        )
+    return explosive_result, dict(NO_TRADIER_SOURCE_DISPLAY_DECISION)
+
+
+# Protección adicional (2026-08-18): incluso un Quote de Tradier puede
+# quedar viejo en pantalla si el ciclo de escaneo siguiente falla y
+# `STATE` conserva el último valor bueno (diseño deliberado, ver
+# `_run_scan_once_locked()`: "if results:") -- para que eso nunca se
+# presente como un precio actual, la antigüedad se recalcula EN CADA
+# REQUEST (no en el momento del escaneo) comparando contra la hora real
+# del dato (`quote.timestamp`/`price_as_of`). Umbral único, configurable
+# por variable de entorno -- no hay evidencia real todavía para justificar
+# un umbral distinto por sesión (premarket/regular/after-hours), así que
+# no se inventa uno.
+PRICE_MAX_AGE_SECONDS = _env_int("ATLAS_PRICE_MAX_AGE_SECONDS", 180)
+
+STALE_PRICE_EXCLUDED_REASON = "Precio con antigüedad excesiva -- DATOS NO ACTUALIZADOS, NO RECOMENDAR"
+STALE_PRICE_DISPLAY_DECISION = {
+    "code": "DATOS_NO_ACTUALIZADOS", "emoji": "⏳", "label": "Datos no actualizados -- no recomendar",
+}
+
+
+def compute_price_age_seconds(price_as_of_iso: Optional[str], now: Optional[datetime] = None) -> Optional[float]:
+    """Antigüedad real del dato, calculada AHORA (parámetro `now`, para
+    tests deterministas) contra `price_as_of_iso` -- nunca contra el
+    momento en que se calculó/guardó el precio. `None` si no hay
+    timestamp (se trata como no confiable por el llamador, nunca como
+    "0 segundos de antigüedad")."""
+    if not price_as_of_iso:
+        return None
+    try:
+        price_as_of = datetime.fromisoformat(price_as_of_iso)
+    except (TypeError, ValueError):
+        return None
+    now = now or datetime.now(timezone.utc)
+    return (now - price_as_of).total_seconds()
+
+
+def is_price_stale(price_as_of_iso: Optional[str], now: Optional[datetime] = None,
+                    max_age_seconds: float = PRICE_MAX_AGE_SECONDS) -> bool:
+    """True si no hay timestamp o si supera `max_age_seconds` -- sin dato
+    de antigüedad nunca se trata como "fresco por defecto"."""
+    age = compute_price_age_seconds(price_as_of_iso, now=now)
+    return age is None or age > max_age_seconds
+
+
+def apply_serving_freshness_to_ranking_row(row: Dict[str, Any], now: Optional[datetime] = None) -> Dict[str, Any]:
+    """Se llama desde `server.py` AL SERVIR `/api/ranking` -- nunca en el
+    momento del escaneo. `row` puede llevar minutos en `STATE.ranking` (el
+    ciclo siguiente pudo haber fallado y conservar el último valor bueno,
+    ver `_run_scan_once_locked()`) -- por eso la antigüedad se recalcula
+    acá, contra el reloj real de AHORA, no contra cuándo se guardó. Copia
+    superficial: nunca muta el dict cacheado en `STATE`."""
+    metrics = (row.get("explosive") or {}).get("metrics") or {}
+    price_as_of = metrics.get("price_as_of")
+    row = dict(row)
+    row["price_age_seconds"] = compute_price_age_seconds(price_as_of, now=now)
+    if is_price_stale(price_as_of, now=now):
+        row["display_decision"] = dict(STALE_PRICE_DISPLAY_DECISION)
+        explosive = dict(row.get("explosive") or {})
+        if explosive.get("eligible"):
+            explosive["eligible"] = False
+            explosive["excluded_reason"] = STALE_PRICE_EXCLUDED_REASON
+        row["explosive"] = explosive
+    return row
+
+
+def apply_serving_freshness_to_memory_candidate(candidate: Dict[str, Any], now: Optional[datetime] = None) -> Dict[str, Any]:
+    """Mismo criterio que `apply_serving_freshness_to_ranking_row()`, para
+    las filas de `/api/memory-ranking` (forma distinta: `price_as_of` va
+    directo en la fila, `eligible_radar`/`semaforo`/`radar_excluded_reason`
+    en vez de `explosive.eligible`/`display_decision`)."""
+    price_as_of = candidate.get("price_as_of")
+    candidate = dict(candidate)
+    candidate["price_age_seconds"] = compute_price_age_seconds(price_as_of, now=now)
+    if is_price_stale(price_as_of, now=now):
+        candidate["eligible_radar"] = False
+        candidate["semaforo"] = "rojo"
+        candidate["radar_excluded_reason"] = STALE_PRICE_EXCLUDED_REASON
+    return candidate
 
 
 # --- Nivel de riesgo de presentación ---
@@ -345,6 +461,11 @@ class _State:
         self.scan_duration_seconds: Optional[float] = None
         self.symbols_scanned: int = 0
         self.symbols_ok: int = 0
+        # Trazabilidad honesta de fuente (2026-08-18): cuántos símbolos del
+        # último ciclo con resultados vinieron realmente de Tradier vs. del
+        # respaldo interno de TradierFirstProvider (Yahoo/Finnhub).
+        self.symbols_tradier_source: int = 0
+        self.symbols_fallback_source: int = 0
         self.errors: int = 0
         self.scanning: bool = False
         self.last_error: Optional[str] = None
@@ -400,6 +521,8 @@ class _State:
                 "scan_duration_seconds": self.scan_duration_seconds,
                 "symbols_scanned": self.symbols_scanned,
                 "symbols_ok": self.symbols_ok,
+                "symbols_tradier_source": self.symbols_tradier_source,
+                "symbols_fallback_source": self.symbols_fallback_source,
                 "errors": self.errors,
                 "scanning": self.scanning,
                 "last_error": self.last_error,
@@ -485,6 +608,7 @@ def _score_symbol(asset: Asset, collector: DataCollector, money_flow_engine: Mon
         )
         display_decision = _display_decision(decision_result.decision, decision_result.confidence)
         explosive_result, display_decision = _apply_stale_fallback_guard(quote, explosive_result, display_decision)
+        explosive_result, display_decision = _apply_non_tradier_source_guard(quote, explosive_result, display_decision)
 
         return {
             "symbol": asset.symbol,
@@ -499,6 +623,7 @@ def _score_symbol(asset: Asset, collector: DataCollector, money_flow_engine: Mon
             "confidence": decision_result.confidence,
             "display_decision": display_decision,
             "stale_session_fallback": getattr(quote, "stale_session_fallback", False),
+            "price_source": getattr(quote, "source", None),
             "risk_level": _risk_level(atr_score, context.vix_price if context else None),
             "explosive": {
                 "eligible": explosive_result.eligible,
@@ -587,18 +712,31 @@ def _run_scan_once_locked() -> None:
     start = time.monotonic()
 
     try:
-        # Etapa 0 de la unificación de interfaz (2026-08-05): Atlas Live
-        # ya no depende directamente de Yahoo -- get_default_provider()
-        # arma Yahoo + Finnhub de respaldo (MultiProvider), con
-        # degradación segura si Finnhub no está configurado. Ver
-        # atlas_live/data_fusion/registry.py.
-        collector = DataCollector(get_default_provider())
+        # Tradier como fuente operativa única de precio (2026-08-18): el
+        # `collector` que alimenta precio/recomendación de cada símbolo usa
+        # TradierFirstProvider (Tradier primero, Yahoo/Finnhub SOLO como
+        # respaldo interno -- ver `_apply_non_tradier_source_guard` más
+        # abajo, que impide que ese respaldo alimente una recomendación en
+        # silencio). Reemplaza a `get_default_provider()` (Yahoo+Finnhub
+        # directo), que dejaba a la Cabina mostrando precios de hasta 48 min
+        # de antigüedad cuando ambos proveedores fallaban a la vez -- ver
+        # atlas_live/data_fusion/tradier_first_provider.py.
+        collector = DataCollector(TradierFirstProvider())
         watchlist = _build_watchlist()
         assets = list(watchlist.values())
 
         collector.get_quotes([a.symbol for a in assets])
 
-        money_flow_engine = MoneyFlowEngine(collector=collector, universe_provider=lambda: watchlist)
+        # Money Flow Engine (Flujo de Dinero por Sector) necesita
+        # `Quote.sector`/`.industry`, que Tradier no entrega (ver
+        # `atlas_live/data_fusion/tradier_first_provider.py`, docstring del
+        # módulo, y la cobertura ya declarada explícitamente en
+        # `/api/flujo-sectorial`: "Racional/Yahoo, no el universo completo").
+        # Sigue con su propio collector Yahoo/Finnhub, sin cambios de
+        # comportamiento -- no participa en precio/recomendación, solo en
+        # el ranking de sectores, ya documentado como no-Tradier.
+        money_flow_collector = DataCollector(get_default_provider())
+        money_flow_engine = MoneyFlowEngine(collector=money_flow_collector, universe_provider=lambda: watchlist)
         money_flow_engine.scan()
 
         # Se cachea para que get_symbol_detail() no tenga que repetir un
@@ -767,6 +905,14 @@ def _run_scan_once_locked() -> None:
                     pass
             STATE.update(last_provider_source=detected_source)
 
+        # Trazabilidad honesta de fuente (2026-08-18, punto 6): cuántos de
+        # los símbolos puntuados vinieron realmente de Tradier vs. del
+        # respaldo interno de TradierFirstProvider (Yahoo/Finnhub) -- para
+        # que "Radar Completo" deje de decir "universo completo, sin
+        # filtrar" sin evidencia y muestre en cambio los conteos reales.
+        symbols_tradier_source = sum(1 for r in results if r.get("price_source") == "tradier")
+        symbols_fallback_source = len(results) - symbols_tradier_source
+
         # El diagnóstico del ciclo (cuántos símbolos, cuántos errores, cuánto
         # tardó) se actualiza siempre, haya o no resultados -- es sobre el
         # ciclo en sí, no sobre lo que se muestra en pantalla.
@@ -774,6 +920,8 @@ def _run_scan_once_locked() -> None:
             "scan_duration_seconds": round(time.monotonic() - start, 1),
             "symbols_scanned": len(assets),
             "symbols_ok": len(results),
+            "symbols_tradier_source": symbols_tradier_source,
+            "symbols_fallback_source": symbols_fallback_source,
             "errors": errors,
             "scanning": False,
             "explosive_diagnostics": diagnostics,
@@ -833,7 +981,10 @@ def get_symbol_detail(symbol: str) -> Dict[str, Any]:
     from atlas.engine.money_flow_engine import MoneyFlowEngine as _MoneyFlowEngine
     from atlas.knowledge.pattern_store import PatternStore
 
-    collector = DataCollector(get_default_provider())
+    # Tradier como fuente operativa única de precio (2026-08-18) -- mismo
+    # criterio que `_run_scan_once_locked()`, ver el bloque de comentarios
+    # ahí para el detalle completo.
+    collector = DataCollector(TradierFirstProvider())
     quote = collector.get_quote(symbol)
     atlas_score = _atlas_score(symbol, collector)
     momentum_result = calculate_momentum_score(symbol, collector)
@@ -841,10 +992,13 @@ def get_symbol_detail(symbol: str) -> Dict[str, Any]:
     # Reutiliza el Money Flow Engine del último escaneo en vez de repetir un
     # escaneo completo del universo (~200 símbolos) por cada clic: solo se
     # recalcula desde cero si todavía no hay ningún escaneo en caché.
+    # Sigue con Yahoo/Finnhub (no Tradier): necesita `Quote.sector`, que
+    # Tradier no entrega -- mismo criterio que `_run_scan_once_locked()`.
     money_flow_engine = STATE.money_flow_engine
     if money_flow_engine is None:
         watchlist = _build_watchlist(include_dynamic_movers=False)
-        money_flow_engine = _MoneyFlowEngine(collector=collector, universe_provider=lambda: watchlist)
+        money_flow_collector = DataCollector(get_default_provider())
+        money_flow_engine = _MoneyFlowEngine(collector=money_flow_collector, universe_provider=lambda: watchlist)
         money_flow_engine.scan()
 
     context = MarketContextEngine(collector=collector).get_context(sector=quote.sector, money_flow_engine=money_flow_engine)
@@ -854,6 +1008,8 @@ def get_symbol_detail(symbol: str) -> Dict[str, Any]:
     display_decision = _display_decision(decision_result.decision, decision_result.confidence)
     if getattr(quote, "stale_session_fallback", False):
         display_decision = dict(STALE_SESSION_DISPLAY_DECISION)
+    if getattr(quote, "source", None) != "tradier":
+        display_decision = dict(NO_TRADIER_SOURCE_DISPLAY_DECISION)
 
     atr_component = atlas_score.component("atr")
     risk_level = _risk_level(atr_component.score if atr_component else None, context.vix_price)
@@ -907,6 +1063,8 @@ def get_symbol_detail(symbol: str) -> Dict[str, Any]:
         },
         "display_decision": display_decision,
         "stale_session_fallback": getattr(quote, "stale_session_fallback", False),
+        "price_source": getattr(quote, "source", None),
+        "price_as_of": quote.timestamp.isoformat() if quote.timestamp else None,
         "risk_level": risk_level,
         "context_used": {
             "spy_price": context.spy_price, "spy_change_percent": context.spy_change_percent,
