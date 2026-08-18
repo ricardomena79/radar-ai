@@ -31,10 +31,17 @@ def _df(prices, start="2026-08-14T13:30:00Z"):
 class _FakeTradier:
     """Duck-typed: solo implementa get_intraday_timesales, con datos fijados por símbolo."""
 
-    def __init__(self, dfs_by_symbol):
+    def __init__(self, dfs_by_symbol, broken_symbols=None):
         self._dfs = dfs_by_symbol
+        # Reproduce el bug real (2026-08-17): Tradier devuelve `{"series": null}`
+        # para algunos símbolos y `get_intraday_timesales` explota con
+        # AttributeError -- una excepción que `evaluate_candidate_outcome` NO
+        # atrapa (solo atrapa QuoteNotFoundError/ProviderError).
+        self._broken = set(broken_symbols or ())
 
     def get_intraday_timesales(self, symbol, interval="1min", session_filter="all", start=None, end=None):
+        if symbol in self._broken:
+            raise AttributeError("'NoneType' object has no attribute 'get'")
         return self._dfs.get(symbol, pd.DataFrame())
 
 
@@ -141,6 +148,58 @@ def test_direccion_correcta_y_resumen_diario():
         acumulado = reg.cumulative_precision()
         assert acumulado["n_dias"] == 1
         assert acumulado["precision_pct"] is not None
+    finally:
+        _restore()
+
+
+def test_ticker_roto_no_detiene_el_lote_y_queda_marcado_como_fallido():
+    """Bug real de producción (2026-08-17, sesión del 17-Ago): AETH -> Tradier
+    `{"series": null}` -> AttributeError sin capturar tumbaba TODA la
+    evaluación de las 2.399 candidatas y quedaba reintentando el mismo
+    ticker para siempre. Reproduce el caso mínimo: dos candidatas, una rota
+    (AETH) entre dos sanas -- el lote debe evaluar las dos sanas igual,
+    marcar AETH como fallida (no perdida en silencio, no reintentada) y
+    nunca lanzar la excepción hacia el llamador."""
+    _fresh()
+    try:
+        reg.record_detection("AAA", "2026-08-14", "regular", "2026-08-14T13:30:00Z", "s1",
+                              10.0, 3.0, 1000, 500, 2.0, 10000, gates_fired=[{"name": "cambio_de_precio"}])
+        reg.record_detection("AETH", "2026-08-14", "regular", "2026-08-14T13:31:00Z", "s1",
+                              29.77, 0.0, 1000, 500, 1.0, 10000, gates_fired=[{"name": "cambio_de_comportamiento"}])
+        reg.record_detection("ZZZ", "2026-08-14", "regular", "2026-08-14T13:32:00Z", "s1",
+                              10.0, 3.0, 1000, 500, 2.0, 10000, gates_fired=[{"name": "cambio_de_precio"}])
+
+        prices = [10, 10.2, 10.5, 11, 12, 15, 14, 13]
+        provider = _FakeTradier(
+            {"AAA": _df(prices, start="2026-08-14T13:30:00Z"),
+             "ZZZ": _df(prices, start="2026-08-14T13:32:00Z")},
+            broken_symbols={"AETH"},
+        )
+
+        report = eod.run_eod_evaluation("2026-08-14", provider)  # nunca debe lanzar
+
+        assert report.n_candidatas == 3
+        assert report.n_evaluadas == 3  # las 3 tienen fila en candidate_outcome, incluida la rota
+
+        assert reg.has_outcome("AAA", "2026-08-14")
+        assert reg.has_outcome("AETH", "2026-08-14")
+        assert reg.has_outcome("ZZZ", "2026-08-14")
+
+        outcomes = {o["ticker"]: o for o in reg.list_outcomes_for_date("2026-08-14")}
+        assert outcomes["AAA"]["category"] != "error_evaluacion"
+        assert outcomes["ZZZ"]["category"] != "error_evaluacion"
+        assert outcomes["AETH"]["category"] == "error_evaluacion"
+        assert "AttributeError" in outcomes["AETH"]["notes"]
+        assert outcomes["AETH"]["max_return_after_detection_pct"] is None
+        assert outcomes["AETH"]["reached_20"] == 0
+
+        assert any(e.startswith("AETH: error inesperado") for e in report.errores)
+
+        # segunda corrida -- AETH NO se reintenta (idempotente vía has_outcome),
+        # nunca queda reprocesándose para siempre.
+        report2 = eod.run_eod_evaluation("2026-08-14", provider)
+        assert report2.n_evaluadas == 3
+        assert len(reg.list_outcomes_for_date("2026-08-14")) == 3  # sigue sin duplicar
     finally:
         _restore()
 

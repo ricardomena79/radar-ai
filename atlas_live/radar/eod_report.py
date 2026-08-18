@@ -20,6 +20,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
+from loguru import logger
 
 from atlas.data.models.quote import Quote
 from atlas.data.providers.base import ProviderError, QuoteNotFoundError
@@ -188,43 +189,65 @@ def run_eod_evaluation(
         ticker = c["ticker"]
         if reg.has_outcome(ticker, market_date):
             continue
-        query_symbol = (symbol_query_map or {}).get(ticker) or normalize_symbol(ticker).query_symbol
-        outcome = evaluate_candidate_outcome(
-            ticker, c["detected_at"], c["price_at_detection"], c["change_pct_at_detection"],
-            tradier_provider, query_symbol=query_symbol,
-        )
+        try:
+            query_symbol = (symbol_query_map or {}).get(ticker) or normalize_symbol(ticker).query_symbol
+            outcome = evaluate_candidate_outcome(
+                ticker, c["detected_at"], c["price_at_detection"], c["change_pct_at_detection"],
+                tradier_provider, query_symbol=query_symbol,
+            )
 
-        direccion_correcta = None
-        direccion_detectada = c.get("direction_at_detection")
-        if direccion_detectada and outcome.outcome_direction != "INDEFINIDA":
-            direccion_correcta = (direccion_detectada == outcome.outcome_direction)
+            direccion_correcta = None
+            direccion_detectada = c.get("direction_at_detection")
+            if direccion_detectada and outcome.outcome_direction != "INDEFINIDA":
+                direccion_correcta = (direccion_detectada == outcome.outcome_direction)
 
-        reg.record_outcome(
-            ticker, market_date, outcome.run_up_before_detection_pct, outcome.max_price_after_detection,
-            outcome.max_return_after_detection_pct, outcome.minutes_to_max, outcome.reached_20,
-            outcome.reached_50, outcome.reached_100, outcome.category, outcome.notes,
-            perdio_momentum_inmediato=outcome.perdio_momentum_inmediato, direccion_correcta=direccion_correcta,
-        )
+            reg.record_outcome(
+                ticker, market_date, outcome.run_up_before_detection_pct, outcome.max_price_after_detection,
+                outcome.max_return_after_detection_pct, outcome.minutes_to_max, outcome.reached_20,
+                outcome.reached_50, outcome.reached_100, outcome.category, outcome.notes,
+                perdio_momentum_inmediato=outcome.perdio_momentum_inmediato, direccion_correcta=direccion_correcta,
+            )
 
-        # comportamiento_post_apertura -- solo tiene sentido si la detección
-        # fue en premarket; se resuelve acá (EOD) porque recién ahora existen
-        # observaciones posteriores a la apertura regular.
-        if c.get("session") == "premarket":
-            obs = reg.get_observations(ticker, market_date)
-            obs_post_apertura = [o for o in obs if o["observed_at"] > c["detected_at"] and o["observed_at"][11:16] >= "13:30"]
-            comportamiento = pcls.classify_post_open_behavior("premarket", obs_post_apertura)
-            reg.set_phase_tag(ticker, market_date, c.get("phase_tag") or "indeterminado", comportamiento_post_apertura=comportamiento)
+            # comportamiento_post_apertura -- solo tiene sentido si la detección
+            # fue en premarket; se resuelve acá (EOD) porque recién ahora existen
+            # observaciones posteriores a la apertura regular.
+            if c.get("session") == "premarket":
+                obs = reg.get_observations(ticker, market_date)
+                obs_post_apertura = [o for o in obs if o["observed_at"] > c["detected_at"] and o["observed_at"][11:16] >= "13:30"]
+                comportamiento = pcls.classify_post_open_behavior("premarket", obs_post_apertura)
+                reg.set_phase_tag(ticker, market_date, c.get("phase_tag") or "indeterminado", comportamiento_post_apertura=comportamiento)
 
-        if outcome.category in ("mejor_oportunidad", "buena_oportunidad"):
-            mejores.append({
-                "ticker": ticker, "detected_at": c["detected_at"],
-                "price_at_detection": c["price_at_detection"],
-                "run_up_before_pct": outcome.run_up_before_detection_pct,
-                "max_return_after_pct": outcome.max_return_after_detection_pct,
-                "minutes_to_max": outcome.minutes_to_max, "category": outcome.category,
-            })
-        if outcome.notes and "no disponible" in (outcome.notes or ""):
-            errores.append(f"{ticker}: {outcome.notes}")
+            if outcome.category in ("mejor_oportunidad", "buena_oportunidad"):
+                mejores.append({
+                    "ticker": ticker, "detected_at": c["detected_at"],
+                    "price_at_detection": c["price_at_detection"],
+                    "run_up_before_pct": outcome.run_up_before_detection_pct,
+                    "max_return_after_pct": outcome.max_return_after_detection_pct,
+                    "minutes_to_max": outcome.minutes_to_max, "category": outcome.category,
+                })
+            if outcome.notes and "no disponible" in (outcome.notes or ""):
+                errores.append(f"{ticker}: {outcome.notes}")
+        except Exception as exc:
+            # Robustez del lote (2026-08-17, bug real encontrado en producción):
+            # Tradier devuelve `{"series": null}` para algunos símbolos en
+            # `/v1/markets/timesales` -- AttributeError sin capturar en
+            # `get_intraday_timesales` tumbaba TODA la evaluación EOD de las
+            # 2.399 candidatas y, como el ciclo reintenta desde el primer
+            # ticker sin `outcome` en cada barrido idle, quedaba reintentando
+            # el mismo símbolo para siempre sin avanzar nunca. Un ticker roto
+            # por CUALQUIER excepción inesperada (no solo las ya esperadas
+            # QuoteNotFoundError/ProviderError de `evaluate_candidate_outcome`)
+            # no puede bloquear el resultado del resto del universo: se
+            # registra como fallido -- vía el mismo `record_outcome` idempotente
+            # de siempre, así que `has_outcome()` ya no lo vuelve a intentar --
+            # y el lote sigue con el siguiente ticker.
+            logger.warning(f"EOD: excepción inesperada evaluando {ticker}: {type(exc).__name__}: {exc}")
+            reg.record_outcome(
+                ticker, market_date, c.get("change_pct_at_detection"), None, None, None,
+                False, False, False, "error_evaluacion",
+                notes=f"{type(exc).__name__}: {exc}",
+            )
+            errores.append(f"{ticker}: error inesperado -- {type(exc).__name__}: {exc}")
 
     mejores.sort(key=lambda x: (x["max_return_after_pct"] or 0), reverse=True)
 
