@@ -25,6 +25,7 @@ como `ProviderError`; el símbolo normalizado que se le pasa a Tradier viene
 siempre de `tradier_symbol_map.normalize()`, nunca se reformatea acá.
 """
 
+import os
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -48,15 +49,113 @@ TRADIER_CHUNK_SIZE = 250
 _DAYS_BY_PERIOD = {"1mo": 30, "3mo": 90, "6mo": 180, "1y": 365, "2y": 730, "5y": 1825}
 
 
-def _to_quote(data: Dict[str, Any], symbol: str) -> Quote:
-    last_price = data.get("last")
-    if last_price is None:
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+# --- Precio de premarket vía bid/ask midpoint (2026-08-18) -----------------
+#
+# Caso real, auditado con evidencia (JSON crudo de Tradier + cruce contra
+# Yahoo Finance): `last`/`trade_date` quedan CONGELADOS en el cierre de la
+# sesión REGULAR anterior durante todo el premarket (idéntico para símbolos
+# líquidos e ilíquidos por igual -- esta cuenta/feed no recibe trade prints
+# de extended hours), mientras `bid`/`ask`/`bid_date`/`ask_date` SÍ se
+# actualizan en tiempo real (verificado: NVDA bid=220.05 vs Yahoo premarket
+# oficial $220.06; XOS bid/ask=4.59-4.60 vs Yahoo premarket oficial $4.585,
+# +119.38% -- ambos casos coinciden casi exacto).
+#
+# Reutiliza EXACTAMENTE el mismo umbral que `scan_worker.PRICE_MAX_AGE_SECONDS`
+# (misma variable de entorno `ATLAS_PRICE_MAX_AGE_SECONDS`, default 180s) --
+# no se importa desde `atlas_live/` (violaría la capa: `atlas/` no depende de
+# `atlas_live/`), se lee la MISMA env var acá a propósito para que nunca
+# diverjan.
+BID_ASK_MAX_AGE_SECONDS = _env_float("ATLAS_PRICE_MAX_AGE_SECONDS", 180.0)
+
+# Umbral de INTEGRIDAD del dato (nunca de trading): por encima de este spread
+# relativo, un par bid/ask ya no se considera representativo de un mercado
+# activo -- ejemplos reales 2026-08-18: NVDA 0.02%, XOS 0.22%, SEZL 1.82%,
+# todos muy por debajo. Configurable vía env var, mismo patrón que el resto
+# del proyecto (`ATLAS_PRICE_MAX_AGE_SECONDS`, `ATLAS_SCAN_REQUEST_DELAY_MS`).
+MAX_MIDPOINT_SPREAD_PCT = _env_float("ATLAS_MAX_MIDPOINT_SPREAD_PCT", 8.0)
+
+
+def _epoch_ms_to_dt(epoch_ms: Optional[float]) -> Optional[datetime]:
+    return datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc) if epoch_ms else None
+
+
+def _age_seconds(ts: Optional[datetime], now: datetime) -> Optional[float]:
+    return (now - ts).total_seconds() if ts is not None else None
+
+
+def _resolve_current_price(data: Dict[str, Any], now: datetime) -> Dict[str, Any]:
+    """Decide qué señal representa el "precio actual" real: el último trade
+    (`last`/`trade_date`) si está fresco, o el punto medio bid/ask si
+    `last` está vencido pero bid/ask son frescos y confiables. Si ninguno
+    de los dos es confiable, se conserva `last`/`trade_date` TAL CUAL
+    (aunque estén vencidos) -- nunca se inventa un precio nuevo; la cadena
+    de confiabilidad YA EXISTENTE (`scan_worker.compute_price_age_seconds`/
+    `is_price_stale`/`estado_validacion=VENCIDO`) es la que decide mostrar
+    "NO_TOCAR"/"NO RECOMENDAR" a partir de un `timestamp` vencido, exactamente
+    como ya hace hoy -- este caso C no necesita ningún estado nuevo."""
+    last = data.get("last")
+    prevclose = data.get("prevclose")
+    change_pct_raw = data.get("change_percentage")
+
+    trade_ts = _epoch_ms_to_dt(data.get("trade_date"))
+    trade_age = _age_seconds(trade_ts, now)
+
+    bid = data.get("bid")
+    ask = data.get("ask")
+    bid_ts = _epoch_ms_to_dt(data.get("bid_date"))
+    ask_ts = _epoch_ms_to_dt(data.get("ask_date"))
+
+    resolved = {
+        "last_price": last, "change_percent": change_pct_raw, "timestamp": trade_ts,
+        "price_basis": "tradier_last", "bid": bid, "ask": ask,
+        "bid_timestamp": bid_ts, "ask_timestamp": ask_ts,
+    }
+
+    if trade_age is not None and trade_age <= BID_ASK_MAX_AGE_SECONDS:
+        return resolved  # Caso A: `last` genuinamente fresco -- se usa tal cual.
+
+    bid_age = _age_seconds(bid_ts, now)
+    ask_age = _age_seconds(ask_ts, now)
+    # La antigüedad de AMBOS lados debe estar dentro del umbral -- un bid
+    # fresco no puede tapar un ask vencido (o viceversa): un mercado
+    # confiable necesita los dos lados vivos, no solo uno.
+    both_sides_fresh = (
+        bid_age is not None and bid_age <= BID_ASK_MAX_AGE_SECONDS
+        and ask_age is not None and ask_age <= BID_ASK_MAX_AGE_SECONDS
+    )
+    valid_pair = bid is not None and ask is not None and bid > 0 and ask > 0 and ask >= bid
+
+    if valid_pair and both_sides_fresh:
+        mid = (bid + ask) / 2
+        spread_pct = ((ask - bid) / mid * 100) if mid else None
+        if spread_pct is not None and spread_pct <= MAX_MIDPOINT_SPREAD_PCT:
+            # Timestamp mostrado = el más reciente de los dos lados (pedido
+            # explícito) -- la validez YA exigió que AMBOS estén frescos, así
+            # que usar el más reciente acá no oculta ningún lado vencido.
+            display_ts = max(bid_ts, ask_ts)
+            change_pct = ((mid - prevclose) / prevclose * 100) if prevclose else None
+            resolved.update({
+                "last_price": mid, "change_percent": change_pct, "timestamp": display_ts,
+                "price_basis": "tradier_bid_ask_mid",
+            })
+            return resolved  # Caso B: `last` vencido, bid/ask frescos y confiables.
+
+    return resolved  # Caso C: ninguno confiable -- se devuelve `last`/`trade_date` sin tocar.
+
+
+def _to_quote(data: Dict[str, Any], symbol: str, now: Optional[datetime] = None) -> Quote:
+    if data.get("last") is None:
         raise QuoteNotFoundError(symbol)
 
-    epoch_ms = data.get("trade_date")
-    timestamp = (
-        datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc) if epoch_ms else datetime.now(timezone.utc)
-    )
+    now = now or datetime.now(timezone.utc)
+    resolved = _resolve_current_price(data, now)
 
     volume = data.get("volume")
     average_volume = data.get("average_volume")
@@ -67,8 +166,8 @@ def _to_quote(data: Dict[str, Any], symbol: str) -> Quote:
     return Quote(
         symbol=symbol,
         name=data.get("description"),
-        last_price=last_price,
-        change_percent=data.get("change_percentage"),
+        last_price=resolved["last_price"],
+        change_percent=resolved["change_percent"],
         volume=volume,
         open=data.get("open"),
         high=data.get("high"),
@@ -76,8 +175,13 @@ def _to_quote(data: Dict[str, Any], symbol: str) -> Quote:
         previous_close=data.get("prevclose"),
         average_volume=average_volume,
         relative_volume=relative_volume,
-        timestamp=timestamp,
+        timestamp=resolved["timestamp"],
         source=SOURCE_NAME,
+        price_basis=resolved["price_basis"],
+        bid=resolved["bid"],
+        ask=resolved["ask"],
+        bid_timestamp=resolved["bid_timestamp"],
+        ask_timestamp=resolved["ask_timestamp"],
     )
 
 

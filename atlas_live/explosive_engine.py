@@ -205,7 +205,28 @@ def evaluate(
         # quedan exactamente igual); el guard que actúa sobre esto vive en
         # `scan_worker.py`.
         "stale_session_fallback": quote.stale_session_fallback,
+        # Precio de premarket vía bid/ask (2026-08-18) -- mismo pass-through
+        # puro de arriba, ver `Quote.price_basis`. No participa en ningún
+        # gate de este archivo; `quote.last_price`/`change_pct` ya vienen
+        # resueltos desde `TradierProvider._to_quote()` (o `None`/valores
+        # por defecto para proveedores que no son Tradier).
+        "price_basis": getattr(quote, "price_basis", None),
+        "bid": getattr(quote, "bid", None),
+        "ask": getattr(quote, "ask", None),
+        "bid_timestamp": (
+            quote.bid_timestamp.isoformat() if getattr(quote, "bid_timestamp", None) else None
+        ),
+        "ask_timestamp": (
+            quote.ask_timestamp.isoformat() if getattr(quote, "ask_timestamp", None) else None
+        ),
     }
+    _bid, _ask = getattr(quote, "bid", None), getattr(quote, "ask", None)
+    metrics["spread_abs"] = (_ask - _bid) if (_bid is not None and _ask is not None) else None
+    metrics["spread_pct"] = (
+        round((_ask - _bid) / ((_ask + _bid) / 2) * 100, 4)
+        if (_bid is not None and _ask is not None and (_ask + _bid))
+        else None
+    )
 
     stage_trace: List[str] = []
 

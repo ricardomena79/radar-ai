@@ -346,7 +346,18 @@ def api_radar_oportunidades():
     SIN_TIMESTAMP/VENCIDO/CAMBIO_PCT_INCOHERENTE). Un `estado_validacion`
     distinto de OK fuerza `estado_final=NO_TOCAR` con prioridad sobre
     cualquier etapa -- una OPORTUNIDAD_PRIORITARIA nunca puede tener un
-    precio vencido, sin timestamp o con % de cambio incoherente."""
+    precio vencido, sin timestamp o con % de cambio incoherente.
+
+    Precio de premarket vía bid/ask (2026-08-18, autorizado tras auditoría
+    con evidencia real -- ver `TradierProvider._resolve_current_price()`):
+    `price_actual`/`price_actual_as_of` ya vienen resueltos desde el Quote
+    (last fresco, o punto medio bid/ask cuando last está vencido pero
+    bid/ask son frescos y confiables) -- este endpoint solo agrega
+    `price_basis` ("tradier_last"/"tradier_bid_ask_mid"), `bid`, `ask`,
+    `bid_timestamp`, `ask_timestamp`, `spread_abs`, `spread_pct` como
+    trazabilidad visible de CÓMO se resolvió, sin cambiar la cadena de
+    confiabilidad de arriba (que sigue leyendo `q.timestamp`/`q.last_price`
+    tal cual, ahora ya corregidos en el origen)."""
     from datetime import datetime, timezone
 
     from atlas_live.learning import historical_scoring as hsc
@@ -380,6 +391,29 @@ def api_radar_oportunidades():
         o["price_actual"] = q.last_price if q else None
         o["change_pct_actual"] = q.change_percent if q else None
         o["price_actual_source"] = "tradier" if q else None
+
+        # Trazabilidad del precio de premarket (2026-08-18, autorizado por
+        # el usuario tras auditoría con evidencia real): `q.last_price`/
+        # `q.change_percent`/`q.timestamp` YA vienen resueltos desde
+        # `TradierProvider._to_quote()` (last fresco, o punto medio bid/ask
+        # cuando last está vencido pero bid/ask son frescos y confiables) --
+        # acá solo se expone CÓMO se resolvió, para que nunca quede oculto.
+        q_bid = getattr(q, "bid", None) if q else None
+        q_ask = getattr(q, "ask", None) if q else None
+        q_bid_ts = getattr(q, "bid_timestamp", None) if q else None
+        q_ask_ts = getattr(q, "ask_timestamp", None) if q else None
+        o["price_basis"] = getattr(q, "price_basis", None) if q else None
+        o["bid"] = q_bid
+        o["ask"] = q_ask
+        o["bid_timestamp"] = q_bid_ts.isoformat() if q_bid_ts else None
+        o["ask_timestamp"] = q_ask_ts.isoformat() if q_ask_ts else None
+        if q_bid is not None and q_ask is not None:
+            mid = (q_bid + q_ask) / 2
+            o["spread_abs"] = q_ask - q_bid
+            o["spread_pct"] = round((q_ask - q_bid) / mid * 100, 4) if mid else None
+        else:
+            o["spread_abs"] = None
+            o["spread_pct"] = None
 
         # Cierre de la cadena de confiabilidad (2026-08-18, caso real
         # SBLK/BATL, ahora también para este pipeline Tradier): antigüedad

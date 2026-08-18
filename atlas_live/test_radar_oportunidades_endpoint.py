@@ -54,6 +54,13 @@ def _fresh_quote(last_price, change_percent, previous_close=None, age_seconds=5)
     q.change_percent = change_percent
     q.previous_close = previous_close
     q.timestamp = datetime.now(timezone.utc) - timedelta(seconds=age_seconds)
+    # Trazabilidad del precio de premarket (2026-08-18) -- ver Quote.price_basis.
+    # Tests que no prueban esta cadena en sí solo necesitan que el atributo exista.
+    q.price_basis = "tradier_last"
+    q.bid = None
+    q.ask = None
+    q.bid_timestamp = None
+    q.ask_timestamp = None
     return q
 
 

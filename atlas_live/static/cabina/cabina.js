@@ -1484,13 +1484,25 @@ function renderAlertStages() {
       const evidencia = (o.gates_fired && o.gates_fired[0]) ? o.gates_fired[0].reason : "—";
       const sector = o.sector ? `${o.sector}${o.dinero_entra_sector ? " 💰" : ""}` : "—";
       const motivoTooltip = (o.motivo_estado_final || "").replace(/"/g, "&quot;");
+      // Trazabilidad del precio de premarket (2026-08-18): de dónde salió
+      // exactamente price_actual -- último trade de Tradier, o punto medio
+      // bid/ask cuando ese trade estaba vencido (ver Quote.price_basis).
+      const basisLabel = o.price_basis === "tradier_bid_ask_mid" ? "punto medio bid/ask (last vencido)"
+        : o.price_basis === "tradier_last" ? "último trade (Tradier)" : null;
+      const priceTooltipParts = [];
+      if (basisLabel) priceTooltipParts.push(`Fuente: ${basisLabel}`);
+      if (o.bid != null && o.ask != null) {
+        priceTooltipParts.push(`Bid ${fmtNum(o.bid)} / Ask ${fmtNum(o.ask)}`);
+        if (o.spread_pct != null) priceTooltipParts.push(`Spread ${fmtNum(o.spread_pct)}%`);
+      }
+      const priceTooltip = priceTooltipParts.join(" — ").replace(/"/g, "&quot;");
       return `<tr>
         <td>${o.ticker}</td>
         <td title="${motivoTooltip}"><span style="color:${fs.color};font-weight:${fs.bold ? 700 : 600}">${fs.label}</span></td>
         <td><span style="color:${st.color};font-weight:${st.bold ? 700 : 600}">${st.label}</span></td>
         <td>${dir ? `<span style="color:${dir.color}">${dir.label}</span>` : "—"}</td>
         <td class="dim" title="${o.dinero_entra_sector ? "Sector con flujo de dinero activo" : ""}">${sector}</td>
-        <td style="text-align:right">${o.price_actual != null ? "$" + fmtNum(o.price_actual) : "—"}</td>
+        <td style="text-align:right" title="${priceTooltip}">${o.price_actual != null ? "$" + fmtNum(o.price_actual) : "—"}</td>
         <td class="dim" title="${o.price_actual_as_of ? fmtTimeSec(o.price_actual_as_of) + " ET" : ""}">${o.price_age_seconds != null ? fmtAge(o.price_age_seconds) : "—"}</td>
         <td style="text-align:right">${o.price_at_detection != null ? "$" + fmtNum(o.price_at_detection) : "—"}</td>
         <td>${o.detected_at ? fmtTimeSec(o.detected_at) + " ET" : "—"}</td>

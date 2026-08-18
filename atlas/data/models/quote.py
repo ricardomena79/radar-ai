@@ -58,3 +58,22 @@ class Quote:
     # informativo acá -- quién decide qué hacer con esto vive en
     # `scan_worker.py`, no en este modelo.
     stale_session_fallback: bool = False
+
+    # Precio de premarket vía bid/ask (2026-08-18, caso real: `last`/
+    # `trade_date` de Tradier llegan congelados en el cierre de la sesión
+    # anterior durante premarket -- verificado con evidencia real contra
+    # Yahoo Finance, ver `atlas/data/providers/tradier_provider.py`).
+    # `price_basis` distingue qué señal se usó para `last_price`/
+    # `change_percent`/`timestamp` de arriba: "tradier_last" (el trade más
+    # reciente, caso normal) o "tradier_bid_ask_mid" (punto medio bid/ask,
+    # usado solo cuando `last` está vencido y bid/ask son frescos y
+    # confiables). `bid`/`ask`/`bid_timestamp`/`ask_timestamp` quedan
+    # expuestos siempre que Tradier los entregue, para trazabilidad --
+    # nunca se usan por defecto salvo en el caso `tradier_bid_ask_mid`.
+    # `None` para proveedores que no son Tradier (concepto exclusivo de
+    # este pipeline, mismo criterio que `stale_session_fallback`).
+    price_basis: Optional[str] = None
+    bid: Optional[float] = None
+    ask: Optional[float] = None
+    bid_timestamp: Optional[datetime] = None
+    ask_timestamp: Optional[datetime] = None
