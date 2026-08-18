@@ -1,8 +1,9 @@
 """Tests de la configuración por entorno del escaneo (2026-08-09).
 
 Verifica que:
-- sin variables de entorno, los defaults son idénticos al comportamiento
-  anterior (cero cambio por defecto);
+- sin variables de entorno, los defaults son los actuales (documentados,
+  no necesariamente "sin cambio" -- SCAN_REQUEST_DELAY_MS pasó de 0 a 150
+  el 2026-08-18, ver scan_worker.py, caso real "0 ciclos con datos");
 - una variable de entorno válida sobreescribe el valor;
 - un valor inválido cae al default (no rompe el arranque).
 """
@@ -16,7 +17,7 @@ def test_defaults_sin_env():
     assert sw.WATCHLIST_EQUITIES == 150
     assert sw.WATCHLIST_ETFS == 50
     assert sw.MAX_WORKERS == 10
-    assert sw.SCAN_REQUEST_DELAY_MS == 0
+    assert sw.SCAN_REQUEST_DELAY_MS == 150
     assert sw.REFRESH_INTERVAL_SECONDS == 300
     assert sw.PREFILTER_CHUNK_SIZE == 400
     assert sw.PREFILTER_WORKERS == 30

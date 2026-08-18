@@ -73,10 +73,18 @@ WATCHLIST_ETFS = _env_int("ATLAS_SCAN_WATCHLIST_ETFS", 50)
 # se movieran -- ver _prefilter_movers() más abajo para el resto del arreglo.
 REQUIRED_SYMBOLS = ["AAPL", "NVDA", "PLTR", "SOXL", "AMD", "TSLA", "MSTR", "COIN"]
 MAX_WORKERS = _env_int("ATLAS_SCAN_MAX_WORKERS", 10)
-# Pausa opcional entre requests de scoring (ms). Default 0 = comportamiento
-# actual. Subirlo dosifica la presión sobre el proveedor (útil si el fallo es
-# rate-limit y no un bloqueo duro de IP).
-SCAN_REQUEST_DELAY_MS = _env_int("ATLAS_SCAN_REQUEST_DELAY_MS", 0)
+# Pausa entre requests de scoring (ms) -- dosifica la presión sobre el
+# proveedor. Subida de 0 a 150 (2026-08-18, caso real "0 ciclos con
+# datos"): causa raíz encontrada en `atlas/engine/atlas_score.py::calculate_atlas_score()`
+# -- `collector.get_history(symbol, period="6mo", interval="1d")` llama a
+# `TradierProvider.get_history()`, que hace UNA request HTTP POR SÍMBOLO
+# (`/v1/markets/history` no admite lote, a diferencia de `/v1/markets/quotes`
+# que radar_worker.py sí usa en chunks de 250) -- con ~700 símbolos en el
+# watchlist y MAX_WORKERS=10 sin pausa, el volumen de requests individuales
+# a Tradier en un mismo ciclo es muy superior al de radar_worker.py (sano,
+# 0 errores, solo quotes en lote), y suficiente para que el ciclo entero
+# caiga en symbols_ok=0. Sigue siendo ajustable por variable de entorno.
+SCAN_REQUEST_DELAY_MS = _env_int("ATLAS_SCAN_REQUEST_DELAY_MS", 150)
 REFRESH_INTERVAL_SECONDS = _env_int("ATLAS_SCAN_REFRESH_SECONDS", 300)  # 5 minutos
 TOP_N = 20
 
@@ -491,6 +499,11 @@ class _State:
         # respaldo interno de TradierFirstProvider (Yahoo/Finnhub).
         self.symbols_tradier_source: int = 0
         self.symbols_fallback_source: int = 0
+        # Diagnóstico real (2026-08-18): último error real de _score_symbol()
+        # en el ciclo -- "symbol: TipoDeExcepcion: mensaje", nunca todos (con
+        # 700+ símbolos por ciclo sería demasiado payload) pero sí evidencia
+        # concreta de POR QUÉ un ciclo entero cae en symbols_ok=0.
+        self.last_score_symbol_error: Optional[str] = None
         self.errors: int = 0
         self.scanning: bool = False
         self.last_error: Optional[str] = None
@@ -548,6 +561,7 @@ class _State:
                 "symbols_ok": self.symbols_ok,
                 "symbols_tradier_source": self.symbols_tradier_source,
                 "symbols_fallback_source": self.symbols_fallback_source,
+                "last_score_symbol_error": self.last_score_symbol_error,
                 "errors": self.errors,
                 "scanning": self.scanning,
                 "last_error": self.last_error,
@@ -661,7 +675,15 @@ def _score_symbol(asset: Asset, collector: DataCollector, money_flow_engine: Mon
                 "metrics": explosive_result.metrics,
             },
         }
-    except Exception:
+    except Exception as exc:
+        # Diagnóstico real (2026-08-18, caso "0 ciclos con datos"): antes
+        # esta excepción se descartaba en silencio -- ni el tipo ni el
+        # símbolo quedaban en ningún lado, imposible saber POR QUÉ un
+        # ciclo entero llegaba a symbols_ok=0 sin abrir el traceback local.
+        # Se registra el ÚLTIMO fallo real del ciclo (no todos -- un
+        # contador de tipos alcanza para diagnosticar sin inflar el
+        # payload), thread-safe vía STATE.update().
+        STATE.update(last_score_symbol_error=f"{asset.symbol}: {type(exc).__name__}: {exc}")
         return None
 
 
@@ -733,7 +755,7 @@ def _build_sector_flow_snapshot(money_flow_engine: MoneyFlowEngine) -> Dict[str,
 
 
 def _run_scan_once_locked() -> None:
-    STATE.update(scanning=True, last_error=None)
+    STATE.update(scanning=True, last_error=None, last_score_symbol_error=None)
     start = time.monotonic()
 
     try:
