@@ -45,13 +45,20 @@ def _quote_to_snapshot(sweep_id: str, observed_at: str, quote: Optional[Quote], 
     )
 
 
-def _tag_phase_at_detection(symbol: str, market_date: str, change_pct, gates_fired_payload: list, session: str) -> None:
+def _tag_phase_at_detection(
+    symbol: str, market_date: str, change_pct, gates_fired_payload: list, session: str,
+    relative_volume: Optional[float] = None,
+) -> None:
     """Calcula y guarda `phase_tag`/`direction_at_detection` (Reinicio
     2026-08-15) en el momento de la primera detección. Import perezoso de
     `reference_registry` (paquete distinto) para no imponer un orden de
     import entre `atlas_live.radar` y `atlas_live.reference`. Si el símbolo
     todavía no tiene historial de referencia, el timing queda con el
-    criterio más pobre documentado en `phase_classifier` (nunca se inventa)."""
+    criterio más pobre documentado en `phase_classifier` (nunca se inventa).
+
+    `relative_volume` (Fase 7, 2026-08-18) permite a `from_live_detection`
+    distinguir un `change_pct=0.0` real de uno no confiable por falta de
+    operaciones -- ver `phase_classifier.CHANGE_PCT_MIN_RVOL_TO_TRUST_ZERO`."""
     try:
         from atlas_live.reference import reference_registry as ref_reg
 
@@ -59,7 +66,7 @@ def _tag_phase_at_detection(symbol: str, market_date: str, change_pct, gates_fir
     except Exception:
         percentile_90 = None
     gate_names = [g["name"] for g in gates_fired_payload]
-    tag = pc.from_live_detection(change_pct, gate_names, percentile_90, session)
+    tag = pc.from_live_detection(change_pct, gate_names, percentile_90, session, relative_volume=relative_volume)
     reg.set_phase_tag(symbol, market_date, tag.timing_deteccion, direction_at_detection=tag.direction)
 
 
@@ -124,7 +131,7 @@ def _tag_alert_stage(
     change_pct = quote.change_percent if quote is not None else None
     relative_volume_hoy = quote.relative_volume if quote is not None else None
     gate_names = [g["name"] for g in gates_fired_payload]
-    tag = pc.from_live_detection(change_pct, gate_names, percentile_90, session)
+    tag = pc.from_live_detection(change_pct, gate_names, percentile_90, session, relative_volume=relative_volume_hoy)
 
     dias_volumen_elevado = sum(
         1 for r in recent if (r.get("relative_volume") or 0) >= als.VOLUME_ELEVATED_THRESHOLD
@@ -139,7 +146,7 @@ def _tag_alert_stage(
     stage = als.classify_alert_stage(
         relative_volume_hoy=relative_volume_hoy, dias_volumen_elevado=dias_volumen_elevado,
         aceleracion_volumen=aceleracion_volumen, volatility_14d_pct=volatility_14d_pct,
-        timing_deteccion_hoy=tag.timing_deteccion,
+        timing_deteccion_hoy=tag.timing_deteccion, direction=tag.direction,
     )
     if stage is None:
         return
@@ -157,6 +164,7 @@ def _tag_alert_stage(
         relative_volume_hoy=relative_volume_hoy, volatility_14d_pct=volatility_14d_pct,
         dias_volumen_elevado=dias_volumen_elevado, aceleracion_volumen=aceleracion_volumen,
         timing_deteccion_hoy=tag.timing_deteccion, racional_available=racional_available,
+        direction=tag.direction, change_pct_confiable=tag.change_pct_confiable,
     )
 
 
@@ -200,7 +208,8 @@ def process_sweep(
             )
             if es_nueva:
                 nuevas.append(symbol)
-                _tag_phase_at_detection(symbol, market_date, current.change_pct, gates_fired_payload, session)
+                _tag_phase_at_detection(symbol, market_date, current.change_pct, gates_fired_payload, session,
+                                         relative_volume=current.relative_volume)
                 _tag_experimental_signals_at_detection(symbol, market_date, quote)
             else:
                 # No es la primera vez que se ve -- pasa a "señal" (Reinicio

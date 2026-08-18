@@ -1379,8 +1379,19 @@ const ALERT_STAGE_STYLE = {
   INICIO: { label: "Inicio", color: "var(--green)" },
   CONFIRMACION: { label: "Confirmación", color: "var(--green)", bold: true },
   NO_PERSEGUIR: { label: "No Perseguir", color: "var(--red)" },
+  FLUJO_VENDEDOR: { label: "Flujo Vendedor", color: "var(--red)", bold: true },
 };
-const ALERT_STAGE_ORDER = ["DETECCION_TEMPRANA", "PREPARACION", "ALERTA_TEMPRANA", "ALERTA_FUERTE", "INICIO", "CONFIRMACION", "NO_PERSEGUIR"];
+const ALERT_STAGE_ORDER = ["DETECCION_TEMPRANA", "PREPARACION", "ALERTA_TEMPRANA", "ALERTA_FUERTE", "INICIO", "CONFIRMACION", "FLUJO_VENDEDOR", "NO_PERSEGUIR"];
+
+// Fase 7 (2026-08-18): el volumen/la volatilidad detectan movimiento, no
+// dirección -- esta etiqueta muestra la dirección real (o la falta de
+// evidencia confiable para afirmarla) por separado de la etapa.
+const DIRECTION_STYLE = {
+  ALCISTA: { label: "🟢 Comprador", color: "var(--green)" },
+  BAJISTA: { label: "🔴 Vendedor", color: "var(--red)" },
+  NEUTRAL: { label: "⚪ Neutral", color: "var(--text-dim)" },
+  INDEFINIDA: { label: "❓ Sin dato confiable", color: "var(--text-dim)" },
+};
 
 function renderAlertStages() {
   const conteosEl = document.getElementById("alert-stage-conteos");
@@ -1410,15 +1421,17 @@ function renderAlertStages() {
     return;
   }
   tablaEl.innerHTML = `<div style="overflow-x:auto"><table class="data-table">
-    <thead><tr><th>Ticker</th><th>Etapa</th><th style="text-align:right">Precio actual</th><th style="text-align:right">Precio detección</th><th>Hora detección</th><th style="text-align:right">Cambio desde detección</th><th>Fuente</th><th style="text-align:right">RVOL detección</th><th>Evidencia</th><th>Racional</th></tr></thead>
+    <thead><tr><th>Ticker</th><th>Etapa</th><th>Dirección</th><th style="text-align:right">Precio actual</th><th style="text-align:right">Precio detección</th><th>Hora detección</th><th style="text-align:right">Cambio desde detección</th><th>Fuente</th><th style="text-align:right">RVOL detección</th><th>Evidencia</th><th>Racional</th></tr></thead>
     <tbody>${oportunidades.map(o => {
       const st = ALERT_STAGE_STYLE[o.stage] || { label: o.stage, color: "var(--text-dim)" };
+      const dir = DIRECTION_STYLE[o.direction];
       const cambioDesdeDeteccion = (o.price_actual != null && o.price_at_detection)
         ? (100 * (o.price_actual / o.price_at_detection - 1)) : null;
       const evidencia = (o.gates_fired && o.gates_fired[0]) ? o.gates_fired[0].reason : "—";
       return `<tr>
         <td>${o.ticker}</td>
         <td><span style="color:${st.color};font-weight:${st.bold ? 700 : 600}">${st.label}</span></td>
+        <td>${dir ? `<span style="color:${dir.color}">${dir.label}</span>` : "—"}</td>
         <td style="text-align:right">${o.price_actual != null ? "$" + fmtNum(o.price_actual) : "—"}</td>
         <td style="text-align:right">${o.price_at_detection != null ? "$" + fmtNum(o.price_at_detection) : "—"}</td>
         <td>${o.detected_at ? fmtTimeSec(o.detected_at) + " ET" : "—"}</td>

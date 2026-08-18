@@ -186,6 +186,13 @@ def _connect() -> sqlite3.Connection:
         _ensure_column(conn, "candidate_detection", "daily_range_pct_at_detection", "REAL")
         _ensure_column(conn, "candidate_outcome", "perdio_momentum_inmediato", "INTEGER")
         _ensure_column(conn, "candidate_outcome", "direccion_correcta", "INTEGER")
+        # Fase 7 (2026-08-18) -- volumen/volatilidad detectan movimiento, no
+        # dirección (caso real SEZL, ver alert_stage.py): `direction` es la
+        # lectura EN VIVO (ALCISTA/BAJISTA/NEUTRAL/INDEFINIDA) de ese barrido;
+        # `change_pct_confiable` distingue un 0.0% real de un dato no
+        # disponible (Tradier en premarket muy ilíquido).
+        _ensure_column(conn, "alert_stage_log", "direction", "TEXT")
+        _ensure_column(conn, "alert_stage_log", "change_pct_confiable", "INTEGER")
         _schema_ready_for = str(DB_PATH)
     return conn
 
@@ -380,6 +387,7 @@ def record_alert_stage(
     relative_volume_hoy: Optional[float] = None, volatility_14d_pct: Optional[float] = None,
     dias_volumen_elevado: Optional[int] = None, aceleracion_volumen: Optional[float] = None,
     timing_deteccion_hoy: Optional[str] = None, racional_available: Optional[bool] = None,
+    direction: Optional[str] = None, change_pct_confiable: Optional[bool] = None,
 ) -> bool:
     """Registra una nueva fila SOLO si `stage` es distinto del último
     registrado para esta candidata hoy (evita miles de filas duplicadas por
@@ -391,11 +399,13 @@ def record_alert_stage(
         conn.execute(
             """INSERT INTO alert_stage_log
                (ticker, market_date, observed_at, stage, relative_volume_hoy, volatility_14d_pct,
-                dias_volumen_elevado, aceleracion_volumen, timing_deteccion_hoy, racional_available, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                dias_volumen_elevado, aceleracion_volumen, timing_deteccion_hoy, racional_available,
+                direction, change_pct_confiable, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (ticker, market_date, observed_at, stage, relative_volume_hoy, volatility_14d_pct,
              dias_volumen_elevado, aceleracion_volumen, timing_deteccion_hoy,
-             None if racional_available is None else int(racional_available), _now()),
+             None if racional_available is None else int(racional_available),
+             direction, None if change_pct_confiable is None else int(change_pct_confiable), _now()),
         )
         conn.commit()
         return True
@@ -641,6 +651,9 @@ def live_opportunities(market_date: str) -> List[Dict[str, Any]]:
             "volatility_14d_pct": stage_row.get("volatility_14d_pct") if stage_row else None,
             "dias_volumen_elevado": stage_row.get("dias_volumen_elevado") if stage_row else None,
             "timing_deteccion_hoy": stage_row.get("timing_deteccion_hoy") if stage_row else None,
+            "direction": stage_row.get("direction") if stage_row else d.get("direction_at_detection"),
+            "direction_at_detection": d.get("direction_at_detection"),
+            "change_pct_confiable": stage_row.get("change_pct_confiable") if stage_row else None,
             "racional_available": racional_available,
         })
     return out

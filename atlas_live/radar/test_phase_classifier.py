@@ -85,6 +85,43 @@ def test_historico_no_confunde_drift_lateral_con_agotamiento():
     assert tag.timing_deteccion != "agotamiento"
 
 
+def test_caso_real_zim_change_pct_cero_con_rvol_casi_nulo_no_es_confiable():
+    """Fase 7 (2026-08-18) -- caso real de la sesión 2026-08-17: ZIM,
+    detectada con `change_pct=0.0` y `relative_volume=0.0098` (casi sin
+    operaciones). Se movió de verdad ese día (hasta +4.3%) -- el 0.0%
+    nunca fue "neutral real", era falta de dato. Con `relative_volume`
+    pasado explícitamente, debe marcarse no confiable, `direction="INDEFINIDA"`
+    (no "NEUTRAL") y el timing "indeterminado" (no "antes_del_movimiento")."""
+    tag = pc.from_live_detection(0.0, ["cambio_de_comportamiento"], historical_percentile_90=None,
+                                  session="premarket", relative_volume=0.0098)
+    assert tag.change_pct_confiable is False
+    assert tag.direction == "INDEFINIDA"
+    assert tag.timing_deteccion == "indeterminado"
+
+
+def test_change_pct_cero_con_volumen_real_sigue_confiable():
+    """Un 0.0% con volumen real de respaldo SÍ es un dato confiable --
+    comportamiento sin cambios respecto a antes de la Fase 7."""
+    tag = pc.from_live_detection(0.0, [], historical_percentile_90=None, session="regular",
+                                  relative_volume=1.2)
+    assert tag.change_pct_confiable is True
+    assert tag.direction == "NEUTRAL"
+
+
+def test_sin_pasar_relative_volume_preserva_el_comportamiento_de_siempre():
+    """Compatibilidad hacia atrás explícita: llamadas que no pasan
+    `relative_volume` (como antes de la Fase 7) no cambian de compotamiento."""
+    tag = pc.from_live_detection(0.0, [], historical_percentile_90=None, session="regular")
+    assert tag.change_pct_confiable is True
+    assert tag.direction == "NEUTRAL"
+
+
+def test_change_pct_none_nunca_es_confiable():
+    tag = pc.from_live_detection(None, [], historical_percentile_90=None, session="regular", relative_volume=5.0)
+    assert tag.change_pct_confiable is False
+    assert tag.direction == "INDEFINIDA"
+
+
 if __name__ == "__main__":
     import traceback
 

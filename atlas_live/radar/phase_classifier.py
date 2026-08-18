@@ -36,6 +36,15 @@ from atlas_live.reference.daily_reference import classify_direction
 # que `candidate_gates.MIN_CHANGE_PCT` (no un número nuevo inventado).
 MOVEMENT_FLOOR_PCT = 3.0
 
+# Confiabilidad de change_pct en vivo (Fase 7, 2026-08-18, hallazgo real de
+# la sesión 2026-08-17): Tradier puede devolver change_percentage=0.0 en
+# premarket muy ilíquido sin que signifique "sin movimiento" -- ZIM,
+# detectado con change_pct=0.0 y relative_volume=0.0098 (casi sin
+# operaciones), terminó moviéndose de verdad (+2.4%/+4.3% máximo el día).
+# Un 0.0%/None con volumen real por debajo de este piso no es un dato
+# confiable -- se trata como "no disponible", nunca como "neutral real".
+CHANGE_PCT_MIN_RVOL_TO_TRUST_ZERO = 0.05
+
 
 @dataclass
 class PhaseTag:
@@ -43,6 +52,7 @@ class PhaseTag:
     direction: str
     comportamiento_post_apertura: str
     reason: str
+    change_pct_confiable: bool = True
 
 
 def _classify_timing(
@@ -93,16 +103,39 @@ def from_live_detection(
     change_pct_at_detection: Optional[float], gates_fired_names: List[str],
     historical_percentile_90: Optional[float], session: str,
     observations_after_open: Optional[List[dict]] = None,
+    relative_volume: Optional[float] = None,
 ) -> PhaseTag:
-    """Adaptador para una candidata del radar en vivo (CAPA 2)."""
+    """Adaptador para una candidata del radar en vivo (CAPA 2).
+
+    `relative_volume` (opcional, del mismo Quote de este barrido) permite
+    distinguir un 0.0%/None real de un dato no confiable por falta de
+    operaciones -- ver `CHANGE_PCT_MIN_RVOL_TO_TRUST_ZERO`. Si no se pasa,
+    el comportamiento es el de siempre (se confía en `change_pct_at_detection`
+    tal cual, compatibilidad hacia atrás)."""
     accelerating = "aceleracion" in gates_fired_names or "despertar" in gates_fired_names
     near_trough = "recuperacion" in gates_fired_names
-    timing, reason = _classify_timing(change_pct_at_detection, historical_percentile_90, accelerating, near_trough)
+
+    # `relative_volume=None` (no pasado) preserva el comportamiento de
+    # siempre -- solo se marca "no confiable" cuando SÍ hay evidencia de
+    # volumen real y esa evidencia dice que casi no hubo operaciones.
+    change_pct_confiable = True
+    if change_pct_at_detection is None:
+        change_pct_confiable = False  # dato faltante -- nunca es "0% real"
+    elif change_pct_at_detection == 0.0 and relative_volume is not None and relative_volume < CHANGE_PCT_MIN_RVOL_TO_TRUST_ZERO:
+        change_pct_confiable = False  # 0.0% sin volumen real que lo respalde -- no se asume "neutral"
+
+    effective_change_pct = change_pct_at_detection if change_pct_confiable else None
+    timing, reason = _classify_timing(effective_change_pct, historical_percentile_90, accelerating, near_trough)
+    direction = classify_direction(effective_change_pct)
+    if not change_pct_confiable:
+        reason = f"{reason} -- change_pct no confiable (RVOL={relative_volume}, posible dato de premarket ilíquido)"
+
     return PhaseTag(
         timing_deteccion=timing,
-        direction=classify_direction(change_pct_at_detection),
+        direction=direction,
         comportamiento_post_apertura=classify_post_open_behavior(session, observations_after_open or []),
         reason=reason,
+        change_pct_confiable=change_pct_confiable,
     )
 
 

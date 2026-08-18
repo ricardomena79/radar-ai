@@ -222,6 +222,64 @@ def test_tag_alert_stage_registra_alerta_fuerte_con_persistencia_y_aceleracion()
         _restore()
 
 
+def test_caso_real_sezl_change_pct_cero_con_rvol_alto_da_alerta_temprana_no_flujo_vendedor():
+    """Fase 7 (2026-08-18) -- caso real de la sesión 2026-08-17: SEZL,
+    RVOL=8.5789 (real, no ruido) pero `change_pct=0.0` en el instante
+    exacto de la detección. Como el volumen SÍ es real (por encima del
+    piso de confiabilidad), `change_pct=0.0` se lee como NEUTRAL genuino,
+    no como dato faltante -- y NEUTRAL nunca dispara FLUJO_VENDEDOR (solo
+    BAJISTA confirmado lo hace). La etapa debe seguir siendo
+    ALERTA_TEMPRANA, exactamente lo que Atlas mostró en producción --
+    todavía no hay evidencia direccional para llamarla vendedora."""
+    _fresh()
+    try:
+        from atlas_live.reference import reference_registry as ref_reg
+
+        orig_vol = ref_reg.latest_volatility_14d_pct
+        orig_recent = ref_reg.recent_daily_features
+        orig_pct = ref_reg.percentile_change_pct
+        ref_reg.latest_volatility_14d_pct = lambda symbol: 7.43
+        ref_reg.recent_daily_features = lambda symbol, n=5: [{"relative_volume": 2.5}] + [{"relative_volume": 0.5}] * 4
+        ref_reg.percentile_change_pct = lambda symbol, p: None
+        try:
+            h = SweepHistory()
+            tracker.process_sweep({"SEZL": _quote("SEZL", 128.96, 0.0, rvol=8.5789)}, h, "2026-08-17", "premarket", _now())
+            assert reg.latest_alert_stage("SEZL", "2026-08-17") == "ALERTA_TEMPRANA"
+        finally:
+            ref_reg.latest_volatility_14d_pct = orig_vol
+            ref_reg.recent_daily_features = orig_recent
+            ref_reg.percentile_change_pct = orig_pct
+    finally:
+        _restore()
+
+
+def test_caida_real_con_volumen_da_flujo_vendedor_no_alerta_temprana():
+    """La continuación realista del caso SEZL: una vez que el precio SÍ cae
+    de verdad (change_pct confiable y negativo) con volumen elevado, la
+    etapa debe pasar a FLUJO_VENDEDOR -- nunca quedar como una alerta de
+    sabor alcista."""
+    _fresh()
+    try:
+        from atlas_live.reference import reference_registry as ref_reg
+
+        orig_vol = ref_reg.latest_volatility_14d_pct
+        orig_recent = ref_reg.recent_daily_features
+        orig_pct = ref_reg.percentile_change_pct
+        ref_reg.latest_volatility_14d_pct = lambda symbol: 7.43
+        ref_reg.recent_daily_features = lambda symbol, n=5: [{"relative_volume": 2.5}] + [{"relative_volume": 0.5}] * 4
+        ref_reg.percentile_change_pct = lambda symbol, p: None
+        try:
+            h = SweepHistory()
+            tracker.process_sweep({"SEZL": _quote("SEZL", 122.18, -5.26, rvol=3.0)}, h, "2026-08-17", "regular", _now())
+            assert reg.latest_alert_stage("SEZL", "2026-08-17") == "FLUJO_VENDEDOR"
+        finally:
+            ref_reg.latest_volatility_14d_pct = orig_vol
+            ref_reg.recent_daily_features = orig_recent
+            ref_reg.percentile_change_pct = orig_pct
+    finally:
+        _restore()
+
+
 def test_tag_alert_stage_no_toca_gates_fired_ni_candidate_detection():
     """Confirma explícitamente que la capa observacional no altera nada de
     lo que ya escribía process_sweep antes de esta fase."""
