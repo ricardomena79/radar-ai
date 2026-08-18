@@ -945,6 +945,46 @@ def api_diagnostics_providers():
     })
 
 
+@app.route("/api/diagnostics/tradier-raw-quotes")
+def api_diagnostics_tradier_raw_quotes():
+    """Diagnóstico de solo lectura (2026-08-18, caso real: precios de
+    Tradier congelados en el cierre de ayer para símbolos líquidos durante
+    premarket -- ver `atlas/data/providers/tradier_provider.py::get_raw_quotes`).
+
+    Devuelve el JSON crudo que Tradier realmente entrega para los símbolos
+    pedidos -- `last`, `bid`, `ask`, `trade_date`, `bid_date`/`ask_date` si
+    existen, `volume`, `change_percentage`, todo sin filtrar ni interpretar
+    -- para poder auditar con evidencia real cuál campo refleja el
+    premarket antes de cambiar cualquier lógica de precio. Nunca expone
+    `TRADIER_API_TOKEN` (se construye vía `build_tradier_provider()`, mismo
+    mecanismo ya usado por el radar). Símbolos vía `?symbols=NVDA,TSLA,AMD`
+    (máx 20 por pedido, para no convertir esto en un scraper del universo)."""
+    from datetime import datetime, timezone
+
+    from atlas_live.data_fusion.universe_quotes import build_tradier_provider
+
+    symbols_param = request.args.get("symbols", "")
+    symbols = [s.strip().upper() for s in symbols_param.split(",") if s.strip()][:20]
+    if not symbols:
+        return jsonify({"error": "Falta ?symbols=NVDA,TSLA,AMD (máx 20)."}), 400
+
+    provider = build_tradier_provider()
+    if provider is None:
+        return jsonify({"error": "TRADIER_API_TOKEN no configurado."}), 400
+
+    try:
+        raw = provider.get_raw_quotes(symbols)
+    except Exception as exc:
+        return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 502
+
+    return jsonify({
+        "queried_symbols": symbols,
+        "returned_count": len(raw),
+        "quotes": raw,
+        "server_now_utc": datetime.now(timezone.utc).isoformat(),
+    })
+
+
 @app.route("/api/diagnostics/forced-failover-test", methods=["POST"])
 def api_diagnostics_forced_failover_test():
     """Prueba controlada de failover (Ricardo, 2026-08-07): fuerza un

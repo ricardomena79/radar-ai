@@ -134,6 +134,27 @@ class TradierProvider(DataProvider):
                 quotes.append(_to_quote(quote_field, quote_field["symbol"]))
         return quotes
 
+    def get_raw_quotes(self, symbols: List[str]) -> List[Dict[str, Any]]:
+        """Devuelve el JSON crudo de Tradier para cada símbolo, SIN pasar
+        por `_to_quote()` -- expone todos los campos que Tradier realmente
+        entrega (incluidos `bid`/`ask`/`bid_date`/`ask_date`, que
+        `_to_quote()` hoy ignora) para poder auditar cuál campo refleja de
+        verdad el premarket, en vez de asumirlo (2026-08-18, caso real:
+        `last`/`trade_date` llegan congelados en el cierre de la sesión
+        anterior para símbolos líquidos durante premarket)."""
+        raw: List[Dict[str, Any]] = []
+        for i in range(0, len(symbols), TRADIER_CHUNK_SIZE):
+            chunk = [s for s in symbols[i:i + TRADIER_CHUNK_SIZE] if s]
+            if not chunk:
+                continue
+            data = self._get(QUOTES_PATH, {"symbols": ",".join(chunk), "greeks": "false"})
+            quote_field = data.get("quotes", {}).get("quote")
+            if isinstance(quote_field, list):
+                raw.extend(item for item in quote_field if isinstance(item, dict))
+            elif isinstance(quote_field, dict):
+                raw.append(quote_field)
+        return raw
+
     def get_history(self, symbol: str, period: str = "6mo", interval: str = "1d") -> pd.DataFrame:
         """Barras diarias vía `/v1/markets/history`. Formato verificado en
         vivo (2026-08-14): `history.day` es una lista de
