@@ -1436,10 +1436,20 @@ const FINAL_STATE_ORDER = ["OPORTUNIDAD_PRIORITARIA", "VIGILAR", "PREPARACION", 
 // de que está entrando dinero, no solo que subió el precio) y, entre
 // candidatas con volumen comparable, por el % de cambio real.
 function _rankTop3Oportunidades(oportunidades) {
+  // Bug real encontrado en vivo (2026-08-18, caso XOS): este filtro NO
+  // chequeaba `estado_final` -- una candidata que el backend ya reclasificó
+  // como NO_TOCAR (ej. stage=NO_PERSEGUIR, el movimiento ya se considera
+  // agotado) podía seguir ganando el Top 3 acá con solo precio fresco +
+  // dirección alcista + buen RVOL, contradiciendo visualmente su propia
+  // etiqueta de etapa. El ranking de presentación NUNCA puede mostrar como
+  // "mejor oportunidad" algo que `priority_classifier.py` ya descartó --
+  // por eso ahora exige explícitamente estado_final en {OPORTUNIDAD_PRIORITARIA,
+  // VIGILAR} (las únicas 2 categorías que el backend considera accionables).
   const candidatas = (oportunidades || []).filter(o =>
     o.estado_validacion === "OK" &&
     o.direction === "ALCISTA" &&
-    o.racional_available === true
+    o.racional_available === true &&
+    (o.estado_final === "OPORTUNIDAD_PRIORITARIA" || o.estado_final === "VIGILAR")
   );
   const rvol = o => (typeof o.relative_volume_hoy === "number" ? o.relative_volume_hoy : 0);
   const cambio = o => (typeof o.change_pct_actual === "number" ? o.change_pct_actual : 0);
