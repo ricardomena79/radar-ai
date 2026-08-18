@@ -655,6 +655,12 @@ def live_opportunities(market_date: str) -> List[Dict[str, Any]]:
             "direction_at_detection": d.get("direction_at_detection"),
             "change_pct_confiable": stage_row.get("change_pct_confiable") if stage_row else None,
             "racional_available": racional_available,
+            # Cierre de arquitectura (2026-08-18): ya se guardaban en
+            # candidate_detection (tarea de detección temprana, 2026-08-16),
+            # solo faltaba exponerlos acá -- evidencia para
+            # historical_scoring.score_candidate() en el endpoint.
+            "volatility_14d_pct_at_detection": d.get("volatility_14d_pct_at_detection"),
+            "daily_range_pct_at_detection": d.get("daily_range_pct_at_detection"),
         })
     return out
 

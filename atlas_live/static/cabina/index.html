@@ -63,6 +63,7 @@
     <button class="nav-item nav-item--sub" data-view="radar-universo">🌐 Radar Universo (Tradier)</button>
 
     <div class="nav-sep"></div>
+    <button class="nav-item" data-view="flujo-dinero">💰 Flujo de Dinero</button>
     <button class="nav-item" data-view="radar-completo">📊 Radar Completo</button>
     <button class="nav-item" data-view="mission-control">⚙ Mission Control</button>
     <button class="nav-item" data-view="config">🔧 Configuración</button>
@@ -286,12 +287,33 @@
       <div id="radar-universo-candidatas" class="perf-block"></div>
       <h2 class="section-title" style="margin-top:16px">🔔 Oportunidades Detectadas <span class="dim" style="font-size:12px">(Fase 6/7 2026-08-18 -- CADA candidata que Tradier detectó hoy, con su etapa real. Nunca desaparece por Memory Engine, Radar Explosivo ni Yahoo/Finnhub -- esas capas deciden la RECOMENDACIÓN aparte, no si algo se muestra acá. El volumen detecta MOVIMIENTO, no dirección: la columna Dirección separa flujo comprador/vendedor/neutral/sin dato confiable -- una candidata que cae con volumen queda como FLUJO_VENDEDOR, no como una alerta de sabor alcista. DETECCIÓN_TEMPRANA → PREPARACIÓN → ALERTA_TEMPRANA → ALERTA_FUERTE → INICIO/CONFIRMACIÓN (solo si la dirección es ALCISTA) → NO_PERSEGUIR / FLUJO_VENDEDOR)</span></h2>
       <div id="alert-stage-conteos" class="learning-headline"></div>
-      <label class="dim" style="font-size:12px;display:inline-flex;align-items:center;gap:6px;margin-bottom:8px">
-        <input type="checkbox" id="oportunidades-solo-racional"> Mostrar solo disponibles en Racional
-      </label>
+      <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
+        <label class="dim" style="font-size:12px;display:inline-flex;align-items:center;gap:6px">
+          <input type="checkbox" id="oportunidades-solo-racional"> Mostrar solo disponibles en Racional
+        </label>
+        <label class="dim" style="font-size:12px;display:inline-flex;align-items:center;gap:6px">
+          Estado:
+          <select id="oportunidades-filtro-estado">
+            <option value="">Todos</option>
+            <option value="OPORTUNIDAD_PRIORITARIA">🟢 Oportunidad Prioritaria</option>
+            <option value="VIGILAR">🟡 Vigilar</option>
+            <option value="PREPARACION">🔵 Preparación</option>
+            <option value="NO_TOCAR">🔴 No tocar</option>
+          </select>
+        </label>
+      </div>
       <div id="alert-stage-tabla" class="perf-block"></div>
       <h2 class="section-title" style="margin-top:16px">📋 Informe de cierre (cuando el mercado regular termina)</h2>
       <div id="radar-universo-informe" class="perf-block"></div>
+    </section>
+
+    <!-- ---------- 9b. FLUJO DE DINERO ---------- -->
+    <section class="view" id="view-flujo-dinero">
+      <header class="view-header"><h1>💰 Flujo de Dinero por Sector</h1>
+        <div class="header-meta">Radar PARALELO al Radar Universo (Tradier) -- nunca lo reemplaza ni lo limita. Detecta hacia qué sectores está entrando dinero (Money Flow Score) para priorizar visualmente esas acciones en Oportunidades Detectadas. Cobertura real declarada abajo -- Tradier no entrega sector por símbolo hoy, así que esto corre sobre el watchlist Racional/Yahoo, no el universo completo.</div>
+      </header>
+      <div id="flujo-sectorial-cobertura" class="dim" style="font-size:12px;margin-bottom:10px"></div>
+      <div class="table-wrap"><table class="data-table" id="flujo-sectorial-table"></table></div>
     </section>
 
     <!-- ---------- 10. RADAR COMPLETO ---------- -->

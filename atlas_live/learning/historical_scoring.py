@@ -19,6 +19,7 @@ ni `decision_engine.py`. Conectar esto al radar en vivo es una decisión
 aparte, pendiente de aprobación explícita.
 """
 
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -156,6 +157,46 @@ def false_positive_report(table: Dict[GroupKey, GroupReference], rows: List[Dict
 
 
 REPORT_FEATURE_COLS = ("volatility_14d_pct", "daily_range_pct")
+
+# Cache en proceso (2026-08-18, cierre de arquitectura) -- `compute_reference_table()`
+# recorre TODA la Base Histórica (decenas de miles de filas); reconstruirla
+# en cada request a un endpoint de servicio en vivo (`/api/radar-oportunidades`,
+# consultado cada 60s por la Cabina) sería carísimo sin necesidad, ya que la
+# distribución histórica no cambia dentro del día. `generate_report()` (el
+# reporte admin) NO usa este cache -- sigue reconstruyendo siempre desde
+# cero, comportamiento intacto.
+_CACHE_TTL_SECONDS_DEFAULT = 1800  # 30 min
+_cached_table: Optional[Tuple[float, Dict[GroupKey, GroupReference]]] = None
+
+
+def get_cached_reference_table(
+    feature_cols: Sequence[str] = REPORT_FEATURE_COLS,
+    min_rows: int = MIN_PRIOR_ROWS_FOR_CUTS,
+    ttl_seconds: float = _CACHE_TTL_SECONDS_DEFAULT,
+) -> Dict[GroupKey, GroupReference]:
+    """Misma tabla que `compute_reference_table()`, pero recalculada como
+    mucho cada `ttl_seconds` -- para servir evidencia histórica desde un
+    endpoint de request/response sin reconstruir la tabla en cada llamada.
+    Si la Base Histórica todavía no tiene filas, devuelve una tabla vacía
+    (mismo comportamiento que `compute_reference_table([], ...)`, nunca
+    inventa evidencia)."""
+    global _cached_table
+    now = time.monotonic()
+    if _cached_table is not None:
+        cached_at, table = _cached_table
+        if now - cached_at < ttl_seconds:
+            return table
+    rows = _load_rows_from_db()
+    table = compute_reference_table(rows, feature_cols, min_rows=min_rows)
+    _cached_table = (now, table)
+    return table
+
+
+def _reset_cache_for_tests() -> None:
+    """Solo para tests -- fuerza que la próxima llamada a
+    `get_cached_reference_table()` recalcule, sin depender del TTL real."""
+    global _cached_table
+    _cached_table = None
 
 
 def _load_rows_from_db() -> List[Dict[str, Any]]:

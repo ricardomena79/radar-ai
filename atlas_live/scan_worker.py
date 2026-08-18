@@ -365,6 +365,13 @@ class _State:
         # Cache interna (no forma parte del snapshot JSON): el Money Flow
         # Engine ya escaneado, para que get_symbol_detail() lo reutilice.
         self.money_flow_engine: Optional[MoneyFlowEngine] = None
+        # Radar de Flujo de Dinero por Sector (2026-08-18, cierre de
+        # arquitectura): snapshot serializable del MISMO MoneyFlowEngine de
+        # arriba, ya escaneado en cada ciclo -- sin volver a escanear nada.
+        # Cobertura real: watchlist Racional/Yahoo (única fuente de sector
+        # que existe en el sistema hoy), NO el universo completo de Tradier
+        # -- declarado explícitamente en el propio snapshot, nunca oculto.
+        self.sector_flow_snapshot: Optional[Dict[str, Any]] = None
         # Cache interna del modo Diagnóstico: se sirve bajo demanda (no en
         # cada poll de /api/ranking) vía get_explosive_diagnostics().
         self.explosive_diagnostics: Optional[Dict[str, Any]] = None
@@ -536,6 +543,45 @@ def run_scan_once() -> None:
         _scan_lock.release()
 
 
+SECTOR_FLOW_COBERTURA = (
+    "Racional (watchlist escaneado por Yahoo en este ciclo) -- NO el "
+    "universo completo de Tradier. Tradier no entrega sector/industria por "
+    "símbolo hoy; es la única fuente de sector real que existe en el "
+    "sistema."
+)
+
+
+def _build_sector_flow_snapshot(money_flow_engine: MoneyFlowEngine) -> Dict[str, Any]:
+    """Serializa el ranking de sectores YA calculado por `money_flow_engine.scan()`
+    (Radar de Flujo de Dinero, 2026-08-18) -- no recalcula nada, es el mismo
+    objeto que `STATE.money_flow_engine` ya cachea. `symbol_sector_map` deja
+    afuera `money_flow_engine.UNCLASSIFIED` -- un símbolo sin sector real no
+    debe aparentar pertenecer a ningún grupo."""
+    from atlas.engine.money_flow_engine import UNCLASSIFIED
+
+    grupos = money_flow_engine.top(10_000)
+    sectores = [
+        {
+            "sector": g.name,
+            "money_flow_score": g.money_flow_score,
+            "stock_count": g.stock_count,
+            "avg_change_percent": g.avg_change_percent,
+            "avg_relative_volume": g.avg_relative_volume,
+            "top_stocks": [s.symbol for s in g.top_stocks(5)],
+        }
+        for g in grupos
+    ]
+    symbol_sector_map = {
+        s.symbol: g.name for g in grupos if g.name != UNCLASSIFIED for s in g.stocks
+    }
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "cobertura": SECTOR_FLOW_COBERTURA,
+        "sectores": sectores,
+        "symbol_sector_map": symbol_sector_map,
+    }
+
+
 def _run_scan_once_locked() -> None:
     STATE.update(scanning=True, last_error=None)
     start = time.monotonic()
@@ -559,6 +605,7 @@ def _run_scan_once_locked() -> None:
         # escaneo completo del universo (~200 símbolos) por cada clic: el
         # money flow por sector no cambia dentro de la ventana de refresco.
         STATE.update(money_flow_engine=money_flow_engine)
+        STATE.update(sector_flow_snapshot=_build_sector_flow_snapshot(money_flow_engine))
 
         top_sector = money_flow_engine.top(1)
         leading_sector = top_sector[0].name if top_sector else None

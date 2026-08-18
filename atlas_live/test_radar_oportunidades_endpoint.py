@@ -72,6 +72,93 @@ def test_devuelve_las_oportunidades_con_precio_en_vivo_mergeado():
         assert by_ticker["SIN_QUOTE"]["price_actual_source"] is None
         assert body["conteos_por_etapa"]["ALERTA_TEMPRANA"] == 1
         assert body["conteos_por_etapa"][reg.DETECCION_TEMPRANA] == 1
+        # ZIM tiene precio actual y etapa ALERTA_TEMPRANA -> VIGILAR.
+        assert by_ticker["ZIM"]["estado_final"] == "VIGILAR"
+        # SIN_QUOTE no tiene precio actual -> NO_TOCAR sin importar la etapa.
+        assert by_ticker["SIN_QUOTE"]["estado_final"] == "NO_TOCAR"
+        assert "DATOS NO CONFIABLES" in by_ticker["SIN_QUOTE"]["motivo_estado_final"]
+        assert body["conteos_por_estado_final"]["VIGILAR"] == 1
+        assert body["conteos_por_estado_final"]["NO_TOCAR"] == 1
+    finally:
+        reg.live_opportunities = orig_live_opps
+        _rw.get_last_quotes = orig_last_quotes
+
+
+def test_cruza_sector_y_flujo_de_dinero_desde_el_snapshot_de_scan_worker():
+    orig_live_opps = reg.live_opportunities
+    orig_last_quotes = _rw.get_last_quotes
+    orig_snapshot = _sw.STATE.sector_flow_snapshot
+
+    reg.live_opportunities = lambda market_date: [
+        {"ticker": "XOM", "price_at_detection": 110.0, "stage": "INICIO", "direction": "ALCISTA"},
+        {"ticker": "AAPL", "price_at_detection": 200.0, "stage": "PREPARACION"},
+    ]
+
+    class _FakeQuote:
+        last_price = 111.0
+        change_percent = 0.9
+
+    _rw.get_last_quotes = lambda: {"XOM": _FakeQuote(), "AAPL": _FakeQuote()}
+    _sw.STATE.sector_flow_snapshot = {
+        "generated_at": "2026-08-18T09:00:00+00:00",
+        "cobertura": "Racional (watchlist escaneado por Yahoo en este ciclo)",
+        "sectores": [
+            {"sector": "Energy", "money_flow_score": 70.0, "stock_count": 5,
+             "avg_change_percent": 2.0, "avg_relative_volume": 3.0, "top_stocks": ["XOM"]},
+        ],
+        "symbol_sector_map": {"XOM": "Energy"},
+    }
+    try:
+        r = _client().get("/api/radar-oportunidades")
+        assert r.status_code == 200
+        body = r.get_json()
+        by_ticker = {o["ticker"]: o for o in body["oportunidades"]}
+        assert by_ticker["XOM"]["sector"] == "Energy"
+        assert by_ticker["XOM"]["dinero_entra_sector"] is True
+        assert by_ticker["XOM"]["estado_final"] == "OPORTUNIDAD_PRIORITARIA"
+        assert "flujo de dinero activo" in by_ticker["XOM"]["motivo_estado_final"]
+        # AAPL no está en symbol_sector_map -- sector desconocido, nunca inventado.
+        assert by_ticker["AAPL"]["sector"] is None
+        assert by_ticker["AAPL"]["dinero_entra_sector"] is False
+    finally:
+        reg.live_opportunities = orig_live_opps
+        _rw.get_last_quotes = orig_last_quotes
+        _sw.STATE.sector_flow_snapshot = orig_snapshot
+
+
+def test_minutos_desde_deteccion_se_calcula_desde_detected_at():
+    from datetime import datetime, timedelta, timezone
+
+    orig_live_opps = reg.live_opportunities
+    orig_last_quotes = _rw.get_last_quotes
+
+    detected_at = (datetime.now(timezone.utc) - timedelta(minutes=7)).isoformat()
+    reg.live_opportunities = lambda market_date: [
+        {"ticker": "ZIM", "price_at_detection": 28.14, "stage": "ALERTA_TEMPRANA", "detected_at": detected_at},
+    ]
+    _rw.get_last_quotes = lambda: {}
+    try:
+        r = _client().get("/api/radar-oportunidades")
+        body = r.get_json()
+        minutos = body["oportunidades"][0]["minutos_desde_deteccion"]
+        assert minutos is not None and 6.5 <= minutos <= 7.5
+    finally:
+        reg.live_opportunities = orig_live_opps
+        _rw.get_last_quotes = orig_last_quotes
+
+
+def test_sin_detected_at_no_rompe_el_endpoint():
+    orig_live_opps = reg.live_opportunities
+    orig_last_quotes = _rw.get_last_quotes
+
+    reg.live_opportunities = lambda market_date: [
+        {"ticker": "ZIM", "price_at_detection": 28.14, "stage": "ALERTA_TEMPRANA"},
+    ]
+    _rw.get_last_quotes = lambda: {}
+    try:
+        r = _client().get("/api/radar-oportunidades")
+        assert r.status_code == 200
+        assert r.get_json()["oportunidades"][0]["minutos_desde_deteccion"] is None
     finally:
         reg.live_opportunities = orig_live_opps
         _rw.get_last_quotes = orig_last_quotes

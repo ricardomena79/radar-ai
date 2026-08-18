@@ -1358,6 +1358,7 @@ function renderRadarUniverso() {
 }
 
 let _alertStages = null;
+let _flujoSectorial = null;
 
 async function fetchAlertStages() {
   try {
@@ -1393,6 +1394,18 @@ const DIRECTION_STYLE = {
   INDEFINIDA: { label: "❓ Sin dato confiable", color: "var(--text-dim)" },
 };
 
+// Capa de prioridad operativa final (2026-08-18, cierre de arquitectura) --
+// atlas_live/radar/priority_classifier.py. Orden por defecto de la tabla:
+// 🟢 primero, 🔴 último -- para que premarket/primera hora muestre lo
+// accionable arriba sin scrollear miles de filas.
+const FINAL_STATE_STYLE = {
+  OPORTUNIDAD_PRIORITARIA: { label: "🟢 Oportunidad Prioritaria", color: "var(--green)", bold: true },
+  VIGILAR: { label: "🟡 Vigilar", color: "var(--amber)" },
+  PREPARACION: { label: "🔵 Preparación", color: "var(--blue, #3b82f6)" },
+  NO_TOCAR: { label: "🔴 No tocar", color: "var(--red)" },
+};
+const FINAL_STATE_ORDER = ["OPORTUNIDAD_PRIORITARIA", "VIGILAR", "PREPARACION", "NO_TOCAR"];
+
 function renderAlertStages() {
   const conteosEl = document.getElementById("alert-stage-conteos");
   const tablaEl = document.getElementById("alert-stage-tabla");
@@ -1411,30 +1424,53 @@ function renderAlertStages() {
 
   let oportunidades = _alertStages.oportunidades || [];
   const soloRacionalEl = document.getElementById("oportunidades-solo-racional");
-  // Filtro cosmético sobre los datos ya traídos -- Racional nunca decide
-  // qué se detecta ni qué llega acá, solo qué se muestra en pantalla.
+  const filtroEstadoEl = document.getElementById("oportunidades-filtro-estado");
+  // Filtros cosméticos sobre los datos ya traídos -- ni Racional ni el
+  // estado final deciden qué se detecta ni qué llega acá, solo qué se
+  // muestra en pantalla.
   if (soloRacionalEl && soloRacionalEl.checked) {
     oportunidades = oportunidades.filter(o => o.racional_available === true);
+  }
+  if (filtroEstadoEl && filtroEstadoEl.value) {
+    oportunidades = oportunidades.filter(o => o.estado_final === filtroEstadoEl.value);
   }
   if (!oportunidades.length) {
     tablaEl.innerHTML = `<div class="empty-state">Sin candidatas detectadas todavía hoy.</div>`;
     return;
   }
+  // Orden por defecto: Estado final (🟢→🟡→🔵→🔴), y dentro de cada grupo,
+  // detección más reciente primero -- lista corta y priorizada para
+  // premarket/primera hora, no miles de filas sin ordenar.
+  const ordenEstado = o => {
+    const i = FINAL_STATE_ORDER.indexOf(o.estado_final);
+    return i === -1 ? FINAL_STATE_ORDER.length : i;
+  };
+  oportunidades = [...oportunidades].sort((a, b) => {
+    const diff = ordenEstado(a) - ordenEstado(b);
+    if (diff !== 0) return diff;
+    return (b.detected_at || "").localeCompare(a.detected_at || "");
+  });
   tablaEl.innerHTML = `<div style="overflow-x:auto"><table class="data-table">
-    <thead><tr><th>Ticker</th><th>Etapa</th><th>Dirección</th><th style="text-align:right">Precio actual</th><th style="text-align:right">Precio detección</th><th>Hora detección</th><th style="text-align:right">Cambio desde detección</th><th>Fuente</th><th style="text-align:right">RVOL detección</th><th>Evidencia</th><th>Racional</th></tr></thead>
+    <thead><tr><th>Ticker</th><th>Estado</th><th>Etapa</th><th>Dirección</th><th>Sector</th><th style="text-align:right">Precio actual</th><th style="text-align:right">Precio detección</th><th>Hora detección</th><th style="text-align:right">Min. desde detección</th><th style="text-align:right">Cambio desde detección</th><th>Fuente</th><th style="text-align:right">RVOL detección</th><th>Evidencia</th><th>Racional</th></tr></thead>
     <tbody>${oportunidades.map(o => {
       const st = ALERT_STAGE_STYLE[o.stage] || { label: o.stage, color: "var(--text-dim)" };
+      const fs = FINAL_STATE_STYLE[o.estado_final] || { label: o.estado_final || "—", color: "var(--text-dim)" };
       const dir = DIRECTION_STYLE[o.direction];
       const cambioDesdeDeteccion = (o.price_actual != null && o.price_at_detection)
         ? (100 * (o.price_actual / o.price_at_detection - 1)) : null;
       const evidencia = (o.gates_fired && o.gates_fired[0]) ? o.gates_fired[0].reason : "—";
+      const sector = o.sector ? `${o.sector}${o.dinero_entra_sector ? " 💰" : ""}` : "—";
+      const motivoTooltip = (o.motivo_estado_final || "").replace(/"/g, "&quot;");
       return `<tr>
         <td>${o.ticker}</td>
+        <td title="${motivoTooltip}"><span style="color:${fs.color};font-weight:${fs.bold ? 700 : 600}">${fs.label}</span></td>
         <td><span style="color:${st.color};font-weight:${st.bold ? 700 : 600}">${st.label}</span></td>
         <td>${dir ? `<span style="color:${dir.color}">${dir.label}</span>` : "—"}</td>
+        <td class="dim" title="${o.dinero_entra_sector ? "Sector con flujo de dinero activo" : ""}">${sector}</td>
         <td style="text-align:right">${o.price_actual != null ? "$" + fmtNum(o.price_actual) : "—"}</td>
         <td style="text-align:right">${o.price_at_detection != null ? "$" + fmtNum(o.price_at_detection) : "—"}</td>
         <td>${o.detected_at ? fmtTimeSec(o.detected_at) + " ET" : "—"}</td>
+        <td style="text-align:right">${o.minutos_desde_deteccion != null ? fmtNum(o.minutos_desde_deteccion, 0) + " min" : "—"}</td>
         <td style="text-align:right">${cambioDesdeDeteccion != null ? fmtPct(cambioDesdeDeteccion) : "—"}</td>
         <td>${o.price_actual_source || o.source || "—"}</td>
         <td style="text-align:right">${o.relative_volume_at_detection != null ? fmtNum(o.relative_volume_at_detection) + "x" : "—"}</td>
@@ -1444,11 +1480,54 @@ function renderAlertStages() {
     }).join("")}</tbody></table></div>`;
 }
 
+async function fetchFlujoSectorial() {
+  try {
+    const res = await fetch("/api/flujo-sectorial");
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    _flujoSectorial = await res.json();
+  } catch (err) {
+    console.error("fetchFlujoSectorial:", err);
+    _flujoSectorial = null;
+  }
+  renderFlujoSectorial();
+}
+
+function renderFlujoSectorial() {
+  const coberturaEl = document.getElementById("flujo-sectorial-cobertura");
+  const tableEl = document.getElementById("flujo-sectorial-table");
+  if (!coberturaEl || !tableEl) return;
+  if (!_flujoSectorial) {
+    coberturaEl.innerHTML = "";
+    tableEl.innerHTML = `<tbody><tr><td class="empty-state">No disponible.</td></tr></tbody>`;
+    return;
+  }
+  coberturaEl.textContent = "Cobertura: " + (_flujoSectorial.cobertura || "—")
+    + (_flujoSectorial.generated_at ? " · Actualizado: " + fmtTimeSec(_flujoSectorial.generated_at) + " ET" : "");
+  const sectores = _flujoSectorial.sectores || [];
+  if (!sectores.length) {
+    tableEl.innerHTML = `<tbody><tr><td class="empty-state">Esperando el primer ciclo de escaneo...</td></tr></tbody>`;
+    return;
+  }
+  tableEl.innerHTML = `
+    <thead><tr><th>Sector</th><th style="text-align:right">Money Flow Score</th><th style="text-align:right">Δ% promedio</th><th style="text-align:right">RVOL promedio</th><th style="text-align:right"># acciones</th><th>Top acciones</th></tr></thead>
+    <tbody>${sectores.map((s, i) => `<tr>
+      <td>${i < 5 ? "💰 " : ""}${s.sector}</td>
+      <td style="text-align:right">${fmtNum(s.money_flow_score)}</td>
+      <td style="text-align:right">${fmtPct(s.avg_change_percent)}</td>
+      <td style="text-align:right">${fmtNum(s.avg_relative_volume)}x</td>
+      <td style="text-align:right">${s.stock_count}</td>
+      <td class="dim">${(s.top_stocks || []).join(", ")}</td>
+    </tr>`).join("")}</tbody>`;
+}
+
 function startPanelStatusPolling() {
   const soloRacionalEl = document.getElementById("oportunidades-solo-racional");
   if (soloRacionalEl) soloRacionalEl.addEventListener("change", renderAlertStages);
+  const filtroEstadoEl = document.getElementById("oportunidades-filtro-estado");
+  if (filtroEstadoEl) filtroEstadoEl.addEventListener("change", renderAlertStages);
   fetchRadarUniverso();
   fetchAlertStages();
+  fetchFlujoSectorial();
   fetchEstudio();
   fetchSignals();
   fetchExplosionHistory();
@@ -1473,6 +1552,7 @@ function startPanelStatusPolling() {
   setInterval(fetchEstudio, PANEL_STATUS_POLL_MS);
   setInterval(fetchRadarUniverso, PANEL_STATUS_POLL_MS);
   setInterval(fetchAlertStages, PANEL_STATUS_POLL_MS);
+  setInterval(fetchFlujoSectorial, PANEL_STATUS_POLL_MS);
 }
 
 /* 📸 Guardar Estado del Día -- aprobado el 2026-08-02, último elemento

@@ -292,39 +292,123 @@ def api_radar_alert_stages():
 
 @app.route("/api/radar-oportunidades")
 def api_radar_oportunidades():
-    """Oportunidades Detectadas (Fase 6, 2026-08-18) -- CADA candidata que
-    Tradier detectó hoy (`candidate_detection`, nunca se borra), con su
-    etapa real (PREPARACION..NO_PERSEGUIR, o `DETECCION_TEMPRANA` si
-    todavía no cruzó ningún umbral de Alerta Temprana) y el precio EN VIVO
+    """Oportunidades Detectadas (Fase 6, 2026-08-18; capa de prioridad
+    final agregada 2026-08-18, cierre de arquitectura) -- CADA candidata
+    que Tradier detectó hoy (`candidate_detection`, nunca se borra), con
+    su etapa real (PREPARACION..NO_PERSEGUIR, o `DETECCION_TEMPRANA` si
+    todavía no cruzó ningún umbral de Alerta Temprana), el precio EN VIVO
     del último barrido de Tradier (`radar_worker.get_last_quotes()`, ya en
     memoria -- cero llamadas nuevas a Yahoo/Finnhub; si el ticker no está
-    en el último barrido, `price_actual` queda `null` y se muestra el
-    precio de detección). Solo lectura, mismo patrón sin token que
+    en el último barrido, `price_actual` queda `null`), su sector y si ese
+    sector tiene flujo de dinero activo (cruce de solo lectura con
+    `scan_worker.STATE.sector_flow_snapshot`, cobertura declarada en
+    `/api/flujo-sectorial`), evidencia histórica NO vinculante (de
+    `historical_scoring.score_candidate`, cacheada), y `estado_final` --
+    una de las 4 categorías operativas de
+    `atlas_live/radar/priority_classifier.py` (🟢 OPORTUNIDAD_PRIORITARIA
+    / 🟡 VIGILAR / 🔵 PREPARACION / 🔴 NO_TOCAR), con `motivo_estado_final`
+    explicando por qué. Solo lectura, mismo patrón sin token que
     `/api/radar-universo` -- Memory Engine, Radar Explosivo y
-    Yahoo/Finnhub no participan en absoluto: una detección real de Tradier
-    nunca puede dejar de aparecer acá por esas capas. Ver
+    Yahoo/Finnhub no participan en la DETECCIÓN en absoluto: una detección
+    real de Tradier nunca puede dejar de aparecer acá por esas capas. Ver
     `atlas_live/radar/candidate_registry.py::live_opportunities`."""
+    from datetime import datetime, timezone
+
+    from atlas_live.learning import historical_scoring as hsc
     from atlas_live.memory import market_hours as _mh
     from atlas_live.radar import candidate_registry as radar_registry
+    from atlas_live.radar import priority_classifier as pc
 
     market_date = _mh.market_date()
     oportunidades = radar_registry.live_opportunities(market_date)
     last_quotes = radar_worker.get_last_quotes()
+
+    sector_snapshot = scan_worker.STATE.sector_flow_snapshot or {}
+    symbol_sector_map = sector_snapshot.get("symbol_sector_map", {})
+    top_sectores = {s["sector"] for s in sector_snapshot.get("sectores", [])[:5]}
+
+    try:
+        reference_table = hsc.get_cached_reference_table()
+    except Exception:
+        # Evidencia histórica es puramente informativa (nunca bloquea) --
+        # si la Base Histórica no está disponible todavía, la lista
+        # operativa sigue funcionando sin esa anotación.
+        reference_table = None
+
+    now = datetime.now(timezone.utc)
+
     for o in oportunidades:
         q = last_quotes.get(o["ticker"])
         o["price_actual"] = q.last_price if q else None
         o["change_pct_actual"] = q.change_percent if q else None
         o["price_actual_source"] = "tradier" if q else None
 
+        sector = symbol_sector_map.get(o["ticker"])
+        o["sector"] = sector
+        o["dinero_entra_sector"] = bool(sector) and sector in top_sectores
+
+        try:
+            detected_at = datetime.fromisoformat(o.get("detected_at"))
+            o["minutos_desde_deteccion"] = round((now - detected_at).total_seconds() / 60, 1)
+        except (TypeError, ValueError):
+            o["minutos_desde_deteccion"] = None
+
+        historical = None
+        vol = o.get("volatility_14d_pct_at_detection")
+        rng = o.get("daily_range_pct_at_detection")
+        if reference_table is not None and o.get("direction") and o.get("timing_deteccion_hoy") \
+                and vol is not None and rng is not None:
+            historical = hsc.score_candidate(
+                reference_table, o["direction"], o["timing_deteccion_hoy"],
+                {"volatility_14d_pct": vol, "daily_range_pct": rng},
+            )
+        o["evidencia_historica"] = historical
+
+        estado_final, motivo_estado_final = pc.classify_final_priority(
+            stage=o["stage"],
+            direction=o.get("direction"),
+            change_pct_confiable=o.get("change_pct_confiable"),
+            tiene_precio_actual=o["price_actual"] is not None,
+            sector_flow_active=o["dinero_entra_sector"],
+            historical_evidence=historical,
+        )
+        o["estado_final"] = estado_final
+        o["motivo_estado_final"] = motivo_estado_final
+
     conteos: dict = {}
+    conteos_estado_final: dict = {}
     for o in oportunidades:
         conteos[o["stage"]] = conteos.get(o["stage"], 0) + 1
+        conteos_estado_final[o["estado_final"]] = conteos_estado_final.get(o["estado_final"], 0) + 1
 
     return jsonify({
         "market_date": market_date,
         "oportunidades": oportunidades,
         "conteos_por_etapa": conteos,
+        "conteos_por_estado_final": conteos_estado_final,
     })
+
+
+@app.route("/api/flujo-sectorial")
+def api_flujo_sectorial():
+    """Radar de Flujo de Dinero por Sector (2026-08-18, cierre de
+    arquitectura) -- ranking de sectores por Money Flow Score, snapshot
+    del ÚLTIMO ciclo de `scan_worker.py` (mismo `MoneyFlowEngine` que ya
+    corre cada ciclo, cero cómputo nuevo acá). Radar PARALELO e
+    independiente del radar de universo completo de Tradier -- nunca lo
+    reemplaza ni lo limita. Cobertura real declarada en el propio
+    payload (`cobertura`): watchlist Racional/Yahoo, no el universo
+    completo -- Tradier no entrega sector por símbolo hoy. `null` /
+    listas vacías antes de que corra el primer ciclo."""
+    snapshot = scan_worker.STATE.sector_flow_snapshot
+    if snapshot is None:
+        return jsonify({
+            "generated_at": None,
+            "cobertura": scan_worker.SECTOR_FLOW_COBERTURA,
+            "sectores": [],
+            "symbol_sector_map": {},
+        })
+    return jsonify(snapshot)
 
 
 @app.route("/api/learning-maturity")
