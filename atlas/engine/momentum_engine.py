@@ -135,7 +135,17 @@ def calculate_momentum_score(symbol: str, collector: DataCollector) -> MomentumR
 
     raw_components = [
         score_relative_volume(quote.volume, quote.average_volume),
-        score_gap_pct(quote.open, quote.previous_close),
+        # `quote.open` puede ser `None` (2026-08-18, caso real "0 ciclos con
+        # datos" en premarket): Tradier no reporta apertura de la sesión
+        # REGULAR mientras esa sesión todavía no abrió hoy -- antes esto
+        # hacía explotar gap_percent() con un ValueError sin capturar, que
+        # tumbaba TODO el símbolo (no solo este componente). Mismo patrón
+        # de degradación honesta que ya usa vwap_distance 3 líneas abajo:
+        # sin dato -> score neutro (50) con explicación explícita, nunca
+        # una excepción ni un valor inventado.
+        score_gap_pct(quote.open, quote.previous_close)
+        if quote.open is not None and quote.previous_close is not None
+        else ComponentScore(name="gap_pct", score=50.0, explanation="Apertura de sesión regular no disponible todavía"),
         score_vwap_distance(quote.last_price, intraday["High"], intraday["Low"], intraday["Close"], intraday["Volume"])
         if intraday is not None
         else ComponentScore(name="vwap_distance", score=50.0, explanation="Datos intradía no disponibles"),
