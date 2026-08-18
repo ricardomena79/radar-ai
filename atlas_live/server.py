@@ -568,6 +568,50 @@ def api_radar_oportunidades():
     })
 
 
+@app.route("/api/radar-explosion-bands")
+def api_radar_explosion_bands():
+    """Marcador Histórico Tradier (2026-08-18, aprendizaje unificado,
+    pedido explícito del usuario) -- bandas ACUMULATIVAS (>=10/20/30/50/
+    100/150/200%) de resultados FINALES y CONFIABLES del radar Tradier
+    (CAPA1/2, `candidate_registry.explosion_bands_tradier`). Sistema
+    NUEVO, en paralelo al Marcador Histórico legacy (Yahoo/exit_journal,
+    `atlas_live/memory/explosion_history.py`) -- nunca lo reemplaza ni lo
+    toca, se muestran lado a lado en la Cabina para comparación directa.
+    `?date=YYYY-MM-DD` limita a un solo día de mercado; sin parámetro,
+    agrega TODA la historia disponible. Público, sin token -- mismo
+    patrón que `/api/radar-oportunidades`."""
+    from atlas_live.radar import candidate_registry as radar_registry
+
+    date_param = request.args.get("date")
+    return jsonify(radar_registry.explosion_bands_tradier(date_param))
+
+
+@app.route("/api/candidate-full-history")
+def api_candidate_full_history():
+    """Historia completa de UNA candidata (2026-08-18, aprendizaje
+    unificado, pedido explícito del usuario, caso real XOS) -- separa en
+    3 bloques que NUNCA se pisan entre sí: estado inicial (detección,
+    write-once), evolución (etapas en vivo + máximo visto) y resultado
+    final (EOD). `?ticker=XOS` obligatorio; `?date=YYYY-MM-DD` opcional
+    (default: fecha de mercado actual). Público, sin token, solo lectura
+    -- mismo patrón que `/api/radar-oportunidades`."""
+    from atlas_live.memory import market_hours as _mh
+    from atlas_live.radar import candidate_registry as radar_registry
+
+    ticker = (request.args.get("ticker") or "").strip().upper()
+    if not ticker:
+        return jsonify({"error": "falta el parámetro 'ticker'"}), 400
+    market_date = request.args.get("date") or _mh.market_date()
+
+    historia = radar_registry.candidate_full_history(ticker, market_date)
+    if historia is None:
+        return jsonify({
+            "error": f"sin detección para {ticker} en {market_date}",
+            "ticker": ticker, "market_date": market_date,
+        }), 404
+    return jsonify(historia)
+
+
 @app.route("/api/flujo-sectorial")
 def api_flujo_sectorial():
     """Radar de Flujo de Dinero por Sector (2026-08-18, cierre de

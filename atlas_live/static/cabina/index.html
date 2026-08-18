@@ -250,6 +250,11 @@
       <div id="explosiones-anticipacion" class="perf-block"></div>
       <h2 class="section-title" style="margin-top:20px">🔥 Explosiones (mayores primero)</h2>
       <div id="explosiones-lista" class="perf-block"></div>
+
+      <h2 class="section-title" style="margin-top:28px">📡 Marcador Histórico Tradier <span class="dim" style="font-size:12px">(radar CAPA1/2 en vivo -- sistema nuevo y paralelo, no reemplaza lo de arriba)</span></h2>
+      <div class="header-meta" style="margin-bottom:10px">Mismas bandas, pero sobre TODO lo que Tradier detectó en vivo (`candidate_detection` / `candidate_outcome`), no sobre el pipeline legacy Yahoo/exit_journal de arriba. Solo cuenta resultados FINALES (cierre del día ya evaluado) y CONFIABLES (`dollar_volume_at_detection` real, ver filtro de calidad) -- datos sospechosos siguen detectándose y guardándose, solo quedan fuera de esta estadística.</div>
+      <div id="explosiones-tradier-calidad" class="learning-headline"></div>
+      <div id="explosiones-tradier-bandas" class="perf-block"></div>
     </section>
 
     <!-- ---------- SEÑALES (VALIDACIÓN EN VIVO) ---------- -->

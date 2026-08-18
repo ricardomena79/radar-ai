@@ -217,10 +217,16 @@ def process_sweep(
 
         if disparadas:
             gates_fired_payload = [{"name": g.name, "reason": g.reason, "value": g.value} for g in disparadas]
+            spread_pct_at_detection = None
+            if quote.bid is not None and quote.ask is not None:
+                mid = (quote.bid + quote.ask) / 2
+                spread_pct_at_detection = round((quote.ask - quote.bid) / mid * 100, 4) if mid else None
             es_nueva = reg.record_detection(
                 symbol, market_date, session, observed_at, sweep_id,
                 current.price, current.change_pct, current.volume, current.average_volume,
                 current.relative_volume, current.dollar_volume, gates_fired_payload,
+                price_basis_at_detection=quote.price_basis, bid_at_detection=quote.bid,
+                ask_at_detection=quote.ask, spread_pct_at_detection=spread_pct_at_detection,
             )
             if es_nueva:
                 nuevas.append(symbol)
@@ -239,6 +245,7 @@ def process_sweep(
                 gates_fired_payload,
             )
             _tag_alert_stage(symbol, market_date, observed_at, quote, gates_fired_payload, session)
+            reg.compute_interim_outcome(symbol, market_date)
             n_obs += 1
         elif reg.is_detected(symbol, market_date):
             # Ya es candidata de un barrido anterior -- sigue con seguimiento
@@ -253,6 +260,7 @@ def process_sweep(
                 [],
             )
             _tag_alert_stage(symbol, market_date, observed_at, quote, [], session)
+            reg.compute_interim_outcome(symbol, market_date)
             n_obs += 1
 
         history.push(symbol, current)

@@ -152,6 +152,128 @@ def test_direccion_correcta_y_resumen_diario():
         _restore()
 
 
+def test_evaluate_outcome_desglose_por_tramo_dia():
+    """Aprendizaje unificado (2026-08-18, pedido explícito del usuario):
+    los 4 tramos (antes de detección ya existía; premarket-después-de-
+    detección, post-apertura, total del día son nuevos) deben calcularse
+    de las MISMAS velas ya pedidas, sin llamadas de red nuevas."""
+    idx = pd.to_datetime([
+        "2026-08-14T12:00:00Z",  # vela de detección (excluida, > estricto)
+        "2026-08-14T12:01:00Z",
+        "2026-08-14T12:02:00Z",  # máximo premarket después de detección
+        "2026-08-14T13:29:00Z",
+        "2026-08-14T13:30:00Z",  # apertura regular (09:30 ET)
+        "2026-08-14T13:31:00Z",
+        "2026-08-14T13:32:00Z",  # máximo de la sesión regular
+        "2026-08-14T13:33:00Z",
+    ])
+    opens = [10.0, 10.4, 10.9, 10.7, 11.2, 11.9, 13.0, 12.8]
+    highs = [10.0, 10.5, 11.0, 10.8, 11.5, 12.5, 13.5, 13.0]
+    lows = [10.0, 10.3, 10.8, 10.6, 11.0, 11.8, 12.9, 12.5]
+    closes = [10.0, 10.45, 10.95, 10.75, 11.4, 12.4, 13.2, 12.7]
+    df = pd.DataFrame({"Open": opens, "High": highs, "Low": lows, "Close": closes,
+                        "Volume": [1000] * len(opens), "VWAP": closes}, index=idx)
+    provider = _FakeTradier({"XYZ": df})
+
+    outcome = eod.evaluate_candidate_outcome("XYZ", "2026-08-14T12:00:00Z", 10.0, 0.0, provider)
+
+    assert outcome.max_price_premarket_after_detection == 11.0
+    assert outcome.max_return_premarket_after_detection_pct == round(100 * (11.0 - 10.0) / 10.0, 3)
+    assert outcome.price_at_market_open == 11.2
+    assert outcome.max_price_regular_session == 13.5
+    assert outcome.max_return_post_apertura_pct == round(100 * (13.5 - 11.2) / 11.2, 3)
+    assert outcome.total_day_change_pct == round(100 * (12.7 - 10.0) / 10.0, 3)
+
+
+def test_evaluate_outcome_sin_apertura_deja_tramos_post_apertura_en_none():
+    # detección ya después de todas las velas disponibles del día -- no hay
+    # ventana premarket ni regular que calcular, deben quedar en None, no 0.
+    prices = [10, 10.1]
+    provider = _FakeTradier({"XYZ": _df(prices, start="2026-08-14T13:00:00Z")})
+    outcome = eod.evaluate_candidate_outcome("XYZ", "2026-08-14T20:00:00Z", 10.0, 3.0, provider)
+    assert outcome.price_at_market_open is None
+    assert outcome.max_price_regular_session is None
+    assert outcome.max_return_post_apertura_pct is None
+    assert outcome.max_price_premarket_after_detection is None
+
+
+def test_eod_reemplaza_resultado_en_curso_no_final():
+    """Fase 4 del aprendizaje unificado -- un resultado 'en curso'
+    (is_final=False, como el que produce compute_interim_outcome durante
+    el día) nunca debe bloquear al EOD: has_final_outcome (no has_outcome)
+    es el chequeo correcto, y el EOD debe REEMPLAZARLO por el oficial."""
+    _fresh()
+    try:
+        reg.record_detection("XYZ", "2026-08-14", "regular", "2026-08-14T13:32:00Z", "s1",
+                              10.5, 3.0, 1000, 500, 2.0, 10000, gates_fired=[{"name": "cambio_de_precio"}])
+        reg.record_outcome("XYZ", "2026-08-14", run_up_before_detection_pct=3.0,
+                            max_price_after_detection=11.0, max_return_after_detection_pct=4.76,
+                            minutes_to_max=None, reached_20=False, reached_50=False, reached_100=False,
+                            category="EN_CURSO", is_final=False)
+        assert reg.has_outcome("XYZ", "2026-08-14")
+        assert not reg.has_final_outcome("XYZ", "2026-08-14")
+
+        prices = [10, 10.2, 10.5, 11, 12, 15, 14, 13]
+        provider = _FakeTradier({"XYZ": _df(prices)})
+        report = eod.run_eod_evaluation("2026-08-14", provider)
+
+        assert report.n_evaluadas == 1
+        assert reg.has_final_outcome("XYZ", "2026-08-14")
+        outcome = reg.get_outcome("XYZ", "2026-08-14")
+        assert outcome["is_final"] == 1
+        assert outcome["max_return_after_detection_pct"] == round(100 * (15 - 10.5) / 10.5, 3)
+        assert len(reg.list_outcomes_for_date("2026-08-14")) == 1  # nunca duplicó la fila
+    finally:
+        _restore()
+
+
+def test_eod_marca_confiable_para_aprendizaje_segun_dollar_volume():
+    """Filtro de calidad (2026-08-18, pedido explícito del usuario, umbral
+    evidencia-basado de $50.000): el EOD debe clasificar cada resultado con
+    classify_learning_quality y guardarlo -- nunca se excluye la detección
+    en sí, solo se marca como no confiable para las estadísticas."""
+    _fresh()
+    try:
+        reg.record_detection("SUS", "2026-08-14", "regular", "2026-08-14T13:32:00Z", "s1",
+                              10.5, 3.0, 1000, 500, 2.0, 100, gates_fired=[{"name": "despertar"}])
+        reg.record_detection("REAL", "2026-08-14", "regular", "2026-08-14T13:32:00Z", "s1",
+                              10.5, 3.0, 1000, 500, 2.0, 10_000_000, gates_fired=[{"name": "volumen_relativo"}])
+        prices = [10, 10.2, 10.5, 11, 12, 15, 14, 13]
+        provider = _FakeTradier({"SUS": _df(prices), "REAL": _df(prices)})
+        eod.run_eod_evaluation("2026-08-14", provider)
+
+        sus = reg.get_outcome("SUS", "2026-08-14")
+        real = reg.get_outcome("REAL", "2026-08-14")
+        assert sus["confiable_para_aprendizaje"] == 0
+        assert "dinero_insuficiente" in sus["motivos_sospecha"]
+        assert real["confiable_para_aprendizaje"] == 1
+        assert real["motivos_sospecha"] == []
+
+        # ambos siguen apareciendo en la lista cruda (nunca se ocultan) --
+        # solo el filtro por defecto de las estadísticas los separa.
+        assert len(reg.list_all_evaluated_candidates(solo_confiables=False)) == 2
+        confiables = reg.list_all_evaluated_candidates(solo_confiables=True)
+        assert [c["ticker"] for c in confiables] == ["REAL"]
+    finally:
+        _restore()
+
+
+def test_eod_error_evaluacion_nunca_cuenta_como_confiable():
+    _fresh()
+    try:
+        reg.record_detection("AETH", "2026-08-14", "regular", "2026-08-14T13:31:00Z", "s1",
+                              29.77, 0.0, 1000, 500, 1.0, 10000, gates_fired=[{"name": "cambio_de_comportamiento"}])
+        provider = _FakeTradier({}, broken_symbols={"AETH"})
+        eod.run_eod_evaluation("2026-08-14", provider)
+
+        outcome = reg.get_outcome("AETH", "2026-08-14")
+        assert outcome["is_final"] == 1
+        assert outcome["confiable_para_aprendizaje"] == 0
+        assert outcome["motivos_sospecha"] == ["error_evaluacion_eod"]
+    finally:
+        _restore()
+
+
 def test_ticker_roto_no_detiene_el_lote_y_queda_marcado_como_fallido():
     """Bug real de producción (2026-08-17, sesión del 17-Ago): AETH -> Tradier
     `{"series": null}` -> AttributeError sin capturar tumbaba TODA la

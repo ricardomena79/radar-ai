@@ -24,10 +24,11 @@ fila de `candidate_detection` queda, se resuelva bien o mal.
 """
 
 import json
+import os as _os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from atlas.config.config import db_path
 
@@ -198,6 +199,41 @@ def _connect() -> sqlite3.Connection:
         # cayendo fuerte -- ver alert_stage.py). Puramente informativo/de
         # trazabilidad acá; la decisión real vive en classify_alert_stage().
         _ensure_column(conn, "alert_stage_log", "retroceso_desde_maximo_pct", "REAL")
+        # Aprendizaje unificado (2026-08-18, pedido explícito del usuario,
+        # caso real XOS): trazabilidad del precio EXACTO en el momento de
+        # la detección -- estado inicial (A), nunca se pisa después.
+        _ensure_column(conn, "candidate_detection", "price_basis_at_detection", "TEXT")
+        _ensure_column(conn, "candidate_detection", "bid_at_detection", "REAL")
+        _ensure_column(conn, "candidate_detection", "ask_at_detection", "REAL")
+        _ensure_column(conn, "candidate_detection", "spread_pct_at_detection", "REAL")
+        # Filtro de calidad del aprendizaje (ver classify_learning_quality) --
+        # puramente informativo, NUNCA excluye nada de la detección/
+        # observación/registro, solo de las estadísticas agregadas por
+        # defecto (list_all_evaluated_candidates(solo_confiables=True)).
+        _ensure_column(conn, "candidate_outcome", "confiable_para_aprendizaje", "INTEGER")
+        _ensure_column(conn, "candidate_outcome", "motivos_sospecha", "TEXT")
+        # Resultado en curso vs final (2026-08-18): is_final=0 mientras el
+        # mercado sigue abierto (actualizado en cada barrido, barato, desde
+        # candidate_observation ya persistida) -- is_final=1 solo lo pone
+        # el EOD (evaluate_candidate_outcome, con velas de 1 min de
+        # Tradier, más preciso). record_outcome() ahora es upsert por
+        # (ticker, market_date) para poder pasar de en-curso a final sin
+        # duplicar filas.
+        _ensure_column(conn, "candidate_outcome", "is_final", "INTEGER NOT NULL DEFAULT 1")
+        # Desglose por tramo del día (2026-08-18, pedido explícito del
+        # usuario): separa el recorrido en 4 tramos -- antes de la
+        # detección (ya existía: run_up_before_detection_pct), en
+        # premarket DESPUÉS de detectarla, post-apertura (09:30 ET en
+        # adelante), y el total del día (solo informativo). Todos
+        # calculados de las MISMAS velas de 1 min de Tradier que ya se
+        # piden para max_return_after_detection_pct -- cero llamadas de
+        # red nuevas.
+        _ensure_column(conn, "candidate_outcome", "price_at_market_open", "REAL")
+        _ensure_column(conn, "candidate_outcome", "max_price_premarket_after_detection", "REAL")
+        _ensure_column(conn, "candidate_outcome", "max_return_premarket_after_detection_pct", "REAL")
+        _ensure_column(conn, "candidate_outcome", "max_price_regular_session", "REAL")
+        _ensure_column(conn, "candidate_outcome", "max_return_post_apertura_pct", "REAL")
+        _ensure_column(conn, "candidate_outcome", "total_day_change_pct", "REAL")
         _schema_ready_for = str(DB_PATH)
     return conn
 
@@ -226,20 +262,31 @@ def record_detection(
     volume_at_detection: Optional[int], average_volume_at_detection: Optional[int],
     relative_volume_at_detection: Optional[float], dollar_volume_at_detection: Optional[float],
     gates_fired: List[Dict[str, Any]], source: str = "tradier",
+    price_basis_at_detection: Optional[str] = None, bid_at_detection: Optional[float] = None,
+    ask_at_detection: Optional[float] = None, spread_pct_at_detection: Optional[float] = None,
 ) -> bool:
     """Registra la primera detección. Devuelve True si fue nueva (INSERT
-    real), False si ya existía (idempotente, nunca se pisa)."""
+    real), False si ya existía (idempotente, nunca se pisa).
+
+    `price_basis_at_detection`/`bid_at_detection`/`ask_at_detection`/
+    `spread_pct_at_detection` (2026-08-18, pedido explícito del usuario):
+    trazabilidad EXACTA del precio en el instante de la detección --
+    "estado A" (lo que Atlas vio), inmutable, nunca se pisa por
+    reclasificaciones posteriores (esas viven en `alert_stage_log`,
+    "estado B", tabla completamente separada -- ver `candidate_full_history`)."""
     with _connect() as conn:
         cur = conn.execute(
             """INSERT OR IGNORE INTO candidate_detection
                (ticker, market_date, session, detected_at, sweep_id, price_at_detection,
                 change_pct_at_detection, volume_at_detection, average_volume_at_detection,
-                relative_volume_at_detection, dollar_volume_at_detection, gates_fired, source, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                relative_volume_at_detection, dollar_volume_at_detection, gates_fired, source, created_at,
+                price_basis_at_detection, bid_at_detection, ask_at_detection, spread_pct_at_detection)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (ticker, market_date, session, detected_at, sweep_id, price_at_detection,
              change_pct_at_detection, volume_at_detection, average_volume_at_detection,
              relative_volume_at_detection, dollar_volume_at_detection,
-             json.dumps(gates_fired, ensure_ascii=False), source, _now()),
+             json.dumps(gates_fired, ensure_ascii=False), source, _now(),
+             price_basis_at_detection, bid_at_detection, ask_at_detection, spread_pct_at_detection),
         )
         conn.commit()
         return cur.rowcount > 0
@@ -761,9 +808,49 @@ def get_latest_intraday_metrics(ticker: str, market_date: str) -> Optional[Dict[
         return _row(row) if row else None
 
 
-# --------------------------- resultado (EOD) ---------------------------
+# --------------------------- filtro de calidad del aprendizaje ---------------------------
+# 2026-08-18, pedido explícito del usuario -- evidencia real del cierre de
+# hoy: 5 candidatas que llegaron a "+100%" tenían dollar_volume_at_detection
+# de $125-$24.826 (RCON, CXAI, AIXC, CAST, UZX -- todas disparadas por
+# `despertar` sobre un precio prácticamente sin operar), contra 5
+# confirmadas con $1.157.769-$49.788.234 (CDTG, IPST, XOS, WETO, PFSA,
+# todas por `volumen_relativo` con dinero real). Brecha limpia de ~47x
+# entre el sospechoso más alto y el confirmado más bajo -- $50.000 queda
+# en el medio, con margen amplio de los dos lados. Configurable, no
+# hardcodeado, para poder ajustar con más evidencia sin tocar código.
+LEARNING_MIN_DOLLAR_VOLUME = float(_os.environ.get("ATLAS_LEARNING_MIN_DOLLAR_VOLUME", 50_000))
+
+
+def classify_learning_quality(detection_row: Dict[str, Any]) -> Tuple[bool, List[str]]:
+    """Decide si una detección cuenta como evidencia CONFIABLE para las
+    estadísticas de aprendizaje agregadas. NUNCA excluye nada de la
+    detección, la observación ni el registro histórico -- Atlas sigue
+    viendo y guardando TODO el mercado sin excepción; esto solo decide qué
+    entra por defecto a `list_all_evaluated_candidates(solo_confiables=True)`
+    y a `explosion_bands_tradier()`. Regla aprobada por el usuario:
+    `dollar_volume_at_detection >= LEARNING_MIN_DOLLAR_VOLUME`."""
+    motivos: List[str] = []
+    dollar_volume = detection_row.get("dollar_volume_at_detection")
+    rvol = detection_row.get("relative_volume_at_detection")
+
+    if dollar_volume is None:
+        motivos.append("dinero_operado_desconocido")
+    elif dollar_volume < LEARNING_MIN_DOLLAR_VOLUME:
+        motivos.append("dinero_insuficiente")
+
+    if rvol is not None and rvol < 0.05:
+        motivos.append("rvol_anomalo")  # informativo -- no cambia el booleano por sí solo
+
+    confiable = dollar_volume is not None and dollar_volume >= LEARNING_MIN_DOLLAR_VOLUME
+    return confiable, motivos
+
+
+# --------------------------- resultado (EOD + en curso) ---------------------------
 
 def has_outcome(ticker: str, market_date: str) -> bool:
+    """True si existe CUALQUIER outcome (en curso o final). Ver
+    `has_final_outcome()` para el chequeo que usa el EOD (no reintentar lo
+    ya cerrado, pero sí actualizar lo que solo estaba "en curso")."""
     with _connect() as conn:
         row = conn.execute(
             "SELECT 1 FROM candidate_outcome WHERE ticker=? AND market_date=?", (ticker, market_date)
@@ -771,12 +858,29 @@ def has_outcome(ticker: str, market_date: str) -> bool:
         return row is not None
 
 
+def has_final_outcome(ticker: str, market_date: str) -> bool:
+    """True solo si el outcome ya es FINAL (`is_final=1`, puesto por el
+    EOD). Un outcome "en curso" (is_final=0, actualizado en vivo durante
+    el día) no cuenta -- el EOD debe poder reemplazarlo por el definitivo."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM candidate_outcome WHERE ticker=? AND market_date=? AND is_final=1",
+            (ticker, market_date),
+        ).fetchone()
+        return row is not None
+
+
+def _deserialize_outcome(d: Dict[str, Any]) -> Dict[str, Any]:
+    d["motivos_sospecha"] = json.loads(d["motivos_sospecha"]) if d.get("motivos_sospecha") else []
+    return d
+
+
 def get_outcome(ticker: str, market_date: str) -> Optional[Dict[str, Any]]:
     with _connect() as conn:
         row = conn.execute(
             "SELECT * FROM candidate_outcome WHERE ticker=? AND market_date=?", (ticker, market_date)
         ).fetchone()
-        return _row(row) if row else None
+        return _deserialize_outcome(_row(row)) if row else None
 
 
 def record_outcome(
@@ -785,22 +889,66 @@ def record_outcome(
     minutes_to_max: Optional[float], reached_20: bool, reached_50: bool, reached_100: bool,
     category: str, notes: Optional[str] = None,
     perdio_momentum_inmediato: Optional[bool] = None, direccion_correcta: Optional[bool] = None,
+    confiable_para_aprendizaje: Optional[bool] = None, motivos_sospecha: Optional[List[str]] = None,
+    is_final: bool = True,
+    price_at_market_open: Optional[float] = None,
+    max_price_premarket_after_detection: Optional[float] = None,
+    max_return_premarket_after_detection_pct: Optional[float] = None,
+    max_price_regular_session: Optional[float] = None,
+    max_return_post_apertura_pct: Optional[float] = None,
+    total_day_change_pct: Optional[float] = None,
 ) -> bool:
+    """Upsert por (ticker, market_date) -- 2026-08-18, pedido explícito del
+    usuario: un resultado "en curso" (`is_final=False`, calculado barato
+    desde `candidate_observation` mientras el mercado sigue abierto, ver
+    `compute_interim_outcome`) debe poder actualizarse en cada barrido sin
+    duplicar filas, y el EOD (`is_final=True`, con velas de 1 min de
+    Tradier, más preciso) debe poder reemplazarlo -- nunca los dos a la
+    vez, siempre UNA fila por candidata por día, la más reciente/confiable
+    disponible. `computed_at` se actualiza en cada upsert; `created_at` solo
+    la primera vez (se preserva)."""
     with _connect() as conn:
-        cur = conn.execute(
-            """INSERT OR IGNORE INTO candidate_outcome
+        conn.execute(
+            """INSERT INTO candidate_outcome
                (ticker, market_date, computed_at, run_up_before_detection_pct, max_price_after_detection,
                 max_return_after_detection_pct, minutes_to_max, reached_20, reached_50, reached_100,
-                category, notes, perdio_momentum_inmediato, direccion_correcta, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                category, notes, perdio_momentum_inmediato, direccion_correcta,
+                confiable_para_aprendizaje, motivos_sospecha, is_final,
+                price_at_market_open, max_price_premarket_after_detection,
+                max_return_premarket_after_detection_pct, max_price_regular_session,
+                max_return_post_apertura_pct, total_day_change_pct, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(ticker, market_date) DO UPDATE SET
+                 computed_at=excluded.computed_at,
+                 run_up_before_detection_pct=excluded.run_up_before_detection_pct,
+                 max_price_after_detection=excluded.max_price_after_detection,
+                 max_return_after_detection_pct=excluded.max_return_after_detection_pct,
+                 minutes_to_max=excluded.minutes_to_max,
+                 reached_20=excluded.reached_20, reached_50=excluded.reached_50,
+                 reached_100=excluded.reached_100, category=excluded.category, notes=excluded.notes,
+                 perdio_momentum_inmediato=excluded.perdio_momentum_inmediato,
+                 direccion_correcta=excluded.direccion_correcta,
+                 confiable_para_aprendizaje=excluded.confiable_para_aprendizaje,
+                 motivos_sospecha=excluded.motivos_sospecha, is_final=excluded.is_final,
+                 price_at_market_open=excluded.price_at_market_open,
+                 max_price_premarket_after_detection=excluded.max_price_premarket_after_detection,
+                 max_return_premarket_after_detection_pct=excluded.max_return_premarket_after_detection_pct,
+                 max_price_regular_session=excluded.max_price_regular_session,
+                 max_return_post_apertura_pct=excluded.max_return_post_apertura_pct,
+                 total_day_change_pct=excluded.total_day_change_pct""",
             (ticker, market_date, _now(), run_up_before_detection_pct, max_price_after_detection,
              max_return_after_detection_pct, minutes_to_max, int(reached_20), int(reached_50),
              int(reached_100), category, notes,
              None if perdio_momentum_inmediato is None else int(perdio_momentum_inmediato),
-             None if direccion_correcta is None else int(direccion_correcta), _now()),
+             None if direccion_correcta is None else int(direccion_correcta),
+             None if confiable_para_aprendizaje is None else int(confiable_para_aprendizaje),
+             json.dumps(motivos_sospecha or [], ensure_ascii=False), int(is_final),
+             price_at_market_open, max_price_premarket_after_detection,
+             max_return_premarket_after_detection_pct, max_price_regular_session,
+             max_return_post_apertura_pct, total_day_change_pct, _now()),
         )
         conn.commit()
-        return cur.rowcount > 0
+        return True
 
 
 def list_outcomes_for_date(market_date: str) -> List[Dict[str, Any]]:
@@ -809,7 +957,129 @@ def list_outcomes_for_date(market_date: str) -> List[Dict[str, Any]]:
             "SELECT * FROM candidate_outcome WHERE market_date=? ORDER BY max_return_after_detection_pct DESC",
             (market_date,),
         ).fetchall()
-        return [_row(r) for r in rows]
+        return [_deserialize_outcome(_row(r)) for r in rows]
+
+
+def compute_interim_outcome(ticker: str, market_date: str) -> Optional[Dict[str, Any]]:
+    """Resultado EN CURSO (2026-08-18, Fase 4 del aprendizaje unificado,
+    pedido explícito del usuario) -- calculado barato desde datos YA
+    persistidos (`candidate_detection` + `MAX(candidate_observation.price)`,
+    sin ninguna llamada de red nueva a Tradier), para que Atlas pueda
+    mostrar el resultado de una candidata MIENTRAS el mercado sigue
+    abierto, sin esperar al EOD. `reached_20/50/100` se calculan sobre
+    este máximo EN VIVO (puede subestimar el máximo real del día -- el EOD,
+    con velas de 1 min de Tradier, es más preciso y siempre gana, ver
+    guard de abajo). No calcula `run_up_before_detection_pct` ni el
+    desglose por tramo (eso requiere las velas de Tradier, exclusivo del
+    EOD) -- quedan en `None` explícitamente, nunca inventados.
+
+    Si el ticker YA tiene un resultado FINAL (`has_final_outcome`), esta
+    función NO lo toca -- devuelve el outcome existente tal cual, para que
+    un sweep tardío nunca pise el resultado oficial del EOD con una
+    versión "en curso" más pobre. `None` si todavía no hay detección ni
+    ninguna observación con precio."""
+    if has_final_outcome(ticker, market_date):
+        return get_outcome(ticker, market_date)
+
+    detection = get_detection(ticker, market_date)
+    if detection is None:
+        return None
+    price_at_detection = detection.get("price_at_detection")
+    if not price_at_detection:
+        return None
+    max_price = max_price_today(ticker, market_date)
+    if max_price is None:
+        return None
+
+    max_return_pct = round((max_price - price_at_detection) / price_at_detection * 100, 2)
+    confiable, motivos = classify_learning_quality(detection)
+
+    record_outcome(
+        ticker=ticker,
+        market_date=market_date,
+        run_up_before_detection_pct=None,
+        max_price_after_detection=max_price,
+        max_return_after_detection_pct=max_return_pct,
+        minutes_to_max=None,
+        reached_20=max_return_pct >= 20.0,
+        reached_50=max_return_pct >= 50.0,
+        reached_100=max_return_pct >= 100.0,
+        category="EN_CURSO",
+        notes="Resultado en curso, calculado en vivo desde candidate_observation -- no es el resultado oficial del EOD.",
+        confiable_para_aprendizaje=confiable,
+        motivos_sospecha=motivos,
+        is_final=False,
+    )
+    return get_outcome(ticker, market_date)
+
+
+def candidate_full_history(ticker: str, market_date: str) -> Optional[Dict[str, Any]]:
+    """Historia completa de UNA candidata (2026-08-18, pedido explícito del
+    usuario, caso real XOS) -- separa explícitamente en 3 bloques que NUNCA
+    se pisan entre sí, cada uno de su propia tabla:
+
+      A) `estado_inicial` -- de `candidate_detection`, WRITE-ONCE, exactamente
+         lo que Atlas vio en el instante de la detección (precio, fuente del
+         precio, bid/ask/spread, RVOL, dirección, dólares operados). Esto NO
+         cambia nunca, sin importar qué pase después -- una detección
+         correcta como XOS no puede "volverse mala" retroactivamente porque
+         horas más tarde pasó a NO_PERSEGUIR.
+      B) `evolucion` -- de `alert_stage_log` (todas las transiciones de
+         etapa registradas) + el máximo visto hasta ahora en
+         `candidate_observation` (barato, en vivo, puede no ser el máximo
+         real del día -- ver C para el oficial).
+      C) `resultado_final` -- de `candidate_outcome`, el resultado real
+         (en curso mientras `is_final=False`, definitivo con las velas de
+         1 min de Tradier una vez que el EOD corre).
+
+    `None` si el ticker no tiene ninguna detección ese día."""
+    detection = get_detection(ticker, market_date)
+    if detection is None:
+        return None
+
+    etapas = alert_stage_history_for_ticker(ticker, market_date)
+    outcome = get_outcome(ticker, market_date)
+    max_visto_en_vivo = max_price_today(ticker, market_date)
+    price_at_detection = detection.get("price_at_detection")
+    max_pct_visto_en_vivo = None
+    if max_visto_en_vivo is not None and price_at_detection:
+        max_pct_visto_en_vivo = round((max_visto_en_vivo - price_at_detection) / price_at_detection * 100, 3)
+
+    racional_available = None
+    try:
+        from atlas.data.universe import is_available
+        racional_available = bool(is_available(ticker))
+    except Exception:
+        racional_available = None
+
+    return {
+        "ticker": ticker,
+        "market_date": market_date,
+        "racional_available": racional_available,
+        "estado_inicial": {
+            "detected_at": detection.get("detected_at"),
+            "session": detection.get("session"),
+            "source": detection.get("source"),
+            "price_at_detection": price_at_detection,
+            "price_basis_at_detection": detection.get("price_basis_at_detection"),
+            "bid_at_detection": detection.get("bid_at_detection"),
+            "ask_at_detection": detection.get("ask_at_detection"),
+            "spread_pct_at_detection": detection.get("spread_pct_at_detection"),
+            "change_pct_at_detection": detection.get("change_pct_at_detection"),
+            "direction_at_detection": detection.get("direction_at_detection"),
+            "relative_volume_at_detection": detection.get("relative_volume_at_detection"),
+            "volume_at_detection": detection.get("volume_at_detection"),
+            "dollar_volume_at_detection": detection.get("dollar_volume_at_detection"),
+            "phase_tag": detection.get("phase_tag"),
+            "gates_fired": detection.get("gates_fired"),
+        },
+        "evolucion": {
+            "etapas": etapas,
+            "max_price_visto_en_vivo": max_visto_en_vivo,
+            "max_pct_visto_en_vivo": max_pct_visto_en_vivo,
+        },
+        "resultado_final": outcome,
+    }
 
 
 # --------------------------- resumen diario / precisión (Reinicio 2026-08-15) ---------------------------
@@ -868,27 +1138,94 @@ def cumulative_precision() -> Dict[str, Any]:
     return d
 
 
-def list_all_evaluated_candidates() -> List[Dict[str, Any]]:
+def list_all_evaluated_candidates(solo_confiables: bool = True) -> List[Dict[str, Any]]:
     """Todas las candidatas con resultado ya evaluado (detección + outcome),
     de TODA la historia en vivo -- fuente única para
     `atlas_live.learning.maturity` (2026-08-15). Nunca incluye candidatas
     sin `candidate_outcome` (no cerradas todavía) ni datos de
-    `atlas_live/reference/` (Base Histórica, siempre separada)."""
+    `atlas_live/reference/` (Base Histórica, siempre separada).
+
+    Siempre exige `is_final=1` -- un resultado "en curso" (ver
+    `compute_interim_outcome`) todavía puede cambiar, nunca debe contarse
+    en las estadísticas acumuladas.
+
+    `solo_confiables=True` (default, 2026-08-18, pedido explícito del
+    usuario): además exige `confiable_para_aprendizaje=1` (ver
+    `classify_learning_quality`) -- las estadísticas de aprendizaje usan
+    por defecto SOLO evidencia confiable. `solo_confiables=False` devuelve
+    TODO lo evaluado, sospechoso incluido (para auditoría, nunca se borra
+    ni se oculta del todo)."""
+    where_extra = " AND o.confiable_para_aprendizaje = 1" if solo_confiables else ""
     with _connect() as conn:
         rows = conn.execute(
-            """SELECT d.ticker AS ticker, d.market_date AS market_date, d.session AS session,
+            f"""SELECT d.ticker AS ticker, d.market_date AS market_date, d.session AS session,
                       d.change_pct_at_detection AS change_pct_at_detection,
                       d.direction_at_detection AS direction_at_detection,
                       d.phase_tag AS phase_tag, d.comportamiento_post_apertura AS comportamiento_post_apertura,
                       d.volatility_14d_pct_at_detection AS volatility_14d_pct_at_detection,
                       d.daily_range_pct_at_detection AS daily_range_pct_at_detection,
                       o.reached_20 AS reached_20, o.reached_50 AS reached_50, o.reached_100 AS reached_100,
-                      o.category AS category, o.direccion_correcta AS direccion_correcta
+                      o.category AS category, o.direccion_correcta AS direccion_correcta,
+                      o.confiable_para_aprendizaje AS confiable_para_aprendizaje
                FROM candidate_detection d
                JOIN candidate_outcome o ON o.ticker = d.ticker AND o.market_date = d.market_date
+               WHERE o.is_final = 1{where_extra}
                ORDER BY d.market_date"""
         ).fetchall()
         return [_row(r) for r in rows]
+
+
+EXPLOSION_BANDS_TRADIER = [10, 20, 30, 50, 100, 150, 200]
+
+
+def explosion_bands_tradier(market_date: Optional[str] = None) -> Dict[str, Any]:
+    """Marcador Histórico Tradier (2026-08-18, pedido explícito del usuario)
+    -- bandas ACUMULATIVAS (>= banda) de `max_return_after_detection_pct`
+    sobre resultados FINALES (`is_final=1`) y CONFIABLES
+    (`confiable_para_aprendizaje=1`, ver `classify_learning_quality`) del
+    radar Tradier (CAPA1/2). Nunca reemplaza ni toca `explosion_history.py`
+    (el Marcador Histórico legacy, alimentado por exit_journal/Yahoo) --
+    sistema nuevo, en paralelo, sobre datos y fuente completamente
+    distintos. `market_date=None` (default) agrega TODA la historia
+    disponible; pasar una fecha para un solo día. Mismo shape de salida que
+    `explosion_history.summarize_by_band()` (n, mediana/máximo del %) para
+    poder compararlos lado a lado en la Cabina."""
+    import statistics
+
+    where = "o.is_final = 1 AND o.confiable_para_aprendizaje = 1"
+    params: tuple = ()
+    if market_date:
+        where += " AND o.market_date = ?"
+        params = (market_date,)
+
+    with _connect() as conn:
+        rows = conn.execute(
+            f"""SELECT o.ticker AS ticker, o.market_date AS market_date,
+                      o.max_return_after_detection_pct AS max_return_after_detection_pct
+               FROM candidate_outcome o
+               WHERE {where} AND o.max_return_after_detection_pct IS NOT NULL""",
+            params,
+        ).fetchall()
+
+    eventos = [_row(r) for r in rows]
+    resumen: Dict[str, Any] = {}
+    for band in EXPLOSION_BANDS_TRADIER:
+        casos = [e for e in eventos if e["max_return_after_detection_pct"] >= band]
+        if not casos:
+            resumen[str(band)] = {"n": 0, "estado": "No disponible"}
+            continue
+        maxes = [c["max_return_after_detection_pct"] for c in casos]
+        resumen[str(band)] = {
+            "n": len(casos),
+            "mediana_max_pct": round(statistics.median(maxes), 1),
+            "max_absoluto_pct": round(max(maxes), 1),
+            "tickers": sorted({c["ticker"] for c in casos}),
+        }
+    return {
+        "market_date": market_date,
+        "n_total_evaluado": len(eventos),
+        "por_banda_acumulativa": resumen,
+    }
 
 
 def list_daily_summaries() -> List[Dict[str, Any]]:

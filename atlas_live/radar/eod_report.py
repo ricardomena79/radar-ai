@@ -58,6 +58,16 @@ class CandidateOutcome:
     max_drawdown_after_detection_pct: Optional[float] = None
     outcome_direction: str = "INDEFINIDA"
     perdio_momentum_inmediato: Optional[bool] = None
+    # Desglose por tramo del día (2026-08-18, pedido explícito del usuario,
+    # aprendizaje unificado) -- de las MISMAS velas de 1 min ya pedidas
+    # arriba, cero llamadas de red nuevas. Ver `evaluate_candidate_outcome`
+    # para el detalle de cada ventana.
+    price_at_market_open: Optional[float] = None
+    max_price_premarket_after_detection: Optional[float] = None
+    max_return_premarket_after_detection_pct: Optional[float] = None
+    max_price_regular_session: Optional[float] = None
+    max_return_post_apertura_pct: Optional[float] = None
+    total_day_change_pct: Optional[float] = None
 
 
 def _categorize(run_up_before: Optional[float], max_after: Optional[float]) -> str:
@@ -138,12 +148,66 @@ def evaluate_candidate_outcome(
         primer_return = 100 * (primeras.iloc[-1]["Close"] - price_at_detection) / price_at_detection
         perdio_momentum = bool(primer_return < 0) if change_pct_at_detection is not None and change_pct_at_detection > 0 else None
 
+    # Desglose por tramo del día (2026-08-18, pedido explícito del usuario)
+    # -- mismo `df`/`posteriores` ya obtenidos arriba, cero llamadas de red
+    # nuevas. `market_open_ts` = 09:30 ET expresado en UTC, mismo criterio
+    # de comparación de cadena ("13:30") ya usado en `run_eod_evaluation`
+    # para `comportamiento_post_apertura` (solo EDT, sin manejo de DST,
+    # consistente con el resto del código).
+    market_open_ts = detected_ts.normalize() + pd.Timedelta(hours=13, minutes=30)
+
+    # 2) MOVIMIENTO DESPUÉS DE LA DETECCIÓN EN PREMARKET -- cuánto recorrido
+    # real quedaba desde la detección hasta la apertura regular. Solo tiene
+    # sentido cuando la detección fue antes de la apertura; si el mercado ya
+    # estaba abierto, esta ventana queda vacía -- `None` explícito, nunca 0
+    # inventado.
+    max_price_premarket_after = None
+    max_return_premarket_after_pct = None
+    premarket_window = posteriores[posteriores.index < market_open_ts]
+    if not premarket_window.empty:
+        max_price_premarket_after = float(premarket_window["High"].max())
+        if price_at_detection:
+            max_return_premarket_after_pct = round(
+                100 * (max_price_premarket_after - price_at_detection) / price_at_detection, 3
+            )
+
+    # 3) MOVIMIENTO POST APERTURA -- precio a las 09:30 ET -> máximo durante
+    # el resto de la sesión regular. Ventana FIJA (independiente de
+    # `detected_at`): informa el recorrido de la sesión regular en sí
+    # misma, se pida o no la candidata en premarket.
+    price_at_open = None
+    max_price_regular = None
+    max_return_post_apertura_pct = None
+    regular_window = df[df.index >= market_open_ts]
+    if not regular_window.empty:
+        price_at_open = float(regular_window.iloc[0]["Open"])
+        max_price_regular = float(regular_window["High"].max())
+        if price_at_open:
+            max_return_post_apertura_pct = round(
+                100 * (max_price_regular - price_at_open) / price_at_open, 3
+            )
+
+    # 4) MOVIMIENTO TOTAL DEL DÍA -- solo informativo, apertura->cierre del
+    # día completo de las velas disponibles, independiente de la detección.
+    total_day_change_pct = None
+    if not df.empty:
+        open_dia = float(df.iloc[0]["Open"])
+        close_dia = float(df.iloc[-1]["Close"])
+        if open_dia:
+            total_day_change_pct = round(100 * (close_dia - open_dia) / open_dia, 3)
+
     return CandidateOutcome(
         ticker=ticker, run_up_before_detection_pct=change_pct_at_detection,
         max_price_after_detection=max_price, max_return_after_detection_pct=max_return_pct,
         minutes_to_max=minutes_to_max, reached_20=reached_20, reached_50=reached_50,
         reached_100=reached_100, category=category, max_drawdown_after_detection_pct=max_drawdown_pct,
         outcome_direction=outcome_direction, perdio_momentum_inmediato=perdio_momentum,
+        price_at_market_open=price_at_open,
+        max_price_premarket_after_detection=max_price_premarket_after,
+        max_return_premarket_after_detection_pct=max_return_premarket_after_pct,
+        max_price_regular_session=max_price_regular,
+        max_return_post_apertura_pct=max_return_post_apertura_pct,
+        total_day_change_pct=total_day_change_pct,
     )
 
 
@@ -187,7 +251,12 @@ def run_eod_evaluation(
 
     for c in candidatas:
         ticker = c["ticker"]
-        if reg.has_outcome(ticker, market_date):
+        # `has_final_outcome` (no `has_outcome`, 2026-08-18, aprendizaje
+        # unificado): un resultado "en curso" (`is_final=False`, calculado
+        # en vivo por `compute_interim_outcome` durante el día) NO debe
+        # bloquear el EOD -- el oficial (velas de 1 min de Tradier) siempre
+        # tiene que poder reemplazarlo.
+        if reg.has_final_outcome(ticker, market_date):
             continue
         try:
             query_symbol = (symbol_query_map or {}).get(ticker) or normalize_symbol(ticker).query_symbol
@@ -201,11 +270,20 @@ def run_eod_evaluation(
             if direccion_detectada and outcome.outcome_direction != "INDEFINIDA":
                 direccion_correcta = (direccion_detectada == outcome.outcome_direction)
 
+            confiable, motivos_sospecha = reg.classify_learning_quality(c)
+
             reg.record_outcome(
                 ticker, market_date, outcome.run_up_before_detection_pct, outcome.max_price_after_detection,
                 outcome.max_return_after_detection_pct, outcome.minutes_to_max, outcome.reached_20,
                 outcome.reached_50, outcome.reached_100, outcome.category, outcome.notes,
                 perdio_momentum_inmediato=outcome.perdio_momentum_inmediato, direccion_correcta=direccion_correcta,
+                confiable_para_aprendizaje=confiable, motivos_sospecha=motivos_sospecha, is_final=True,
+                price_at_market_open=outcome.price_at_market_open,
+                max_price_premarket_after_detection=outcome.max_price_premarket_after_detection,
+                max_return_premarket_after_detection_pct=outcome.max_return_premarket_after_detection_pct,
+                max_price_regular_session=outcome.max_price_regular_session,
+                max_return_post_apertura_pct=outcome.max_return_post_apertura_pct,
+                total_day_change_pct=outcome.total_day_change_pct,
             )
 
             # comportamiento_post_apertura -- solo tiene sentido si la detección
@@ -246,6 +324,12 @@ def run_eod_evaluation(
                 ticker, market_date, c.get("change_pct_at_detection"), None, None, None,
                 False, False, False, "error_evaluacion",
                 notes=f"{type(exc).__name__}: {exc}",
+                # Sin resultado real -- nunca cuenta como evidencia
+                # confiable para las estadísticas de aprendizaje, pero
+                # queda registrado como FINAL para que el EOD no reintente
+                # este ticker en cada barrido (mismo motivo original del
+                # `has_outcome` idempotente).
+                confiable_para_aprendizaje=False, motivos_sospecha=["error_evaluacion_eod"], is_final=True,
             )
             errores.append(f"{ticker}: error inesperado -- {type(exc).__name__}: {exc}")
 

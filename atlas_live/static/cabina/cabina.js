@@ -1158,6 +1158,56 @@ function renderExplosionHistory() {
   }
 }
 
+// 📡 Marcador Histórico Tradier (2026-08-18, aprendizaje unificado, pedido
+// explícito del usuario) -- sistema NUEVO y en paralelo al Marcador
+// Histórico de arriba (ese es Yahoo/exit_journal); este viene del radar
+// Tradier en vivo (CAPA1/2, /api/radar-explosion-bands), solo resultados
+// FINALES y CONFIABLES (ver filtro de calidad -- datos sospechosos siguen
+// detectándose, solo quedan fuera de esta estadística).
+let _explosionBandsTradier = null;
+
+async function fetchExplosionBandsTradier() {
+  try {
+    const res = await fetch("/api/radar-explosion-bands");
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    _explosionBandsTradier = await res.json();
+  } catch (err) {
+    console.error("fetchExplosionBandsTradier:", err);
+    _explosionBandsTradier = null;
+  }
+  renderExplosionBandsTradier();
+}
+
+function renderExplosionBandsTradier() {
+  const calEl = document.getElementById("explosiones-tradier-calidad");
+  const bandEl = document.getElementById("explosiones-tradier-bandas");
+  if (!calEl || !bandEl) return;
+  if (!_explosionBandsTradier) {
+    calEl.innerHTML = bandEl.innerHTML = `<div class="empty-state">No disponible.</div>`;
+    return;
+  }
+  const nd = (v, suf = "") => (v === null || v === undefined) ? '<span class="dim">No disponible</span>' : (v + suf);
+  const lhCard = (icon, label, value, sub) =>
+    `<div class="lh-card"><div class="lh-icon">${icon}</div><div class="lh-label">${label}</div><div class="lh-value">${value}</div>${sub ? `<div class="lh-sub">${sub}</div>` : ""}</div>`;
+
+  const n = _explosionBandsTradier.n_total_evaluado || 0;
+  if (!n) {
+    calEl.innerHTML = lhCard("📡", "Resultados finales confiables", "0", "todavía sin cierres del día evaluados");
+    bandEl.innerHTML = `<div class="empty-state">Sin resultados confiables todavía -- vuelve tras el cierre de la próxima sesión.</div>`;
+    return;
+  }
+  calEl.innerHTML = lhCard("📡", "Resultados finales confiables", n, "detección Tradier, cierre del día ya evaluado");
+
+  const bandas = _explosionBandsTradier.por_banda_acumulativa || {};
+  const bandRow = (b) => {
+    const d = bandas[b];
+    if (!d || d.n === 0) return `<div class="detail-metric"><div class="detail-metric-label">≥ +${b}%</div><div class="detail-metric-value"><span class="dim">No disponible</span></div></div>`;
+    return `<div class="detail-metric"><div class="detail-metric-label">≥ +${b}%</div><div class="detail-metric-value">${d.n} <span class="dim" style="font-size:11px">casos · máx ${d.max_absoluto_pct}%</span></div></div>`;
+  };
+  bandEl.innerHTML = `<div class="detail-grid">${["10", "20", "30", "50", "100", "150", "200"].map(bandRow).join("")}</div>
+    <div class="detail-note" style="margin-top:8px">Acumulativo: "≥+50%" incluye las que superaron +50%. Máximo real DESPUÉS de la detección (no el día completo). n explícito, solo evidencia confiable.</div>`;
+}
+
 // 📡 Señales -- validación en vivo. Todo real de /api/signals/*. "Sin señales"
 // cuando no hay datos reales; nunca ejemplos falsos.
 let _signalsStats = null, _signalsActive = null, _signalsResults = null;
@@ -1672,6 +1722,7 @@ function startPanelStatusPolling() {
   fetchEstudio();
   fetchSignals();
   fetchExplosionHistory();
+  fetchExplosionBandsTradier();
   fetchMemoryEngine();
   fetchPredictionJournal();
   fetchExitJournal();
@@ -1689,6 +1740,7 @@ function startPanelStatusPolling() {
   setInterval(fetchLearningMaturity, PANEL_STATUS_POLL_MS);
   setInterval(fetchHistoricalReference, PANEL_STATUS_POLL_MS);
   setInterval(fetchExplosionHistory, PANEL_STATUS_POLL_MS);
+  setInterval(fetchExplosionBandsTradier, PANEL_STATUS_POLL_MS);
   setInterval(fetchSignals, PANEL_STATUS_POLL_MS);
   setInterval(fetchEstudio, PANEL_STATUS_POLL_MS);
   setInterval(fetchRadarUniverso, PRICE_POLL_MS);

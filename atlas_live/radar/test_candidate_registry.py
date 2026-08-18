@@ -57,7 +57,12 @@ def test_observaciones_se_acumulan_no_desaparece_la_candidata():
         _restore()
 
 
-def test_outcome_idempotente_y_separado_de_deteccion():
+def test_outcome_es_upsert_una_sola_fila_por_ticker_y_dia():
+    """2026-08-18: `record_outcome` dejó de ser INSERT-once -- ahora es
+    upsert, para poder pasar de "en curso" (is_final=False) a "final"
+    (is_final=True) sin duplicar filas. Sigue habiendo UNA sola fila por
+    (ticker, market_date), pero la segunda llamada SÍ actualiza los
+    valores (a diferencia del comportamiento viejo)."""
     _fresh()
     try:
         reg.record_detection("NVDA", "2026-08-14", "premarket", "2026-08-14T08:00:00Z", "sweep-1",
@@ -65,17 +70,40 @@ def test_outcome_idempotente_y_separado_de_deteccion():
         ok1 = reg.record_outcome("NVDA", "2026-08-14", run_up_before_detection_pct=5.0,
                                   max_price_after_detection=130.0, max_return_after_detection_pct=30.0,
                                   minutes_to_max=45.0, reached_20=True, reached_50=False, reached_100=False,
-                                  category="mejor_oportunidad")
-        ok2 = reg.record_outcome("NVDA", "2026-08-14", run_up_before_detection_pct=999,
-                                  max_price_after_detection=1.0, max_return_after_detection_pct=1.0,
-                                  minutes_to_max=1.0, reached_20=False, reached_50=False, reached_100=False,
-                                  category="otra_cosa")
+                                  category="mejor_oportunidad", is_final=False)
+        ok2 = reg.record_outcome("NVDA", "2026-08-14", run_up_before_detection_pct=5.0,
+                                  max_price_after_detection=140.0, max_return_after_detection_pct=40.0,
+                                  minutes_to_max=90.0, reached_20=True, reached_50=False, reached_100=False,
+                                  category="mejor_oportunidad", is_final=True)
         assert ok1 is True
-        assert ok2 is False  # idempotente, no se pisa
+        assert ok2 is True
         outcomes = reg.list_outcomes_for_date("2026-08-14")
-        assert len(outcomes) == 1
-        assert outcomes[0]["max_return_after_detection_pct"] == 30.0
+        assert len(outcomes) == 1  # sigue siendo una sola fila, no duplicada
+        assert outcomes[0]["max_return_after_detection_pct"] == 40.0  # se actualizó al valor final
+        assert outcomes[0]["is_final"] == 1
         assert reg.has_outcome("NVDA", "2026-08-14")
+        assert reg.has_final_outcome("NVDA", "2026-08-14")
+    finally:
+        _restore()
+
+
+def test_has_final_outcome_distingue_en_curso_de_final():
+    _fresh()
+    try:
+        reg.record_detection("TSLA", "2026-08-14", "regular", "2026-08-14T14:00:00Z", "s1",
+                              300.0, 2.0, 100_000, 80_000, 1.2, 30_000_000, gates_fired=[])
+        reg.record_outcome("TSLA", "2026-08-14", run_up_before_detection_pct=2.0,
+                            max_price_after_detection=310.0, max_return_after_detection_pct=3.3,
+                            minutes_to_max=20.0, reached_20=False, reached_50=False, reached_100=False,
+                            category="oportunidad_moderada", is_final=False)
+        assert reg.has_outcome("TSLA", "2026-08-14") is True
+        assert reg.has_final_outcome("TSLA", "2026-08-14") is False  # todavía "en curso"
+
+        reg.record_outcome("TSLA", "2026-08-14", run_up_before_detection_pct=2.0,
+                            max_price_after_detection=315.0, max_return_after_detection_pct=5.0,
+                            minutes_to_max=180.0, reached_20=False, reached_50=False, reached_100=False,
+                            category="oportunidad_moderada", is_final=True)
+        assert reg.has_final_outcome("TSLA", "2026-08-14") is True
     finally:
         _restore()
 
@@ -120,7 +148,8 @@ def test_list_all_evaluated_candidates_solo_incluye_con_outcome():
         reg.record_outcome("AAA", "2026-08-17", run_up_before_detection_pct=5.0,
                             max_price_after_detection=12.0, max_return_after_detection_pct=25.0,
                             minutes_to_max=10.0, reached_20=True, reached_50=False, reached_100=False,
-                            category="buena_oportunidad", direccion_correcta=True)
+                            category="buena_oportunidad", direccion_correcta=True,
+                            confiable_para_aprendizaje=True)
         # BBB nunca recibe outcome -- todavía abierta, no debe aparecer
 
         evaluados = reg.list_all_evaluated_candidates()
@@ -188,7 +217,7 @@ def test_early_vs_late_summary_agrupa_y_separa_direccion():
             reg.record_outcome(ticker, "2026-08-17", run_up_before_detection_pct=5.0,
                                 max_price_after_detection=12.0, max_return_after_detection_pct=25.0,
                                 minutes_to_max=10.0, reached_20=r20, reached_50=r50, reached_100=r100,
-                                category="x")
+                                category="x", confiable_para_aprendizaje=True)
 
         resumen = reg.early_vs_late_summary()
         assert resumen["ALCISTA"]["early_genuino"]["n"] == 2
@@ -427,5 +456,233 @@ def test_record_alert_stage_persiste_retroceso_desde_maximo():
                                 retroceso_desde_maximo_pct=12.739)
         ops = reg.live_opportunities("2026-08-18")
         assert ops[0]["retroceso_desde_maximo_pct"] == 12.739
+    finally:
+        _restore()
+
+
+# --- Aprendizaje unificado (2026-08-18, pedido explícito del usuario) ---
+
+def test_classify_learning_quality_confiable_por_dollar_volume():
+    confiable, motivos = reg.classify_learning_quality({"dollar_volume_at_detection": 10_040_749,
+                                                          "relative_volume_at_detection": 1.74})
+    assert confiable is True
+    assert motivos == []
+
+
+def test_classify_learning_quality_no_confiable_dinero_insuficiente():
+    # caso real de producción (2026-08-17): RCON, avg_vol=15.2M pero
+    # volumen real operado en el momento de detección casi nulo.
+    confiable, motivos = reg.classify_learning_quality({"dollar_volume_at_detection": 125,
+                                                          "relative_volume_at_detection": None})
+    assert confiable is False
+    assert "dinero_insuficiente" in motivos
+
+
+def test_classify_learning_quality_dollar_volume_desconocido():
+    confiable, motivos = reg.classify_learning_quality({"dollar_volume_at_detection": None,
+                                                          "relative_volume_at_detection": 1.0})
+    assert confiable is False
+    assert "dinero_operado_desconocido" in motivos
+
+
+def test_classify_learning_quality_umbral_configurable_por_env(monkeypatch):
+    monkeypatch.setattr(reg, "LEARNING_MIN_DOLLAR_VOLUME", 1_000_000.0)
+    confiable, motivos = reg.classify_learning_quality({"dollar_volume_at_detection": 500_000,
+                                                          "relative_volume_at_detection": 1.0})
+    assert confiable is False
+    assert "dinero_insuficiente" in motivos
+
+
+def test_compute_interim_outcome_calcula_desde_observaciones():
+    _fresh()
+    try:
+        reg.record_detection("XOS", "2026-08-18", "premarket", "2026-08-18T04:53:38Z", "s1",
+                              2.09, 0.0, 1000, 500, 1.74, 10_040_749, gates_fired=[])
+        reg.record_observation("XOS", "2026-08-18", "2026-08-18T05:00:00Z", "s2", 2.5, 19.6, 1000, 1.74, [])
+        reg.record_observation("XOS", "2026-08-18", "2026-08-18T06:00:00Z", "s3", 3.0, 43.5, 1000, 1.74, [])
+
+        outcome = reg.compute_interim_outcome("XOS", "2026-08-18")
+        assert outcome is not None
+        assert outcome["is_final"] == 0
+        assert outcome["max_return_after_detection_pct"] == round(100 * (3.0 - 2.09) / 2.09, 2)
+        assert outcome["reached_20"] == 1
+        assert outcome["reached_50"] == 0
+        assert outcome["confiable_para_aprendizaje"] == 1  # dollar_volume real, sobre el piso
+        assert outcome["run_up_before_detection_pct"] is None  # no se calcula en curso, exclusivo del EOD
+    finally:
+        _restore()
+
+
+def test_compute_interim_outcome_nunca_pisa_resultado_final():
+    _fresh()
+    try:
+        reg.record_detection("XOS", "2026-08-18", "premarket", "2026-08-18T04:53:38Z", "s1",
+                              2.09, 0.0, 1000, 500, 1.74, 10_040_749, gates_fired=[])
+        reg.record_outcome("XOS", "2026-08-18", run_up_before_detection_pct=0.0,
+                            max_price_after_detection=4.95, max_return_after_detection_pct=136.8,
+                            minutes_to_max=364.0, reached_20=True, reached_50=True, reached_100=True,
+                            category="mejor_oportunidad", confiable_para_aprendizaje=True, is_final=True)
+        reg.record_observation("XOS", "2026-08-18", "2026-08-18T06:00:00Z", "s2", 3.0, 43.5, 1000, 1.74, [])
+
+        outcome = reg.compute_interim_outcome("XOS", "2026-08-18")
+        assert outcome["is_final"] == 1
+        assert outcome["max_return_after_detection_pct"] == 136.8  # el final, nunca recalculado desde 3.0
+        assert len(reg.list_outcomes_for_date("2026-08-18")) == 1  # nunca duplicó la fila
+    finally:
+        _restore()
+
+
+def test_compute_interim_outcome_sin_datos_devuelve_none():
+    _fresh()
+    try:
+        assert reg.compute_interim_outcome("NOPE", "2026-08-18") is None  # nunca se detectó
+        reg.record_detection("SINOBS", "2026-08-18", "regular", "t1", "s1",
+                              10.0, 0.0, 1000, 500, 1.0, 1000, gates_fired=[])
+        assert reg.compute_interim_outcome("SINOBS", "2026-08-18") is None  # sin observaciones aún
+    finally:
+        _restore()
+
+
+def test_explosion_bands_tradier_solo_confiables_y_finales():
+    _fresh()
+    try:
+        casos = [
+            ("A", 50.0, True, True),    # confiable, final -- cuenta
+            ("B", 150.0, True, True),   # confiable, final -- cuenta en más bandas
+            ("C", 200.0, False, True),  # no confiable -- excluida por defecto
+            ("D", 300.0, True, False),  # en curso, nunca final -- excluida
+        ]
+        for ticker, max_pct, confiable, is_final in casos:
+            reg.record_detection(ticker, "2026-08-18", "regular", "t1", "s1",
+                                  10.0, 0.0, 1000, 500, 1.0, 1_000_000, gates_fired=[])
+            reg.record_outcome(ticker, "2026-08-18", run_up_before_detection_pct=0.0,
+                                max_price_after_detection=10.0 * (1 + max_pct / 100),
+                                max_return_after_detection_pct=max_pct, minutes_to_max=60.0,
+                                reached_20=max_pct >= 20, reached_50=max_pct >= 50, reached_100=max_pct >= 100,
+                                category="x", confiable_para_aprendizaje=confiable, is_final=is_final)
+
+        bandas = reg.explosion_bands_tradier()
+        assert bandas["n_total_evaluado"] == 2  # solo A y B
+        assert bandas["por_banda_acumulativa"]["10"]["n"] == 2
+        assert bandas["por_banda_acumulativa"]["50"]["n"] == 2
+        assert bandas["por_banda_acumulativa"]["100"]["n"] == 1  # solo B (150%)
+        assert "B" in bandas["por_banda_acumulativa"]["100"]["tickers"]
+        assert bandas["por_banda_acumulativa"]["200"] == {"n": 0, "estado": "No disponible"}
+    finally:
+        _restore()
+
+
+def test_explosion_bands_tradier_filtra_por_fecha():
+    _fresh()
+    try:
+        reg.record_detection("A", "2026-08-17", "regular", "t1", "s1",
+                              10.0, 0.0, 1000, 500, 1.0, 1_000_000, gates_fired=[])
+        reg.record_outcome("A", "2026-08-17", run_up_before_detection_pct=0.0,
+                            max_price_after_detection=15.0, max_return_after_detection_pct=50.0,
+                            minutes_to_max=60.0, reached_20=True, reached_50=True, reached_100=False,
+                            category="x", confiable_para_aprendizaje=True, is_final=True)
+        reg.record_detection("B", "2026-08-18", "regular", "t1", "s1",
+                              10.0, 0.0, 1000, 500, 1.0, 1_000_000, gates_fired=[])
+        reg.record_outcome("B", "2026-08-18", run_up_before_detection_pct=0.0,
+                            max_price_after_detection=13.0, max_return_after_detection_pct=30.0,
+                            minutes_to_max=60.0, reached_20=True, reached_50=False, reached_100=False,
+                            category="x", confiable_para_aprendizaje=True, is_final=True)
+
+        bandas_17 = reg.explosion_bands_tradier("2026-08-17")
+        assert bandas_17["n_total_evaluado"] == 1
+        assert bandas_17["por_banda_acumulativa"]["50"]["n"] == 1
+
+        bandas_todo = reg.explosion_bands_tradier()
+        assert bandas_todo["n_total_evaluado"] == 2
+    finally:
+        _restore()
+
+
+def test_candidate_full_history_ticker_sin_deteccion_es_none():
+    _fresh()
+    try:
+        assert reg.candidate_full_history("NOPE", "2026-08-18") is None
+    finally:
+        _restore()
+
+
+def test_candidate_full_history_separa_estado_inicial_evolucion_resultado(monkeypatch):
+    _fresh()
+    try:
+        monkeypatch.setattr("atlas.data.universe.is_available", lambda symbol: True)
+        reg.record_detection(
+            "XOS", "2026-08-18", "premarket", "2026-08-18T04:53:38Z", "s1",
+            2.09, 0.0, 1000, 500, 1.74, 10_040_749, gates_fired=[{"name": "volumen_relativo"}],
+            price_basis_at_detection="tradier_last", bid_at_detection=2.08, ask_at_detection=2.10,
+            spread_pct_at_detection=0.96,
+        )
+        reg.record_alert_stage("XOS", "2026-08-18", "2026-08-18T10:00:00Z", "NO_PERSEGUIR",
+                                relative_volume_hoy=1.74, direction="ALCISTA")
+        reg.record_observation("XOS", "2026-08-18", "2026-08-18T05:00:00Z", "s2", 4.95, 136.8, 1000, 1.74, [])
+        reg.record_outcome("XOS", "2026-08-18", run_up_before_detection_pct=0.0,
+                            max_price_after_detection=4.95, max_return_after_detection_pct=136.8,
+                            minutes_to_max=364.0, reached_20=True, reached_50=True, reached_100=True,
+                            category="mejor_oportunidad", confiable_para_aprendizaje=True, is_final=True)
+
+        historia = reg.candidate_full_history("XOS", "2026-08-18")
+        assert historia["ticker"] == "XOS"
+        assert historia["racional_available"] is True
+
+        ei = historia["estado_inicial"]
+        assert ei["price_at_detection"] == 2.09
+        assert ei["bid_at_detection"] == 2.08
+        assert ei["ask_at_detection"] == 2.10
+        assert ei["price_basis_at_detection"] == "tradier_last"
+        assert ei["relative_volume_at_detection"] == 1.74
+        assert ei["dollar_volume_at_detection"] == 10_040_749
+
+        # el estado inicial nunca se pisa por la evolución posterior NO_PERSEGUIR
+        assert ei["price_at_detection"] == 2.09
+        assert historia["evolucion"]["etapas"][0]["stage"] == "NO_PERSEGUIR"
+        assert historia["evolucion"]["max_price_visto_en_vivo"] == 4.95
+
+        rf = historia["resultado_final"]
+        assert rf["reached_100"] == 1
+        assert rf["max_return_after_detection_pct"] == 136.8
+    finally:
+        _restore()
+
+
+def test_caso_xos_obligatorio(monkeypatch):
+    """Prueba obligatoria del caso real XOS (2026-08-18, pedido explícito
+    del usuario): reconstruye exactamente los datos reales de producción y
+    confirma que aparecen correctamente en candidate_full_history() y en
+    la banda >=100% del Marcador Histórico Tradier."""
+    _fresh()
+    try:
+        monkeypatch.setattr("atlas.data.universe.is_available", lambda symbol: True)
+        reg.record_detection(
+            "XOS", "2026-08-18", "premarket", "2026-08-18T04:53:38Z", "s1",
+            2.09, 0.0, 1000, 500, 1.74, 10_040_749, gates_fired=[{"name": "volumen_relativo"}],
+        )
+        reg.record_alert_stage("XOS", "2026-08-18", "2026-08-18T09:00:00Z", "NO_PERSEGUIR",
+                                relative_volume_hoy=1.74, direction="ALCISTA")
+        reg.record_outcome(
+            "XOS", "2026-08-18", run_up_before_detection_pct=0.0, max_price_after_detection=4.95,
+            max_return_after_detection_pct=136.8, minutes_to_max=364.0,
+            reached_20=True, reached_50=True, reached_100=True, category="mejor_oportunidad",
+            confiable_para_aprendizaje=True, is_final=True,
+        )
+
+        historia = reg.candidate_full_history("XOS", "2026-08-18")
+        assert historia["racional_available"] is True
+        assert historia["estado_inicial"]["price_at_detection"] == 2.09
+        assert historia["estado_inicial"]["relative_volume_at_detection"] == 1.74
+        assert historia["estado_inicial"]["dollar_volume_at_detection"] == 10_040_749
+        assert historia["evolucion"]["etapas"][-1]["stage"] == "NO_PERSEGUIR"
+        assert historia["resultado_final"]["max_price_after_detection"] == 4.95
+        assert historia["resultado_final"]["max_return_after_detection_pct"] == 136.8
+        assert historia["resultado_final"]["minutes_to_max"] == 364.0
+        assert historia["resultado_final"]["reached_100"] == 1
+        assert historia["resultado_final"]["confiable_para_aprendizaje"] == 1
+
+        bandas = reg.explosion_bands_tradier("2026-08-18")
+        assert "XOS" in bandas["por_banda_acumulativa"]["100"]["tickers"]
+        assert bandas["por_banda_acumulativa"]["100"]["max_absoluto_pct"] == 136.8
     finally:
         _restore()
