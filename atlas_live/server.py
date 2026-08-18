@@ -251,14 +251,48 @@ def api_radar_universo():
     (barridos, última corrida, candidatas de hoy) + la lista de candidatas
     detectadas hoy con sus condiciones EN el momento de detección. Solo
     lectura -- no dispara ningún barrido (eso corre aparte, ver
-    atlas_live/radar/radar_worker.py)."""
+    atlas_live/radar/radar_worker.py).
+
+    Universo de aprendizaje vs. universo operable (2026-08-18, pedido
+    explícito del usuario): `status.candidatas_hoy` (el contador) sigue
+    reflejando TODO lo que Atlas detectó y guardó para aprendizaje -- ese
+    número no se toca, Atlas sigue escaneando y aprendiendo del mercado
+    completo sin límite de Racional. Pero la LISTA `candidatas_hoy` que
+    devuelve este endpoint (la que llena la tabla "Candidatas detectadas
+    hoy" de la Cabina) SÍ se filtra a `racional_available == True`,
+    server-side -- mismo criterio ya usado en `/api/radar-oportunidades`
+    (caso real BATL, 2026-08-18): la Cabina es para decisiones de trading,
+    nunca debe mostrar algo que no se puede comprar en Racional, aunque
+    Atlas lo siga estudiando internamente. `total_detectadas_hoy`/
+    `total_disponibles_racional` exponen ambos números para que el filtro
+    sea auditable, no silencioso."""
     from atlas_live.memory import market_hours as _mh
     from atlas_live.radar import candidate_registry as radar_registry
 
+    try:
+        from atlas.data.universe import is_available
+    except Exception:
+        is_available = None
+
+    def _es_racional(ticker: str) -> bool:
+        if is_available is None:
+            return False
+        try:
+            return bool(is_available(ticker))
+        except Exception:
+            return False
+
     market_date = _mh.market_date()
+    candidatas = radar_registry.list_candidates_for_date(market_date)
+    total_detectadas_hoy = len(candidatas)
+    candidatas = [c for c in candidatas if _es_racional(c["ticker"])]
+    total_disponibles_racional = len(candidatas)
+
     return jsonify({
         "status": radar_registry.radar_status(),
-        "candidatas_hoy": radar_registry.list_candidates_for_date(market_date),
+        "candidatas_hoy": candidatas,
+        "total_detectadas_hoy": total_detectadas_hoy,
+        "total_disponibles_racional": total_disponibles_racional,
     })
 
 

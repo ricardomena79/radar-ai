@@ -1352,6 +1352,20 @@ function renderRadarUniverso() {
     card("🕐", "Último barrido", s.ultimo_sweep_at ? fmtTimeSec(s.ultimo_sweep_at) + " ET" : "—", s.ultimo_sweep_duracion_s ? `${s.ultimo_sweep_duracion_s}s` : "") +
     card("🎯", "Candidatas hoy", fmtN(s.candidatas_hoy), s.market_date_actual || "");
 
+  // Universo de aprendizaje vs. universo operable (2026-08-18, pedido
+  // explícito del usuario): la tarjeta de arriba ("Candidatas hoy") sigue
+  // mostrando TODO lo que Atlas detectó y aprendió, sin límite -- esta
+  // nota audita cuántas de esas quedan disponibles en Racional para
+  // operar, ya que la tabla de abajo viene filtrada server-side.
+  const racionalConteoUnivEl = document.getElementById("radar-universo-racional-conteo");
+  if (racionalConteoUnivEl) {
+    const totalHoy = _radarUniverso.total_detectadas_hoy;
+    const totalRacional = _radarUniverso.total_disponibles_racional;
+    racionalConteoUnivEl.textContent = (totalHoy != null && totalRacional != null)
+      ? `Atlas detectó ${totalHoy} candidatas hoy (universo completo, para aprendizaje) · ${totalRacional} disponibles en Racional (esta tabla) · ${totalHoy - totalRacional} quedaron fuera por no estar en Racional (siguen guardadas para aprendizaje).`
+      : "";
+  }
+
   const candidatas = (_radarUniverso.candidatas_hoy || []).slice(0, 40);
   if (!candidatas.length) {
     candEl.innerHTML = `<div class="empty-state">Sin candidatas detectadas todavía en el día actual.</div>`;
