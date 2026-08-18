@@ -260,6 +260,18 @@ def get_observations(ticker: str, market_date: str) -> List[Dict[str, Any]]:
         return [_row(r) for r in rows]
 
 
+def get_detection(ticker: str, market_date: str) -> Optional[Dict[str, Any]]:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM candidate_detection WHERE ticker=? AND market_date=?", (ticker, market_date)
+        ).fetchone()
+        if row is None:
+            return None
+        d = _row(row)
+        d["gates_fired"] = json.loads(d["gates_fired"]) if d.get("gates_fired") else []
+        return d
+
+
 def list_candidates_for_date(market_date: str) -> List[Dict[str, Any]]:
     with _connect() as conn:
         rows = conn.execute(
@@ -398,6 +410,15 @@ def alert_stage_history_for_date(market_date: str) -> List[Dict[str, Any]]:
         return [_row(r) for r in rows]
 
 
+def alert_stage_history_for_ticker(ticker: str, market_date: str) -> List[Dict[str, Any]]:
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM alert_stage_log WHERE ticker=? AND market_date=? ORDER BY observed_at",
+            (ticker, market_date),
+        ).fetchall()
+        return [_row(r) for r in rows]
+
+
 def alert_stage_effectiveness_report(market_date: Optional[str] = None) -> Dict[str, Any]:
     """Mide con evidencia real qué tan efectiva fue cada ventana: cuántas
     ALERTA_TEMPRANA/ALERTA_FUERTE avanzan a INICIO/CONFIRMACION, cuántas
@@ -523,6 +544,108 @@ def current_alert_stages_for_date(market_date: str) -> List[Dict[str, Any]]:
         return [_row(r) for r in rows]
 
 
+def candidate_timeline(ticker: str, market_date: str) -> Dict[str, Any]:
+    """Reconstruye la evolución completa de UNA candidata en UN día (Fase 5,
+    2026-08-17, diagnóstico pedido por el usuario tras el caso real de ZIM):
+    une lo que ya está guardado en 3 tablas -- la detección inicial
+    (`candidate_detection`), cada observación de seguimiento (un punto por
+    barrido en que siguió viéndose, `candidate_observation`) y cada
+    transición real de ventana de alerta (`alert_stage_log`) -- más el
+    resultado de cierre si ya existe (`candidate_outcome`). Permite
+    confirmar con evidencia minuto a minuto si una candidata pasó realmente
+    por PREPARACION -> ALERTA_TEMPRANA -> ALERTA_FUERTE -> INICIO, o en qué
+    paso se quedó, y comparar el precio/momento de cada punto.
+
+    `racional_available` se calcula EN VIVO (mismo criterio ya usado por
+    `candidate_tracker._tag_alert_stage`) -- es una etiqueta informativa,
+    nunca decide qué se incluye en la respuesta ni limita ninguna de las 3
+    tablas. Puramente de solo lectura: no calcula nada nuevo, no escribe
+    nada, no toca `candidate_gates.py`, el score en vivo ni
+    `decision_engine.py`."""
+    ticker = ticker.upper()
+    observaciones = get_observations(ticker, market_date)
+    for o in observaciones:
+        o["gates_fired_now"] = json.loads(o["gates_fired_now"]) if o.get("gates_fired_now") else []
+
+    racional_available = None
+    try:
+        from atlas.data.universe import is_available
+
+        racional_available = is_available(ticker)
+    except Exception:
+        racional_available = None
+
+    return {
+        "ticker": ticker,
+        "market_date": market_date,
+        "detection": get_detection(ticker, market_date),
+        "observaciones": observaciones,
+        "transiciones_alerta": alert_stage_history_for_ticker(ticker, market_date),
+        "outcome": get_outcome(ticker, market_date),
+        "racional_available": racional_available,
+    }
+
+
+DETECCION_TEMPRANA = "DETECCION_TEMPRANA"
+
+
+def live_opportunities(market_date: str) -> List[Dict[str, Any]]:
+    """Prioridades 1/2/3 (Fase 6, 2026-08-18): vista de solo lectura que
+    une CADA candidata detectada por Tradier hoy (`candidate_detection`,
+    nunca se borra) con su última etapa de Alerta Temprana conocida
+    (`alert_stage_log`) -- para que una detección real nunca deje de
+    aparecer acá por Memory Engine, Radar Explosivo, Yahoo/Finnhub o
+    `market_cap_bucket`, que son capas completamente aparte (Recomendación)
+    y no participan en esta función.
+
+    Si el ticker todavía no tiene ninguna fila en `alert_stage_log` (nunca
+    cruzó ni el piso de PREPARACION), la etapa se expone como
+    `DETECCION_TEMPRANA` -- un valor de PRESENTACIÓN, no un estado nuevo
+    del clasificador (`alert_stage.py` no se toca).
+
+    `racional_available` se recalcula EN VIVO por ticker (mismo criterio
+    que `_tag_alert_stage`), nunca se lee de una fila vieja de
+    `alert_stage_log` -- y en ningún caso decide si el ticker aparece en
+    la lista, solo es un campo más."""
+    detecciones = list_candidates_for_date(market_date)
+    stages_by_ticker = {a["ticker"]: a for a in current_alert_stages_for_date(market_date)}
+
+    try:
+        from atlas.data.universe import is_available
+    except Exception:
+        is_available = None
+
+    out: List[Dict[str, Any]] = []
+    for d in detecciones:
+        stage_row = stages_by_ticker.get(d["ticker"])
+        racional_available = None
+        if is_available is not None:
+            try:
+                racional_available = is_available(d["ticker"])
+            except Exception:
+                racional_available = None
+        out.append({
+            "ticker": d["ticker"],
+            "detected_at": d["detected_at"],
+            "session": d["session"],
+            "source": d["source"],
+            "price_at_detection": d["price_at_detection"],
+            "change_pct_at_detection": d["change_pct_at_detection"],
+            "relative_volume_at_detection": d["relative_volume_at_detection"],
+            "volume_at_detection": d["volume_at_detection"],
+            "gates_fired": d["gates_fired"],
+            "phase_tag": d.get("phase_tag"),
+            "stage": stage_row["stage"] if stage_row else DETECCION_TEMPRANA,
+            "stage_observed_at": stage_row["observed_at"] if stage_row else None,
+            "relative_volume_hoy": stage_row.get("relative_volume_hoy") if stage_row else None,
+            "volatility_14d_pct": stage_row.get("volatility_14d_pct") if stage_row else None,
+            "dias_volumen_elevado": stage_row.get("dias_volumen_elevado") if stage_row else None,
+            "timing_deteccion_hoy": stage_row.get("timing_deteccion_hoy") if stage_row else None,
+            "racional_available": racional_available,
+        })
+    return out
+
+
 # --------------------------- análisis 1 minuto ---------------------------
 
 def record_intraday_metrics(
@@ -561,6 +684,14 @@ def has_outcome(ticker: str, market_date: str) -> bool:
             "SELECT 1 FROM candidate_outcome WHERE ticker=? AND market_date=?", (ticker, market_date)
         ).fetchone()
         return row is not None
+
+
+def get_outcome(ticker: str, market_date: str) -> Optional[Dict[str, Any]]:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM candidate_outcome WHERE ticker=? AND market_date=?", (ticker, market_date)
+        ).fetchone()
+        return _row(row) if row else None
 
 
 def record_outcome(

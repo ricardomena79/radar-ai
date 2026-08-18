@@ -1361,7 +1361,7 @@ let _alertStages = null;
 
 async function fetchAlertStages() {
   try {
-    const res = await fetch("/api/radar-alert-stages");
+    const res = await fetch("/api/radar-oportunidades");
     if (!res.ok) throw new Error("HTTP " + res.status);
     _alertStages = await res.json();
   } catch (err) {
@@ -1372,6 +1372,7 @@ async function fetchAlertStages() {
 }
 
 const ALERT_STAGE_STYLE = {
+  DETECCION_TEMPRANA: { label: "Detección Temprana", color: "var(--text-dim)" },
   PREPARACION: { label: "Preparación", color: "var(--text-dim)" },
   ALERTA_TEMPRANA: { label: "Alerta Temprana", color: "var(--amber)" },
   ALERTA_FUERTE: { label: "Alerta Fuerte", color: "var(--amber)", bold: true },
@@ -1379,7 +1380,7 @@ const ALERT_STAGE_STYLE = {
   CONFIRMACION: { label: "Confirmación", color: "var(--green)", bold: true },
   NO_PERSEGUIR: { label: "No Perseguir", color: "var(--red)" },
 };
-const ALERT_STAGE_ORDER = ["PREPARACION", "ALERTA_TEMPRANA", "ALERTA_FUERTE", "INICIO", "CONFIRMACION", "NO_PERSEGUIR"];
+const ALERT_STAGE_ORDER = ["DETECCION_TEMPRANA", "PREPARACION", "ALERTA_TEMPRANA", "ALERTA_FUERTE", "INICIO", "CONFIRMACION", "NO_PERSEGUIR"];
 
 function renderAlertStages() {
   const conteosEl = document.getElementById("alert-stage-conteos");
@@ -1389,7 +1390,7 @@ function renderAlertStages() {
     conteosEl.innerHTML = tablaEl.innerHTML = `<div class="empty-state">No disponible.</div>`;
     return;
   }
-  const conteos = _alertStages.conteos_por_ventana || {};
+  const conteos = _alertStages.conteos_por_etapa || {};
   const card = (icon, label, value) =>
     `<div class="lh-card"><div class="lh-icon">${icon}</div><div class="lh-label">${label}</div><div class="lh-value">${value}</div></div>`;
   conteosEl.innerHTML = ALERT_STAGE_ORDER.map(stage => {
@@ -1397,29 +1398,42 @@ function renderAlertStages() {
     return card("🔔", st.label, conteos[stage] || 0);
   }).join("");
 
-  const candidatas = _alertStages.candidatas_con_alerta || [];
-  if (!candidatas.length) {
-    tablaEl.innerHTML = `<div class="empty-state">Sin alertas activas en este momento (capa observacional -- nunca bloquea el radar principal).</div>`;
+  let oportunidades = _alertStages.oportunidades || [];
+  const soloRacionalEl = document.getElementById("oportunidades-solo-racional");
+  // Filtro cosmético sobre los datos ya traídos -- Racional nunca decide
+  // qué se detecta ni qué llega acá, solo qué se muestra en pantalla.
+  if (soloRacionalEl && soloRacionalEl.checked) {
+    oportunidades = oportunidades.filter(o => o.racional_available === true);
+  }
+  if (!oportunidades.length) {
+    tablaEl.innerHTML = `<div class="empty-state">Sin candidatas detectadas todavía hoy.</div>`;
     return;
   }
   tablaEl.innerHTML = `<div style="overflow-x:auto"><table class="data-table">
-    <thead><tr><th>Ticker</th><th>Ventana</th><th>Actualizado</th><th style="text-align:right">RVOL hoy</th><th style="text-align:right">Volatilidad 14d</th><th style="text-align:right">Días vol. elevado</th><th>Timing hoy</th><th>Racional</th></tr></thead>
-    <tbody>${candidatas.map(c => {
-      const st = ALERT_STAGE_STYLE[c.stage] || { label: c.stage, color: "var(--text-dim)" };
+    <thead><tr><th>Ticker</th><th>Etapa</th><th style="text-align:right">Precio actual</th><th style="text-align:right">Precio detección</th><th>Hora detección</th><th style="text-align:right">Cambio desde detección</th><th>Fuente</th><th style="text-align:right">RVOL detección</th><th>Evidencia</th><th>Racional</th></tr></thead>
+    <tbody>${oportunidades.map(o => {
+      const st = ALERT_STAGE_STYLE[o.stage] || { label: o.stage, color: "var(--text-dim)" };
+      const cambioDesdeDeteccion = (o.price_actual != null && o.price_at_detection)
+        ? (100 * (o.price_actual / o.price_at_detection - 1)) : null;
+      const evidencia = (o.gates_fired && o.gates_fired[0]) ? o.gates_fired[0].reason : "—";
       return `<tr>
-        <td>${c.ticker}</td>
+        <td>${o.ticker}</td>
         <td><span style="color:${st.color};font-weight:${st.bold ? 700 : 600}">${st.label}</span></td>
-        <td>${c.observed_at ? fmtTimeSec(c.observed_at) + " ET" : "—"}</td>
-        <td style="text-align:right">${c.relative_volume_hoy != null ? fmtNum(c.relative_volume_hoy) + "x" : "—"}</td>
-        <td style="text-align:right">${c.volatility_14d_pct != null ? fmtNum(c.volatility_14d_pct) + "%" : "—"}</td>
-        <td style="text-align:right">${c.dias_volumen_elevado != null ? c.dias_volumen_elevado : "—"}</td>
-        <td>${c.timing_deteccion_hoy || "—"}</td>
-        <td>${c.racional_available === 1 ? "Sí" : (c.racional_available === 0 ? "No" : "—")}</td>
+        <td style="text-align:right">${o.price_actual != null ? "$" + fmtNum(o.price_actual) : "—"}</td>
+        <td style="text-align:right">${o.price_at_detection != null ? "$" + fmtNum(o.price_at_detection) : "—"}</td>
+        <td>${o.detected_at ? fmtTimeSec(o.detected_at) + " ET" : "—"}</td>
+        <td style="text-align:right">${cambioDesdeDeteccion != null ? fmtPct(cambioDesdeDeteccion) : "—"}</td>
+        <td>${o.price_actual_source || o.source || "—"}</td>
+        <td style="text-align:right">${o.relative_volume_at_detection != null ? fmtNum(o.relative_volume_at_detection) + "x" : "—"}</td>
+        <td class="dim" title="${evidencia}">${evidencia}</td>
+        <td>${o.racional_available === true ? "Sí" : (o.racional_available === false ? "No" : "—")}</td>
       </tr>`;
     }).join("")}</tbody></table></div>`;
 }
 
 function startPanelStatusPolling() {
+  const soloRacionalEl = document.getElementById("oportunidades-solo-racional");
+  if (soloRacionalEl) soloRacionalEl.addEventListener("change", renderAlertStages);
   fetchRadarUniverso();
   fetchAlertStages();
   fetchEstudio();

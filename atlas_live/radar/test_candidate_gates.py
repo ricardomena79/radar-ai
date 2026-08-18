@@ -4,10 +4,12 @@ from atlas_live.radar import candidate_gates as g
 from atlas_live.radar.sweep_history import SweepSnapshot
 
 
-def _snap(change_pct=0.0, rvol=1.0, price=10.0, volume=100_000, avg_volume=100_000, dollar_volume=1_000_000, sweep_id="s0"):
+def _snap(change_pct=0.0, rvol=1.0, price=10.0, volume=100_000, avg_volume=100_000, dollar_volume=1_000_000,
+          sweep_id="s0", session="regular"):
     return SweepSnapshot(
         sweep_id=sweep_id, observed_at="2026-08-14T10:00:00Z", price=price, change_pct=change_pct,
         volume=volume, average_volume=avg_volume, relative_volume=rvol, dollar_volume=dollar_volume,
+        session=session,
     )
 
 
@@ -94,6 +96,62 @@ def test_evaluate_all_gates_corre_las_7_activas_siempre():
 def test_simbolo_tranquilo_no_dispara_ninguna():
     results = g.evaluate_all_gates(_snap(change_pct=0.1, rvol=1.0, dollar_volume=1_000_000_000), [], "regular")
     assert not g.any_gate_fired(results)
+
+
+def test_gate_acceleration_ignora_historial_de_otra_sesion():
+    """Prioridad 5 (Fase 6, 2026-08-18) -- hallazgo real de la sesión
+    2026-08-17: 21 de 25 etiquetas INICIO se dispararon en los primeros 5
+    minutos de la sesión regular, con volumen casi nulo -- SweepHistory
+    mezclaba premarket con regular en el mismo lookback. El mismo salto de
+    change_pct que SÍ dispara la puerta dentro de una sesión NO debe
+    disparar cuando la referencia es de la sesión anterior."""
+    historial_cruzado = [
+        _snap(change_pct=1.0, session="premarket"), _snap(change_pct=1.2, session="premarket"),
+        _snap(change_pct=1.3, session="premarket"), _snap(change_pct=1.4, session="premarket"),
+    ]
+    current = _snap(change_pct=5.0, session="regular")  # mismo salto que SÍ dispara en test_gate_acceleration_dispara_con_salto_real
+    r = g.gate_acceleration(current, historial_cruzado, "regular")
+    assert not r.fired  # sin historial de la MISMA sesión, no hay base de comparación
+
+
+def test_gate_acceleration_dispara_con_salto_dentro_de_la_misma_sesion():
+    historial_mismo_dia = [
+        _snap(change_pct=1.0, session="regular"), _snap(change_pct=1.2, session="regular"),
+        _snap(change_pct=1.3, session="regular"), _snap(change_pct=1.4, session="regular"),
+    ]
+    current = _snap(change_pct=5.0, session="regular")
+    r = g.gate_acceleration(current, historial_mismo_dia, "regular")
+    assert r.fired
+
+
+def test_gate_wakeup_ignora_historial_de_otra_sesion():
+    historial_cruzado = [
+        _snap(rvol=0.5, session="premarket"), _snap(rvol=0.6, session="premarket"),
+        _snap(rvol=0.7, session="premarket"), _snap(rvol=0.8, session="premarket"),
+    ]
+    current = _snap(rvol=3.0, session="regular")  # mismo salto que SÍ dispara en test_gate_wakeup_dispara_si_estaba_quieto_y_salta
+    r = g.gate_wakeup(current, historial_cruzado, "regular")
+    assert not r.fired
+
+
+def test_gate_behavior_change_ignora_historial_de_otra_sesion():
+    historial_cruzado = [
+        _snap(rvol=0.8, session="premarket"), _snap(rvol=0.9, session="premarket"),
+        _snap(rvol=1.0, session="premarket"), _snap(rvol=0.85, session="premarket"),
+    ]
+    current = _snap(rvol=3.0, session="regular")  # mismo salto que SÍ dispara en test_gate_behavior_change_auto_relativo
+    r = g.gate_behavior_change(current, historial_cruzado, "regular")
+    assert not r.fired
+
+
+def test_gate_recovery_ignora_historial_de_otra_sesion():
+    historial_cruzado = [
+        _snap(change_pct=8.0, session="premarket"), _snap(change_pct=5.0, session="premarket"),
+        _snap(change_pct=2.0, session="premarket"), _snap(change_pct=1.5, session="premarket"),
+    ]
+    current = _snap(change_pct=4.5, session="regular")  # mismo rebote que SÍ dispara en test_gate_recovery_dispara_tras_caida_y_rebote
+    r = g.gate_recovery(current, historial_cruzado, "regular")
+    assert not r.fired
 
 
 def test_dollar_volume_alto_por_si_solo_ya_no_alcanza_para_ser_candidata():

@@ -26,9 +26,9 @@ class SweepProcessResult:
     gates_dispersion: Dict[str, int]  # nombre de puerta -> cuántos símbolos la dispararon este barrido
 
 
-def _quote_to_snapshot(sweep_id: str, observed_at: str, quote: Optional[Quote]) -> SweepSnapshot:
+def _quote_to_snapshot(sweep_id: str, observed_at: str, quote: Optional[Quote], session: Optional[str] = None) -> SweepSnapshot:
     if quote is None:
-        return SweepSnapshot(sweep_id, observed_at, None, None, None, None, None, None)
+        return SweepSnapshot(sweep_id, observed_at, None, None, None, None, None, None, session=session)
     dollar_volume = None
     if quote.last_price is not None and quote.volume is not None:
         dollar_volume = quote.last_price * quote.volume
@@ -41,6 +41,7 @@ def _quote_to_snapshot(sweep_id: str, observed_at: str, quote: Optional[Quote]) 
         average_volume=quote.average_volume,
         relative_volume=quote.relative_volume,
         dollar_volume=dollar_volume,
+        session=session,
     )
 
 
@@ -183,7 +184,7 @@ def process_sweep(
 
     for symbol, quote in quotes.items():
         prior_history = history.get(symbol)
-        current = _quote_to_snapshot(sweep_id, observed_at, quote)
+        current = _quote_to_snapshot(sweep_id, observed_at, quote, session)
 
         results = gates.evaluate_all_gates(current, prior_history, session)
         disparadas = gates.fired_gates(results)

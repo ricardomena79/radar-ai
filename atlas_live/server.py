@@ -290,6 +290,43 @@ def api_radar_alert_stages():
     })
 
 
+@app.route("/api/radar-oportunidades")
+def api_radar_oportunidades():
+    """Oportunidades Detectadas (Fase 6, 2026-08-18) -- CADA candidata que
+    Tradier detectó hoy (`candidate_detection`, nunca se borra), con su
+    etapa real (PREPARACION..NO_PERSEGUIR, o `DETECCION_TEMPRANA` si
+    todavía no cruzó ningún umbral de Alerta Temprana) y el precio EN VIVO
+    del último barrido de Tradier (`radar_worker.get_last_quotes()`, ya en
+    memoria -- cero llamadas nuevas a Yahoo/Finnhub; si el ticker no está
+    en el último barrido, `price_actual` queda `null` y se muestra el
+    precio de detección). Solo lectura, mismo patrón sin token que
+    `/api/radar-universo` -- Memory Engine, Radar Explosivo y
+    Yahoo/Finnhub no participan en absoluto: una detección real de Tradier
+    nunca puede dejar de aparecer acá por esas capas. Ver
+    `atlas_live/radar/candidate_registry.py::live_opportunities`."""
+    from atlas_live.memory import market_hours as _mh
+    from atlas_live.radar import candidate_registry as radar_registry
+
+    market_date = _mh.market_date()
+    oportunidades = radar_registry.live_opportunities(market_date)
+    last_quotes = radar_worker.get_last_quotes()
+    for o in oportunidades:
+        q = last_quotes.get(o["ticker"])
+        o["price_actual"] = q.last_price if q else None
+        o["change_pct_actual"] = q.change_percent if q else None
+        o["price_actual_source"] = "tradier" if q else None
+
+    conteos: dict = {}
+    for o in oportunidades:
+        conteos[o["stage"]] = conteos.get(o["stage"], 0) + 1
+
+    return jsonify({
+        "market_date": market_date,
+        "oportunidades": oportunidades,
+        "conteos_por_etapa": conteos,
+    })
+
+
 @app.route("/api/learning-maturity")
 def api_learning_maturity():
     """Aprendizaje en Vivo + Madurez (2026-08-15, ver
@@ -418,6 +455,36 @@ def api_admin_alert_effectiveness_report():
 
     market_date = request.args.get("date")
     return jsonify(radar_registry.alert_stage_effectiveness_report(market_date))
+
+
+@app.route("/api/admin/candidate-timeline")
+def api_admin_candidate_timeline():
+    """Solo lectura (Fase 5, 2026-08-17, pedido explícito del usuario tras
+    el caso real de ZIM): evolución completa de UNA candidata en UN día --
+    la detección inicial, cada observación de seguimiento (un punto por
+    barrido, ya guardado por `candidate_tracker.process_sweep`), y cada
+    transición real de ventana de alerta (PREPARACION/ALERTA_TEMPRANA/
+    ALERTA_FUERTE/INICIO/CONFIRMACION/NO_PERSEGUIR) -- para poder confirmar
+    con evidencia minuto a minuto si Atlas detectó una candidata ANTES o
+    DESPUÉS de que ya se hubiera movido. `?ticker=` es obligatorio;
+    `?date=YYYY-MM-DD` opcional (default: la fecha de mercado actual). Ver
+    `atlas_live/radar/candidate_registry.py::candidate_timeline`. Admin
+    porque es una consulta de diagnóstico puntual, no pensada para el
+    refresco frecuente de la Cabina. Solo lectura: no dispara ningún
+    barrido, no escribe nada, no toca `candidate_gates.py`, el score en
+    vivo ni `decision_engine.py`."""
+    if not _admin_token_ok():
+        return jsonify({"error": "no autorizado"}), 403
+
+    ticker = (request.args.get("ticker") or "").strip().upper()
+    if not ticker:
+        return jsonify({"error": "falta el parámetro 'ticker'"}), 400
+
+    from atlas_live.memory import market_hours as _mh
+    from atlas_live.radar import candidate_registry as radar_registry
+
+    market_date = request.args.get("date") or _mh.market_date()
+    return jsonify(radar_registry.candidate_timeline(ticker, market_date))
 
 
 @app.route("/api/admin/separation-report")

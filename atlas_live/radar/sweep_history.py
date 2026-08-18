@@ -31,6 +31,14 @@ class SweepSnapshot:
     average_volume: Optional[int]
     relative_volume: Optional[float]
     dollar_volume: Optional[float]
+    # Prioridad 5 (Fase 6, 2026-08-18): premarket/regular/afterhours, para
+    # que las puertas comparativas (candidate_gates.py) puedan filtrar el
+    # historial a la MISMA sesión antes de comparar -- ver docstring de
+    # ese módulo para el hallazgo real que motivó este campo (racimo de
+    # etiquetas INICIO justo en el cambio de sesión, 2026-08-17). Con
+    # default `None` para no romper construcciones existentes de
+    # `SweepSnapshot` en tests ya escritos.
+    session: Optional[str] = None
 
 
 class SweepHistory:

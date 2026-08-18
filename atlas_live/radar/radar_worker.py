@@ -33,9 +33,9 @@ from datetime import datetime, timezone
 from typing import Dict, Optional
 
 from atlas.data.providers.tradier_provider import TradierProvider
-from atlas.data.universe import get_equities, get_etfs
 from atlas_live.data_fusion.registry import get_default_provider
 from atlas_live.data_fusion.universe_quotes import build_tradier_provider, fetch_universe_quotes
+from atlas_live.market_study import universe as broad_universe
 from atlas_live.memory import market_hours
 from atlas_live.radar import candidate_registry as reg
 from atlas_live.radar import candidate_tracker as tracker
@@ -99,7 +99,13 @@ def run_sweep_once() -> Optional[float]:
             reg.set_meta(state="ERROR", ultimo_error="TRADIER_API_TOKEN no configurado -- radar no puede operar sin Tradier")
             return None
 
-        symbols = sorted({a.symbol for a in get_equities() + get_etfs()})
+        # Universo de mercado completo (2026-08-17, Fase 5 -- Racional ya
+        # NO limita qué escanea el radar, solo etiqueta operabilidad en
+        # lectura). Misma fuente/clasificación ya aprobada y probada en
+        # scripts/build_historical_reference.py: solo EQUITY, sin ETFs ni
+        # derivados mezclados en la misma detección.
+        meta = broad_universe.fetch_broad_universe_meta()
+        symbols = sorted(s for s, info in meta.items() if info.get("type") == "EQUITY")
         market_date = market_hours.market_date()
 
         t0 = time.time()

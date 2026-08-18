@@ -141,6 +141,36 @@ def test_un_barrido_roto_no_tumba_el_mecanismo():
         _restore()
 
 
+def test_sweep_usa_universo_completo_solo_equity():
+    """Fase 5 (2026-08-17) -- el barrido ya NO se limita al universo
+    Racional: usa fetch_broad_universe_meta() filtrado a EQUITY (misma
+    clasificación ya aprobada en build_historical_reference.py). ETFs y
+    derivados quedan afuera de la detección."""
+    _fresh()
+    saved = _install_fakes(session="regular", quotes={})
+    orig_meta = w.broad_universe.fetch_broad_universe_meta
+    captured = {}
+    w.broad_universe.fetch_broad_universe_meta = lambda: {
+        "AAPL": {"type": "EQUITY"}, "ZZZZ": {"type": "EQUITY"},
+        "QQQ": {"type": "ETF"}, "XYZW": {"type": "WARRANT"},
+    }
+    orig_fetch = w.fetch_universe_quotes
+
+    def _capturing_fetch(symbols, tradier_provider=None, fallback_provider=None):
+        captured["symbols"] = symbols
+        return orig_fetch(symbols, tradier_provider=tradier_provider, fallback_provider=fallback_provider)
+
+    w.fetch_universe_quotes = _capturing_fetch
+    try:
+        w.run_sweep_once()
+        assert captured["symbols"] == ["AAPL", "ZZZZ"]  # solo EQUITY, ordenado
+    finally:
+        w.broad_universe.fetch_broad_universe_meta = orig_meta
+        w.fetch_universe_quotes = orig_fetch
+        _uninstall_fakes(saved)
+        _restore()
+
+
 if __name__ == "__main__":
     import traceback
 

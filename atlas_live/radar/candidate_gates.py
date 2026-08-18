@@ -97,9 +97,24 @@ def gate_dollar_volume(current: SweepSnapshot, history: List[SweepSnapshot], ses
     return GateResult(fired, "dollar_volume", f"${v:,.0f}" if v is not None else "sin dato", v)
 
 
+def _same_session(history: List[SweepSnapshot], session: str) -> List[SweepSnapshot]:
+    """Prioridad 5 (Fase 6, 2026-08-18): las puertas comparativas nunca
+    deben comparar un barrido de HOY contra un barrido de OTRA sesión de
+    HOY (premarket vs. regular) -- hallazgo real de la sesión 2026-08-17:
+    21 de 25 etiquetas INICIO se dispararon en la misma ventana de 5
+    minutos, exactamente en el cambio de las 09:30 ET, con volumen en vivo
+    casi nulo -- consistente con que `SweepHistory` guarda un único buffer
+    por día (`sweep_history.py`) sin distinguir sesión, y las puertas
+    comparaban el cambio % de la apertura regular contra el de un barrido
+    de premarket. Ningún umbral cambia acá -- solo la ventana de
+    comparación deja de cruzar la frontera de sesión."""
+    return [h for h in history if h.session == session]
+
+
 def gate_acceleration(current: SweepSnapshot, history: List[SweepSnapshot], session: str) -> GateResult:
     """Aceleración -- el cambio % subió bruscamente respecto a unos barridos atrás
     (no el mismo umbral de siempre: mide la VELOCIDAD del movimiento, no el nivel)."""
+    history = _same_session(history, session)
     if len(history) < min(ACCEL_LOOKBACK_SWEEPS, MIN_HISTORY_FOR_COMPARATIVE_GATES) or current.change_pct is None:
         return GateResult(False, "aceleracion", "historial insuficiente")
     ref = history[max(0, len(history) - ACCEL_LOOKBACK_SWEEPS)]
@@ -113,6 +128,7 @@ def gate_acceleration(current: SweepSnapshot, history: List[SweepSnapshot], sess
 def gate_wakeup(current: SweepSnapshot, history: List[SweepSnapshot], session: str) -> GateResult:
     """Recién empieza a despertar -- estaba tranquilo (RVOL bajo) toda la
     ventana y ahora da un salto real."""
+    history = _same_session(history, session)
     if len(history) < MIN_HISTORY_FOR_COMPARATIVE_GATES or current.relative_volume is None:
         return GateResult(False, "despertar", "historial insuficiente")
     prior_rvols = [h.relative_volume for h in history if h.relative_volume is not None]
@@ -130,6 +146,7 @@ def gate_wakeup(current: SweepSnapshot, history: List[SweepSnapshot], session: s
 def gate_recovery(current: SweepSnapshot, history: List[SweepSnapshot], session: str) -> GateResult:
     """Pierde fuerza y luego recupera -- hubo una caída local desde un pico
     y el cambio % actual ya está rebotando desde ese mínimo."""
+    history = _same_session(history, session)
     if len(history) < MIN_HISTORY_FOR_COMPARATIVE_GATES or current.change_pct is None:
         return GateResult(False, "recuperacion", "historial insuficiente")
     pcts = [h.change_pct for h in history if h.change_pct is not None]
@@ -161,6 +178,7 @@ def gate_behavior_change(current: SweepSnapshot, history: List[SweepSnapshot], s
     AUTO-relativa (no un piso fijo): el RVOL actual es varias veces la
     mediana de su propio historial de hoy. Complementa las puertas de piso
     fijo captando anomalías incluso en símbolos con rangos normales atípicos."""
+    history = _same_session(history, session)
     if len(history) < MIN_HISTORY_FOR_COMPARATIVE_GATES or current.relative_volume is None:
         return GateResult(False, "cambio_de_comportamiento", "historial insuficiente")
     prior = [h.relative_volume for h in history if h.relative_volume is not None]

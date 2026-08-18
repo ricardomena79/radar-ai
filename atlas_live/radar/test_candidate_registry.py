@@ -208,18 +208,122 @@ def test_recent_precision_sin_datos_devuelve_no_disponible():
         _restore()
 
 
-if __name__ == "__main__":
-    import traceback
+def test_candidate_timeline_une_deteccion_observaciones_transiciones_y_outcome(monkeypatch):
+    _fresh()
+    try:
+        monkeypatch.setattr("atlas.data.universe.is_available", lambda symbol: True)
 
-    fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
-    p = f = 0
-    for fn in fns:
-        try:
-            fn()
-            print("PASS", fn.__name__)
-            p += 1
-        except Exception as e:
-            print("FAIL", fn.__name__, e)
-            traceback.print_exc()
-            f += 1
-    print(f"--- {p} passed, {f} failed ---")
+        reg.record_detection("ZIM", "2026-08-17", "premarket", "2026-08-17T08:03:55Z", "sweep-1",
+                              28.14, 0.0, 12264, 1249605, 0.0098, 345108.96,
+                              gates_fired=[{"name": "cambio_de_comportamiento", "reason": "x", "value": 2.09}])
+        reg.record_observation("ZIM", "2026-08-17", "2026-08-17T08:30:00Z", "sweep-2",
+                                28.30, 1.5, 20000, 0.02, gates_fired_now=[{"name": "x", "reason": "y", "value": 1}])
+        reg.record_observation("ZIM", "2026-08-17", "2026-08-17T09:00:00Z", "sweep-3",
+                                28.69, 6.99, 400000, 0.32, gates_fired_now=[])
+        reg.record_alert_stage("ZIM", "2026-08-17", "2026-08-17T08:03:55Z", "ALERTA_TEMPRANA",
+                                relative_volume_hoy=0.0098, volatility_14d_pct=3.365,
+                                dias_volumen_elevado=3, aceleracion_volumen=0.586,
+                                timing_deteccion_hoy="antes_del_movimiento", racional_available=True)
+        reg.record_alert_stage("ZIM", "2026-08-17", "2026-08-17T09:00:00Z", "INICIO",
+                                relative_volume_hoy=0.32, volatility_14d_pct=3.365,
+                                dias_volumen_elevado=3, aceleracion_volumen=0.586,
+                                timing_deteccion_hoy="al_comienzo", racional_available=True)
+        reg.record_outcome("ZIM", "2026-08-17", run_up_before_detection_pct=0.0,
+                            max_price_after_detection=29.5, max_return_after_detection_pct=4.8,
+                            minutes_to_max=120.0, reached_20=False, reached_50=False, reached_100=False,
+                            category="en_curso")
+
+        tl = reg.candidate_timeline("zim", "2026-08-17")  # minúsculas -- debe normalizar
+
+        assert tl["ticker"] == "ZIM"
+        assert tl["detection"]["price_at_detection"] == 28.14
+        assert tl["detection"]["gates_fired"][0]["name"] == "cambio_de_comportamiento"
+
+        assert len(tl["observaciones"]) == 2
+        assert tl["observaciones"][0]["price"] == 28.30
+        assert tl["observaciones"][1]["price"] == 28.69
+        assert tl["observaciones"][1]["gates_fired_now"] == []  # decodificado, no string crudo
+
+        assert [t["stage"] for t in tl["transiciones_alerta"]] == ["ALERTA_TEMPRANA", "INICIO"]
+        assert tl["transiciones_alerta"][1]["observed_at"] == "2026-08-17T09:00:00Z"
+
+        assert tl["outcome"]["max_return_after_detection_pct"] == 4.8
+        assert tl["racional_available"] is True
+    finally:
+        _restore()
+
+
+def test_candidate_timeline_sin_datos_no_inventa_nada(monkeypatch):
+    _fresh()
+    try:
+        monkeypatch.setattr("atlas.data.universe.is_available", lambda symbol: False)
+        tl = reg.candidate_timeline("ZZZZ", "2026-08-17")
+        assert tl["detection"] is None
+        assert tl["observaciones"] == []
+        assert tl["transiciones_alerta"] == []
+        assert tl["outcome"] is None
+        assert tl["racional_available"] is False
+    finally:
+        _restore()
+
+
+def test_live_opportunities_expone_deteccion_temprana_sin_alerta(monkeypatch):
+    """Prioridad 1 (Fase 6, 2026-08-18): una candidata detectada por Tradier
+    que TODAVIA no cruzó ningún umbral de alert_stage debe seguir apareciendo
+    -- con stage="DETECCION_TEMPRANA", nunca desaparecer."""
+    _fresh()
+    try:
+        monkeypatch.setattr("atlas.data.universe.is_available", lambda symbol: True)
+        reg.record_detection("BRBS", "2026-08-17", "premarket", "2026-08-17T12:55:21Z", "s1",
+                              3.69, 0.0, 1000, 500, 1.0, 3690,
+                              gates_fired=[{"name": "cambio_de_comportamiento", "reason": "RVOL x2.1", "value": 2.1}])
+
+        ops = reg.live_opportunities("2026-08-17")
+        assert len(ops) == 1
+        o = ops[0]
+        assert o["ticker"] == "BRBS"
+        assert o["stage"] == reg.DETECCION_TEMPRANA
+        assert o["price_at_detection"] == 3.69
+        assert o["gates_fired"][0]["reason"] == "RVOL x2.1"
+        assert o["racional_available"] is True
+    finally:
+        _restore()
+
+
+def test_live_opportunities_incluye_no_perseguir_nunca_filtra(monkeypatch):
+    """Prioridad 1: una candidata en NO_PERSEGUIR sigue apareciendo -- la
+    etapa es información, nunca un filtro de qué se muestra."""
+    _fresh()
+    try:
+        monkeypatch.setattr("atlas.data.universe.is_available", lambda symbol: False)
+        reg.record_detection("XYZ", "2026-08-17", "regular", "2026-08-17T14:00:00Z", "s1",
+                              10.0, 5.0, 1000, 500, 2.0, 10000, gates_fired=[{"name": "cambio_de_precio", "reason": "x", "value": 5.0}])
+        reg.record_alert_stage("XYZ", "2026-08-17", "2026-08-17T14:30:00Z", "NO_PERSEGUIR",
+                                relative_volume_hoy=1.0, volatility_14d_pct=2.0, dias_volumen_elevado=0,
+                                aceleracion_volumen=0.0, timing_deteccion_hoy="demasiado_tarde", racional_available=False)
+
+        ops = reg.live_opportunities("2026-08-17")
+        assert len(ops) == 1
+        assert ops[0]["stage"] == "NO_PERSEGUIR"
+        assert ops[0]["racional_available"] is False  # recalculado en vivo, no cacheado del alert_stage_log
+    finally:
+        _restore()
+
+
+def test_live_opportunities_racional_available_se_recalcula_en_vivo(monkeypatch):
+    """`racional_available` nunca se lee de la fila vieja de alert_stage_log
+    -- se recalcula en cada llamada (mismo criterio que _tag_alert_stage)."""
+    _fresh()
+    try:
+        reg.record_detection("XYZ", "2026-08-17", "regular", "2026-08-17T14:00:00Z", "s1",
+                              10.0, 5.0, 1000, 500, 2.0, 10000, gates_fired=[])
+        reg.record_alert_stage("XYZ", "2026-08-17", "2026-08-17T14:30:00Z", "ALERTA_TEMPRANA",
+                                relative_volume_hoy=1.0, volatility_14d_pct=2.0, dias_volumen_elevado=1,
+                                aceleracion_volumen=0.0, timing_deteccion_hoy="antes_del_movimiento",
+                                racional_available=False)  # el valor guardado hace rato es False
+
+        monkeypatch.setattr("atlas.data.universe.is_available", lambda symbol: True)  # ahora SÍ está disponible
+        ops = reg.live_opportunities("2026-08-17")
+        assert ops[0]["racional_available"] is True  # refleja el valor EN VIVO, no el guardado
+    finally:
+        _restore()
