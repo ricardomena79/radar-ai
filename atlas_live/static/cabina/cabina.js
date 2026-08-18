@@ -1423,6 +1423,72 @@ const FINAL_STATE_STYLE = {
 };
 const FINAL_STATE_ORDER = ["OPORTUNIDAD_PRIORITARIA", "VIGILAR", "PREPARACION", "NO_TOCAR"];
 
+// Mejores Oportunidades Ahora (2026-08-18, autorizado por el usuario) --
+// ranking de SOLO PRESENTACIÓN, calculado en el cliente a partir de los
+// mismos campos que ya trae /api/radar-oportunidades para cada fila de la
+// tabla de abajo. No es un clasificador nuevo, no cambia ningún umbral de
+// candidate_gates.py/alert_stage.py/priority_classifier.py -- es
+// exactamente el mismo criterio de evidencia usado a mano en esta sesión
+// para elegir el Top 3 real: precio fresco y confiable
+// (estado_validacion === "OK"), dirección alcista YA confirmada (no
+// NEUTRAL/BAJISTA/INDEFINIDA), disponible en Racional, ordenado primero
+// por volumen relativo EN VIVO (relative_volume_hoy -- la evidencia real
+// de que está entrando dinero, no solo que subió el precio) y, entre
+// candidatas con volumen comparable, por el % de cambio real.
+function _rankTop3Oportunidades(oportunidades) {
+  const candidatas = (oportunidades || []).filter(o =>
+    o.estado_validacion === "OK" &&
+    o.direction === "ALCISTA" &&
+    o.racional_available === true
+  );
+  const rvol = o => (typeof o.relative_volume_hoy === "number" ? o.relative_volume_hoy : 0);
+  const cambio = o => (typeof o.change_pct_actual === "number" ? o.change_pct_actual : 0);
+  return [...candidatas].sort((a, b) => (rvol(b) - rvol(a)) || (cambio(b) - cambio(a))).slice(0, 3);
+}
+
+function _explicacionTop3(o) {
+  const partes = [];
+  if (o.relative_volume_hoy != null) {
+    partes.push(`RVOL ${fmtNum(o.relative_volume_hoy)}x ahora mismo${o.relative_volume_at_detection != null ? ` (${fmtNum(o.relative_volume_at_detection)}x al detectarla)` : ""}`);
+  }
+  if (o.dias_volumen_elevado) partes.push(`${o.dias_volumen_elevado} día(s) previos de volumen elevado`);
+  partes.push("dirección alcista ya confirmada");
+  const ev = o.evidencia_historica;
+  if (ev && ev.grupo_existe) {
+    partes.push(`históricamente ${fmtNum(ev.pct_20)}% de casos similares (n=${ev.n}) llegó a +20%`);
+  }
+  return partes.join(", ") + ".";
+}
+
+const MEDALLAS = ["🥇 MEJOR OPORTUNIDAD", "🥈 SEGUNDA MEJOR OPCIÓN", "🥉 TERCERA MEJOR OPCIÓN"];
+const MEDALLA_ICONO = ["🥇", "🥈", "🥉"];
+
+function renderMejoresOportunidadesAhora(oportunidades) {
+  const el = document.getElementById("mejores-oportunidades-ahora");
+  if (!el) return;
+  const top3 = _rankTop3Oportunidades(oportunidades);
+  if (!top3.length) {
+    el.innerHTML = `<div class="empty-state">Ninguna candidata reúne ahora mismo precio fresco + dirección alcista confirmada + disponibilidad en Racional. Atlas prefiere no elegir una "mejor opción" sin esa evidencia, en vez de inventar una.</div>`;
+    return;
+  }
+  el.innerHTML = top3.map((o, i) => {
+    const st = ALERT_STAGE_STYLE[o.stage] || { label: o.stage, color: "var(--text-dim)" };
+    const dir = DIRECTION_STYLE[o.direction];
+    return `<div class="top3-card">
+      <div class="top3-card-top"><span class="top3-medal">${MEDALLA_ICONO[i]}</span><span class="dim" style="font-size:11px;text-transform:uppercase;letter-spacing:.03em">${MEDALLAS[i]}</span></div>
+      <div class="top3-ticker">${o.ticker}</div>
+      <div class="kv-row"><span class="k">Precio actual</span><span class="v">${o.price_actual != null ? "$" + fmtNum(o.price_actual) : "—"}</span></div>
+      <div class="kv-row"><span class="k">% cambio</span><span class="v">${typeof o.change_pct_actual === "number" ? fmtPct(o.change_pct_actual) : "—"}</span></div>
+      <div class="kv-row"><span class="k">RVOL actual</span><span class="v">${o.relative_volume_hoy != null ? fmtNum(o.relative_volume_hoy) + "x" : "—"}</span></div>
+      <div class="kv-row"><span class="k">Dirección</span><span class="v">${dir ? `<span style="color:${dir.color}">${dir.label}</span>` : "—"}</span></div>
+      <div class="kv-row"><span class="k">Etapa</span><span class="v"><span style="color:${st.color};font-weight:${st.bold ? 700 : 600}">${st.label}</span></span></div>
+      <div class="kv-row"><span class="k">Antigüedad del precio</span><span class="v">${o.price_age_seconds != null ? fmtAge(o.price_age_seconds) : "—"}</span></div>
+      <div class="kv-row"><span class="k">Disponible en Racional</span><span class="v">${o.racional_available === true ? "Sí" : "No"}</span></div>
+      <div class="detail-explain" style="margin-top:10px;font-size:12.5px">${_explicacionTop3(o)}</div>
+    </div>`;
+  }).join("");
+}
+
 function renderAlertStages() {
   const conteosEl = document.getElementById("alert-stage-conteos");
   const tablaEl = document.getElementById("alert-stage-tabla");
@@ -1452,6 +1518,8 @@ function renderAlertStages() {
       : "";
   }
 
+  renderMejoresOportunidadesAhora(_alertStages.oportunidades || []);
+
   let oportunidades = _alertStages.oportunidades || [];
   const filtroEstadoEl = document.getElementById("oportunidades-filtro-estado");
   if (filtroEstadoEl && filtroEstadoEl.value) {
@@ -1474,7 +1542,7 @@ function renderAlertStages() {
     return (b.detected_at || "").localeCompare(a.detected_at || "");
   });
   tablaEl.innerHTML = `<div style="overflow-x:auto"><table class="data-table">
-    <thead><tr><th>Ticker</th><th>Estado</th><th>Etapa</th><th>Dirección</th><th>Sector</th><th style="text-align:right">Precio actual</th><th>Antigüedad</th><th style="text-align:right">Precio detección</th><th>Hora detección</th><th style="text-align:right">Min. desde detección</th><th style="text-align:right">Cambio desde detección</th><th>Fuente</th><th style="text-align:right">RVOL detección</th><th>Evidencia</th><th>Racional</th></tr></thead>
+    <thead><tr><th>Ticker</th><th>Estado</th><th>Etapa</th><th>Dirección</th><th>Sector</th><th style="text-align:right">Precio actual</th><th>Antigüedad</th><th style="text-align:right">Precio detección</th><th>Hora detección</th><th style="text-align:right">Min. desde detección</th><th style="text-align:right">Cambio desde detección</th><th>Fuente</th><th style="text-align:right">RVOL actual</th><th style="text-align:right">RVOL detección</th><th>Evidencia</th><th>Racional</th></tr></thead>
     <tbody>${oportunidades.map(o => {
       const st = ALERT_STAGE_STYLE[o.stage] || { label: o.stage, color: "var(--text-dim)" };
       const fs = FINAL_STATE_STYLE[o.estado_final] || { label: o.estado_final || "—", color: "var(--text-dim)" };
@@ -1509,6 +1577,7 @@ function renderAlertStages() {
         <td style="text-align:right">${o.minutos_desde_deteccion != null ? fmtNum(o.minutos_desde_deteccion, 0) + " min" : "—"}</td>
         <td style="text-align:right">${cambioDesdeDeteccion != null ? fmtPct(cambioDesdeDeteccion) : "—"}</td>
         <td>${o.price_actual_source || o.source || "—"}</td>
+        <td style="text-align:right">${o.relative_volume_hoy != null ? fmtNum(o.relative_volume_hoy) + "x" : "—"}</td>
         <td style="text-align:right">${o.relative_volume_at_detection != null ? fmtNum(o.relative_volume_at_detection) + "x" : "—"}</td>
         <td class="dim" title="${evidencia}">${evidencia}</td>
         <td>${o.racional_available === true ? "Sí" : (o.racional_available === false ? "No" : "—")}</td>

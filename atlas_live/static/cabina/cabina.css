@@ -654,6 +654,25 @@ html, body {
 .kv-row .k { color: var(--text-dim); }
 .kv-row .v { font-weight: 600; }
 
+/* Mejores Oportunidades Ahora (2026-08-18) -- ranking de solo presentación,
+   mismo lenguaje visual que .perf-block/.detail-metric/.kv-row, sin CSS nuevo
+   inventado más allá del grid de 3 columnas. */
+.top3-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 14px;
+  margin-bottom: 20px;
+}
+.top3-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 16px 18px;
+}
+.top3-card-top { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; }
+.top3-medal { font-size: 24px; line-height: 1; }
+.top3-ticker { font-family: var(--mono); font-size: 22px; font-weight: 700; }
+
 .empty-state {
   text-align: center;
   padding: 40px 20px;
