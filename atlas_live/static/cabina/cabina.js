@@ -724,6 +724,14 @@ function startHotChannel() {
  * legítimos mientras no haya corrido todavía una sesión completa en vivo,
  * no un error. */
 const PANEL_STATUS_POLL_MS = 60000;
+// Precios en vivo (2026-08-18, pedido explícito del usuario): los paneles
+// que muestran price_actual/RVOL en vivo refrescan cada 30s -- el piso real
+// de la cadencia de barrido del radar (ATLAS_RADAR_SWEEP_FLOOR_SECONDS,
+// ver radar_worker.py) también es 30s, así que nunca se espera más de un
+// barrido de más para ver un precio nuevo. El resto de los paneles
+// (Memory Engine, Journals, Mission Control, etc. -- no dependen de un
+// precio fresco minuto a minuto) siguen en PANEL_STATUS_POLL_MS sin cambios.
+const PRICE_POLL_MS = 30000;
 let _memoryEngine = null;
 let _predictionJournal = null;
 let _exitJournalSummaries = [];
@@ -1663,9 +1671,9 @@ function startPanelStatusPolling() {
   setInterval(fetchExplosionHistory, PANEL_STATUS_POLL_MS);
   setInterval(fetchSignals, PANEL_STATUS_POLL_MS);
   setInterval(fetchEstudio, PANEL_STATUS_POLL_MS);
-  setInterval(fetchRadarUniverso, PANEL_STATUS_POLL_MS);
-  setInterval(fetchAlertStages, PANEL_STATUS_POLL_MS);
-  setInterval(fetchFlujoSectorial, PANEL_STATUS_POLL_MS);
+  setInterval(fetchRadarUniverso, PRICE_POLL_MS);
+  setInterval(fetchAlertStages, PRICE_POLL_MS);
+  setInterval(fetchFlujoSectorial, PRICE_POLL_MS);
 }
 
 /* 📸 Guardar Estado del Día -- aprobado el 2026-08-02, último elemento
