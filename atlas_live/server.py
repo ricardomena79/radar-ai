@@ -325,8 +325,19 @@ def api_radar_oportunidades():
     explicando por qué. Solo lectura, mismo patrón sin token que
     `/api/radar-universo` -- Memory Engine, Radar Explosivo y
     Yahoo/Finnhub no participan en la DETECCIÓN en absoluto: una detección
-    real de Tradier nunca puede dejar de aparecer acá por esas capas. Ver
-    `atlas_live/radar/candidate_registry.py::live_opportunities`."""
+    real de Tradier nunca deja de GUARDARSE por esas capas (ver
+    `atlas_live/radar/candidate_registry.py::live_opportunities`, sigue
+    devolviendo TODO sin filtrar, para aprendizaje/análisis interno).
+
+    Filtro de disponibilidad Racional (2026-08-18, caso real BATL): a
+    partir de acá, la RESPUESTA de este endpoint -- la lista operable que
+    se muestra en la Cabina para decidir una operación -- SÍ se filtra a
+    `racional_available == True`. Universo Tradier -> detección completa
+    -> filtro Racional -> candidatas mostradas. Server-side, no un filtro
+    visual: un ticker sin disponibilidad en Racional nunca llega al JSON,
+    aunque Tradier lo haya detectado con una señal fuerte. `total_detectadas_hoy`/
+    `total_disponibles_racional` exponen ambos números para que el filtro
+    sea auditable, no silencioso."""
     from datetime import datetime, timezone
 
     from atlas_live.learning import historical_scoring as hsc
@@ -336,6 +347,9 @@ def api_radar_oportunidades():
 
     market_date = _mh.market_date()
     oportunidades = radar_registry.live_opportunities(market_date)
+    total_detectadas_hoy = len(oportunidades)
+    oportunidades = [o for o in oportunidades if o.get("racional_available") is True]
+    total_disponibles_racional = len(oportunidades)
     last_quotes = radar_worker.get_last_quotes()
 
     sector_snapshot = scan_worker.STATE.sector_flow_snapshot or {}
@@ -401,6 +415,8 @@ def api_radar_oportunidades():
         "oportunidades": oportunidades,
         "conteos_por_etapa": conteos,
         "conteos_por_estado_final": conteos_estado_final,
+        "total_detectadas_hoy": total_detectadas_hoy,
+        "total_disponibles_racional": total_disponibles_racional,
     })
 
 

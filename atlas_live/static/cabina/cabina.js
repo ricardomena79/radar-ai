@@ -1439,15 +1439,21 @@ function renderAlertStages() {
     return card("🔔", st.label, conteos[stage] || 0);
   }).join("");
 
-  let oportunidades = _alertStages.oportunidades || [];
-  const soloRacionalEl = document.getElementById("oportunidades-solo-racional");
-  const filtroEstadoEl = document.getElementById("oportunidades-filtro-estado");
-  // Filtros cosméticos sobre los datos ya traídos -- ni Racional ni el
-  // estado final deciden qué se detecta ni qué llega acá, solo qué se
-  // muestra en pantalla.
-  if (soloRacionalEl && soloRacionalEl.checked) {
-    oportunidades = oportunidades.filter(o => o.racional_available === true);
+  // Filtro de Racional (2026-08-18, caso real BATL): ya NO es un filtro
+  // visual -- el servidor (`/api/radar-oportunidades`) ya devuelve solo
+  // candidatas con `racional_available === true`. Acá solo se hace
+  // auditable con los conteos reales que el propio backend expone.
+  const racionalConteoEl = document.getElementById("oportunidades-racional-conteo");
+  if (racionalConteoEl) {
+    const totalHoy = _alertStages.total_detectadas_hoy;
+    const totalRacional = _alertStages.total_disponibles_racional;
+    racionalConteoEl.textContent = (totalHoy != null && totalRacional != null)
+      ? `Tradier detectó ${totalHoy} candidatas hoy · ${totalRacional} disponibles en Racional (esta lista) · ${totalHoy - totalRacional} quedaron fuera por no estar en Racional (siguen guardadas para aprendizaje).`
+      : "";
   }
+
+  let oportunidades = _alertStages.oportunidades || [];
+  const filtroEstadoEl = document.getElementById("oportunidades-filtro-estado");
   if (filtroEstadoEl && filtroEstadoEl.value) {
     oportunidades = oportunidades.filter(o => o.estado_final === filtroEstadoEl.value);
   }
@@ -1538,8 +1544,6 @@ function renderFlujoSectorial() {
 }
 
 function startPanelStatusPolling() {
-  const soloRacionalEl = document.getElementById("oportunidades-solo-racional");
-  if (soloRacionalEl) soloRacionalEl.addEventListener("change", renderAlertStages);
   const filtroEstadoEl = document.getElementById("oportunidades-filtro-estado");
   if (filtroEstadoEl) filtroEstadoEl.addEventListener("change", renderAlertStages);
   fetchRadarUniverso();

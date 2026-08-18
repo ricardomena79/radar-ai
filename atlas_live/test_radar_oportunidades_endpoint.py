@@ -3,7 +3,13 @@
 apareciendo acá, con el precio EN VIVO tomado del último barrido de
 Tradier (radar_worker.get_last_quotes()), sin ninguna llamada a
 Yahoo/Finnhub. Mismo patrón que los demás endpoints públicos: sin red,
-sin tocar la base real (live_opportunities se mockea)."""
+sin tocar la base real (live_opportunities se mockea).
+
+Filtro de disponibilidad Racional (2026-08-18, caso real BATL): desde acá
+la RESPUESTA del endpoint (no `live_opportunities()`, que sigue devolviendo
+todo sin filtrar) excluye candidatas con `racional_available != True`. Los
+mocks de abajo agregan `"racional_available": True` explícito donde no es
+el foco del test, para no ensombrecer lo que cada test realmente prueba."""
 
 import os
 
@@ -51,8 +57,8 @@ def test_devuelve_las_oportunidades_con_precio_en_vivo_mergeado():
     orig_last_quotes = _rw.get_last_quotes
 
     reg.live_opportunities = lambda market_date: [
-        {"ticker": "ZIM", "price_at_detection": 28.14, "stage": "ALERTA_TEMPRANA"},
-        {"ticker": "SIN_QUOTE", "price_at_detection": 1.0, "stage": reg.DETECCION_TEMPRANA},
+        {"ticker": "ZIM", "price_at_detection": 28.14, "stage": "ALERTA_TEMPRANA", "racional_available": True},
+        {"ticker": "SIN_QUOTE", "price_at_detection": 1.0, "stage": reg.DETECCION_TEMPRANA, "racional_available": True},
     ]
 
     class _FakeQuote:
@@ -79,6 +85,8 @@ def test_devuelve_las_oportunidades_con_precio_en_vivo_mergeado():
         assert "DATOS NO CONFIABLES" in by_ticker["SIN_QUOTE"]["motivo_estado_final"]
         assert body["conteos_por_estado_final"]["VIGILAR"] == 1
         assert body["conteos_por_estado_final"]["NO_TOCAR"] == 1
+        assert body["total_detectadas_hoy"] == 2
+        assert body["total_disponibles_racional"] == 2
     finally:
         reg.live_opportunities = orig_live_opps
         _rw.get_last_quotes = orig_last_quotes
@@ -90,8 +98,8 @@ def test_cruza_sector_y_flujo_de_dinero_desde_el_snapshot_de_scan_worker():
     orig_snapshot = _sw.STATE.sector_flow_snapshot
 
     reg.live_opportunities = lambda market_date: [
-        {"ticker": "XOM", "price_at_detection": 110.0, "stage": "INICIO", "direction": "ALCISTA"},
-        {"ticker": "AAPL", "price_at_detection": 200.0, "stage": "PREPARACION"},
+        {"ticker": "XOM", "price_at_detection": 110.0, "stage": "INICIO", "direction": "ALCISTA", "racional_available": True},
+        {"ticker": "AAPL", "price_at_detection": 200.0, "stage": "PREPARACION", "racional_available": True},
     ]
 
     class _FakeQuote:
@@ -134,7 +142,8 @@ def test_minutos_desde_deteccion_se_calcula_desde_detected_at():
 
     detected_at = (datetime.now(timezone.utc) - timedelta(minutes=7)).isoformat()
     reg.live_opportunities = lambda market_date: [
-        {"ticker": "ZIM", "price_at_detection": 28.14, "stage": "ALERTA_TEMPRANA", "detected_at": detected_at},
+        {"ticker": "ZIM", "price_at_detection": 28.14, "stage": "ALERTA_TEMPRANA",
+         "detected_at": detected_at, "racional_available": True},
     ]
     _rw.get_last_quotes = lambda: {}
     try:
@@ -152,13 +161,62 @@ def test_sin_detected_at_no_rompe_el_endpoint():
     orig_last_quotes = _rw.get_last_quotes
 
     reg.live_opportunities = lambda market_date: [
-        {"ticker": "ZIM", "price_at_detection": 28.14, "stage": "ALERTA_TEMPRANA"},
+        {"ticker": "ZIM", "price_at_detection": 28.14, "stage": "ALERTA_TEMPRANA", "racional_available": True},
     ]
     _rw.get_last_quotes = lambda: {}
     try:
         r = _client().get("/api/radar-oportunidades")
         assert r.status_code == 200
         assert r.get_json()["oportunidades"][0]["minutos_desde_deteccion"] is None
+    finally:
+        reg.live_opportunities = orig_live_opps
+        _rw.get_last_quotes = orig_last_quotes
+
+
+def test_ticker_no_disponible_en_racional_no_aparece_en_la_lista_operable():
+    """Caso real BATL (2026-08-18): Tradier detecta con señal fuerte, pero
+    el ticker no está en el snapshot de Racional -- no debe aparecer en la
+    respuesta del endpoint, aunque `live_opportunities()` (la detección
+    interna, para aprendizaje) sí lo devuelva."""
+    orig_live_opps = reg.live_opportunities
+    orig_last_quotes = _rw.get_last_quotes
+
+    reg.live_opportunities = lambda market_date: [
+        {"ticker": "BATL", "price_at_detection": 5.0, "stage": "INICIO",
+         "direction": "ALCISTA", "racional_available": False},
+        {"ticker": "AAPL", "price_at_detection": 200.0, "stage": "PREPARACION", "racional_available": True},
+    ]
+    _rw.get_last_quotes = lambda: {}
+    try:
+        r = _client().get("/api/radar-oportunidades")
+        assert r.status_code == 200
+        body = r.get_json()
+        tickers = [o["ticker"] for o in body["oportunidades"]]
+        assert "BATL" not in tickers
+        assert "AAPL" in tickers
+        assert body["total_detectadas_hoy"] == 2
+        assert body["total_disponibles_racional"] == 1
+    finally:
+        reg.live_opportunities = orig_live_opps
+        _rw.get_last_quotes = orig_last_quotes
+
+
+def test_racional_available_none_tambien_queda_fuera():
+    """`racional_available` puede ser `None` (is_available() falló o
+    Racional no cargó) -- nunca se trata como "disponible por defecto"."""
+    orig_live_opps = reg.live_opportunities
+    orig_last_quotes = _rw.get_last_quotes
+
+    reg.live_opportunities = lambda market_date: [
+        {"ticker": "XYZ", "price_at_detection": 1.0, "stage": "PREPARACION", "racional_available": None},
+    ]
+    _rw.get_last_quotes = lambda: {}
+    try:
+        r = _client().get("/api/radar-oportunidades")
+        body = r.get_json()
+        assert body["oportunidades"] == []
+        assert body["total_detectadas_hoy"] == 1
+        assert body["total_disponibles_racional"] == 0
     finally:
         reg.live_opportunities = orig_live_opps
         _rw.get_last_quotes = orig_last_quotes
