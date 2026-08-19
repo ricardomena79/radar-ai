@@ -47,7 +47,7 @@ def _quote_to_snapshot(sweep_id: str, observed_at: str, quote: Optional[Quote], 
 
 def _tag_phase_at_detection(
     symbol: str, market_date: str, change_pct, gates_fired_payload: list, session: str,
-    relative_volume: Optional[float] = None,
+    relative_volume: Optional[float] = None, price_basis: Optional[str] = None,
 ) -> None:
     """Calcula y guarda `phase_tag`/`direction_at_detection` (Reinicio
     2026-08-15) en el momento de la primera detección. Import perezoso de
@@ -58,7 +58,10 @@ def _tag_phase_at_detection(
 
     `relative_volume` (Fase 7, 2026-08-18) permite a `from_live_detection`
     distinguir un `change_pct=0.0` real de uno no confiable por falta de
-    operaciones -- ver `phase_classifier.CHANGE_PCT_MIN_RVOL_TO_TRUST_ZERO`."""
+    operaciones -- ver `phase_classifier.CHANGE_PCT_MIN_RVOL_TO_TRUST_ZERO`.
+    `price_basis` (2026-08-19, caso real KEN) cubre el mismo problema
+    cuando el `change_pct` resultante no da exactamente 0.0 -- ver
+    docstring de `from_live_detection`."""
     try:
         from atlas_live.reference import reference_registry as ref_reg
 
@@ -66,7 +69,8 @@ def _tag_phase_at_detection(
     except Exception:
         percentile_90 = None
     gate_names = [g["name"] for g in gates_fired_payload]
-    tag = pc.from_live_detection(change_pct, gate_names, percentile_90, session, relative_volume=relative_volume)
+    tag = pc.from_live_detection(change_pct, gate_names, percentile_90, session,
+                                  relative_volume=relative_volume, price_basis=price_basis)
     reg.set_phase_tag(symbol, market_date, tag.timing_deteccion, direction_at_detection=tag.direction)
 
 
@@ -130,8 +134,10 @@ def _tag_alert_stage(
 
     change_pct = quote.change_percent if quote is not None else None
     relative_volume_hoy = quote.relative_volume if quote is not None else None
+    price_basis_hoy = getattr(quote, "price_basis", None) if quote is not None else None
     gate_names = [g["name"] for g in gates_fired_payload]
-    tag = pc.from_live_detection(change_pct, gate_names, percentile_90, session, relative_volume=relative_volume_hoy)
+    tag = pc.from_live_detection(change_pct, gate_names, percentile_90, session,
+                                  relative_volume=relative_volume_hoy, price_basis=price_basis_hoy)
 
     # Retroceso desde máximo intradía (2026-08-18, pedido explícito del
     # usuario, caso real YYAI): `reg.record_observation()` de ESTE mismo
@@ -231,7 +237,8 @@ def process_sweep(
             if es_nueva:
                 nuevas.append(symbol)
                 _tag_phase_at_detection(symbol, market_date, current.change_pct, gates_fired_payload, session,
-                                         relative_volume=current.relative_volume)
+                                         relative_volume=current.relative_volume,
+                                         price_basis=getattr(quote, "price_basis", None))
                 _tag_experimental_signals_at_detection(symbol, market_date, quote)
             else:
                 # No es la primera vez que se ve -- pasa a "señal" (Reinicio

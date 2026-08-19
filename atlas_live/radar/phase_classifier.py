@@ -104,6 +104,7 @@ def from_live_detection(
     historical_percentile_90: Optional[float], session: str,
     observations_after_open: Optional[List[dict]] = None,
     relative_volume: Optional[float] = None,
+    price_basis: Optional[str] = None,
 ) -> PhaseTag:
     """Adaptador para una candidata del radar en vivo (CAPA 2).
 
@@ -111,7 +112,16 @@ def from_live_detection(
     distinguir un 0.0%/None real de un dato no confiable por falta de
     operaciones -- ver `CHANGE_PCT_MIN_RVOL_TO_TRUST_ZERO`. Si no se pasa,
     el comportamiento es el de siempre (se confía en `change_pct_at_detection`
-    tal cual, compatibilidad hacia atrás)."""
+    tal cual, compatibilidad hacia atrás).
+
+    `price_basis` (2026-08-19, caso real KEN -- ver DECISIONES.md): cuando
+    el precio viene de `"tradier_bid_ask_mid"` (punto medio entre bid/ask,
+    usado por Tradier cuando no hay operación reciente real) Y casi no hay
+    volumen real, el `change_pct` resultante puede NO ser 0.0 -- es
+    aritmética sobre el spread, no un movimiento de mercado -- y aun así no
+    está respaldado por ninguna operación real. El chequeo de arriba
+    (`== 0.0`) no cubre este caso porque el número que sale casi nunca es
+    exactamente cero."""
     accelerating = "aceleracion" in gates_fired_names or "despertar" in gates_fired_names
     near_trough = "recuperacion" in gates_fired_names
 
@@ -121,6 +131,8 @@ def from_live_detection(
     change_pct_confiable = True
     if change_pct_at_detection is None:
         change_pct_confiable = False  # dato faltante -- nunca es "0% real"
+    elif price_basis == "tradier_bid_ask_mid" and (relative_volume is None or relative_volume < CHANGE_PCT_MIN_RVOL_TO_TRUST_ZERO):
+        change_pct_confiable = False  # precio sintético (mid bid/ask) sin operaciones reales que lo respalden
     elif change_pct_at_detection == 0.0 and relative_volume is not None and relative_volume < CHANGE_PCT_MIN_RVOL_TO_TRUST_ZERO:
         change_pct_confiable = False  # 0.0% sin volumen real que lo respalde -- no se asume "neutral"
 

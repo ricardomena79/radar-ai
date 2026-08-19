@@ -122,6 +122,46 @@ def test_change_pct_none_nunca_es_confiable():
     assert tag.direction == "INDEFINIDA"
 
 
+def test_caso_real_ken_precio_mid_bid_ask_sin_volumen_no_es_confiable():
+    """2026-08-19, caso real de producción: KEN detectada con
+    `change_pct_at_detection=1.61%` (NO 0.0, a diferencia del caso ZIM) pero
+    con `price_basis="tradier_bid_ask_mid"` (sin operación real, Tradier
+    usó el punto medio bid/ask) y `relative_volume=0.0` -- casi sin
+    operaciones (TradingView mostraba -1.29% real, "No hay operaciones").
+    El 1.61% no es un movimiento de mercado, es aritmética sobre el spread.
+    Debe marcarse no confiable aunque el número no sea exactamente cero."""
+    tag = pc.from_live_detection(1.6139092468423686, ["sostenido_premarket"], historical_percentile_90=None,
+                                  session="premarket", relative_volume=0.0, price_basis="tradier_bid_ask_mid")
+    assert tag.change_pct_confiable is False
+    assert tag.direction == "INDEFINIDA"
+    assert tag.timing_deteccion == "indeterminado"
+
+
+def test_precio_mid_bid_ask_con_volumen_real_sigue_confiable():
+    """El punto medio bid/ask por sí solo NO es motivo de desconfianza --
+    solo cuando además casi no hay volumen real de respaldo."""
+    tag = pc.from_live_detection(2.0, [], historical_percentile_90=None, session="premarket",
+                                  relative_volume=0.5, price_basis="tradier_bid_ask_mid")
+    assert tag.change_pct_confiable is True
+
+
+def test_price_basis_tradier_last_nunca_activa_el_chequeo_nuevo():
+    """Un precio de una operación real (`tradier_last`) no activa este
+    chequeo nuevo, incluso con RVOL bajo -- ese caso sigue cubierto (o no)
+    exclusivamente por el chequeo original de `change_pct == 0.0`."""
+    tag = pc.from_live_detection(1.6, [], historical_percentile_90=None, session="premarket",
+                                  relative_volume=0.01, price_basis="tradier_last")
+    assert tag.change_pct_confiable is True
+
+
+def test_sin_pasar_price_basis_preserva_el_comportamiento_de_siempre():
+    """Compatibilidad hacia atrás: llamadas que no pasan `price_basis`
+    (como antes de este fix) no cambian de comportamiento."""
+    tag = pc.from_live_detection(1.6, [], historical_percentile_90=None, session="premarket",
+                                  relative_volume=0.0)
+    assert tag.change_pct_confiable is True
+
+
 if __name__ == "__main__":
     import traceback
 

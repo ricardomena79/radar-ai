@@ -2106,39 +2106,80 @@ function renderOportunidad() {
 
 /* ---------------- Tablas genéricas ---------------- */
 
+// Orden ascendente/descendente por columna (2026-08-19, pedido explícito
+// del usuario) -- puramente de presentación en el navegador, no toca
+// ningún dato ni endpoint. Solo columnas con `sortValue` (el valor crudo
+// detrás del HTML de `render`) quedan ordenables; sin esa función la
+// columna se muestra igual que siempre, sin click. El estado de orden se
+// guarda por tabla (`elementId`) para que sobreviva los refrescos
+// automáticos del panel -- si no, el usuario perdería el orden elegido
+// cada 30-60s cuando el panel se vuelve a pedir solo.
+const _tableSortState = {};
+
 function renderGenericTable(elementId, rows, columns) {
   const el = document.getElementById(elementId);
   if (!rows.length) {
     el.innerHTML = `<tbody><tr><td class="empty-state">Sin candidatos en esta categoría en este momento.</td></tr></tbody>`;
     return;
   }
-  const head = "<tr>" + columns.map(c => `<th>${c.label}</th>`).join("") + "</tr>";
-  const body = rows.map(r => "<tr>" + columns.map(c => `<td>${c.render(r)}</td>`).join("") + "</tr>").join("");
+
+  const state = _tableSortState[elementId];
+  let sortedRows = rows;
+  const activeCol = state ? columns[state.colIndex] : null;
+  if (activeCol && activeCol.sortValue) {
+    sortedRows = [...rows].sort((a, b) => {
+      const va = activeCol.sortValue(a), vb = activeCol.sortValue(b);
+      if (va == null && vb == null) return 0;
+      if (va == null) return 1;   // sin dato siempre al final, sin importar la dirección
+      if (vb == null) return -1;
+      if (va < vb) return -1 * state.dir;
+      if (va > vb) return 1 * state.dir;
+      return 0;
+    });
+  }
+
+  const head = "<tr>" + columns.map((c, i) => {
+    if (!c.sortValue) return `<th>${c.label}</th>`;
+    const isActive = state && state.colIndex === i;
+    const arrow = isActive ? (state.dir === 1 ? " ▲" : " ▼") : "";
+    return `<th class="sortable-col" data-col-idx="${i}" style="cursor:pointer;user-select:none" title="Ordenar por ${c.label}">${c.label}${arrow}</th>`;
+  }).join("") + "</tr>";
+  const body = sortedRows.map(r => "<tr>" + columns.map(c => `<td>${c.render(r)}</td>`).join("") + "</tr>").join("");
   el.innerHTML = `<thead>${head}</thead><tbody>${body}</tbody>`;
+
+  el.querySelectorAll("th.sortable-col").forEach(th => {
+    th.addEventListener("click", () => {
+      const idx = Number(th.dataset.colIdx);
+      const current = _tableSortState[elementId];
+      const dir = (current && current.colIndex === idx) ? -current.dir : 1;
+      _tableSortState[elementId] = { colIndex: idx, dir };
+      renderGenericTable(elementId, rows, columns);
+    });
+  });
 }
 
 function renderMicrocaps() {
   renderGenericTable("microcaps-table", _explosivasReal(), [
-    { label: "Símbolo", render: r => `<span class="sym">${r.symbol}</span>` },
-    { label: "Precio", render: r => `${fmtMoney(r.price)}<br>${priceContextLine(r)}` },
-    { label: "Cambio", render: r => fmtPct(r.change_pct) },
-    { label: "Score", render: r => fmtNum(r.score) },
-    { label: "Probabilidad", render: r => fmtNum(r.probability_pct) + "%" },
-    { label: "Confianza", render: r => r.confidence },
+    { label: "Símbolo", render: r => `<span class="sym">${r.symbol}</span>`, sortValue: r => r.symbol },
+    { label: "Precio", render: r => `${fmtMoney(r.price)}<br>${priceContextLine(r)}`, sortValue: r => r.price },
+    { label: "Cambio", render: r => fmtPct(r.change_pct), sortValue: r => r.change_pct },
+    { label: "Score", render: r => fmtNum(r.score), sortValue: r => r.score },
+    { label: "Probabilidad", render: r => fmtNum(r.probability_pct) + "%", sortValue: r => r.probability_pct },
+    { label: "Confianza", render: r => r.confidence, sortValue: r => r.confidence },
     { label: "Evidencia", render: r => `<span class="dim">${r.evidence_condition || "--"}</span>` },
-    { label: "Semáforo", render: r => semaforoHtml(r.semaforo) },
+    { label: "Semáforo", render: r => semaforoHtml(r.semaforo), sortValue: r => r.semaforo },
   ]);
 }
 
 function renderMomentum() {
   renderGenericTable("momentum-table", _momentumReal(), [
-    { label: "Símbolo", render: r => `<span class="sym">${r.symbol}</span>` },
-    { label: "Precio", render: r => `${fmtMoney(r.price)}<br>${priceContextLine(r)}` },
-    { label: "Cambio", render: r => fmtPct(r.change_pct) },
-    { label: "Probabilidad", render: r => fmtNum(r.probability_pct) + "%" },
-    { label: "Confianza", render: r => r.confidence },
+    { label: "Símbolo", render: r => `<span class="sym">${r.symbol}</span>`, sortValue: r => r.symbol },
+    { label: "Precio", render: r => `${fmtMoney(r.price)}<br>${priceContextLine(r)}`, sortValue: r => r.price },
+    { label: "Cambio", render: r => fmtPct(r.change_pct), sortValue: r => r.change_pct },
+    { label: "Probabilidad", render: r => fmtNum(r.probability_pct) + "%", sortValue: r => r.probability_pct },
+    { label: "Confianza", render: r => r.confidence, sortValue: r => r.confidence },
     { label: "Evidencia", render: r => `<span class="dim">${r.evidence_condition || "--"}</span>` },
-    { label: "Semáforo", render: r => semaforoHtml(r.semaforo) },
+    { label: "Semáforo", render: r => semaforoHtml(r.semaforo), sortValue: r => r.semaforo },
   ]);
 }
 
@@ -2167,11 +2208,11 @@ function _noTocarMotivo(r) {
 
 function renderNoTocar() {
   renderGenericTable("no-tocar-table", _noTocarReal(), [
-    { label: "Símbolo", render: r => `<span class="sym">${r.symbol}</span>` },
-    { label: "Precio", render: r => `${fmtMoney(r.price)}<br>${priceContextLine(r)}` },
-    { label: "Cambio", render: r => fmtPct(r.change_pct) },
+    { label: "Símbolo", render: r => `<span class="sym">${r.symbol}</span>`, sortValue: r => r.symbol },
+    { label: "Precio", render: r => `${fmtMoney(r.price)}<br>${priceContextLine(r)}`, sortValue: r => r.price },
+    { label: "Cambio", render: r => fmtPct(r.change_pct), sortValue: r => r.change_pct },
     { label: "Motivo", render: r => _noTocarMotivo(r) },
-    { label: "Semáforo", render: r => semaforoHtml(r.semaforo) },
+    { label: "Semáforo", render: r => semaforoHtml(r.semaforo), sortValue: r => r.semaforo },
   ]);
 }
 
@@ -2194,28 +2235,29 @@ function renderRadarCompleto() {
     }
   }
   renderGenericTable("radar-completo-table", _memoryRanking.candidates, [
-    { label: "Símbolo", render: r => `<span class="sym">${r.symbol}</span>` },
-    { label: "Precio", render: r => `${fmtMoney(r.price)}<br>${priceContextLine(r)}` },
-    { label: "Antigüedad", render: r => r.price_age_seconds != null ? fmtAge(r.price_age_seconds) : '<span class="dim">--</span>' },
-    { label: "Cambio", render: r => fmtPct(r.change_pct) },
-    { label: "Score Radar", render: r => fmtNum(r.score) },
+    { label: "Símbolo", render: r => `<span class="sym">${r.symbol}</span>`, sortValue: r => r.symbol },
+    { label: "Precio", render: r => `${fmtMoney(r.price)}<br>${priceContextLine(r)}`, sortValue: r => r.price },
+    { label: "Antigüedad", render: r => r.price_age_seconds != null ? fmtAge(r.price_age_seconds) : '<span class="dim">--</span>', sortValue: r => r.price_age_seconds },
+    { label: "Cambio", render: r => fmtPct(r.change_pct), sortValue: r => r.change_pct },
+    { label: "Score Radar", render: r => fmtNum(r.score), sortValue: r => r.score },
     { label: "Elegible", render: r => r.eligible_radar
         ? "Sí"
-        : `<span class="no-tocar-radar-reason">No -- ${r.radar_excluded_reason || "no elegible"}</span>` },
-    { label: "Probabilidad ME", render: r => r.probability_pct !== null ? fmtNum(r.probability_pct) + "%" : '<span class="dim">--</span>' },
-    { label: "Semáforo", render: r => semaforoHtml(r.semaforo) },
+        : `<span class="no-tocar-radar-reason">No -- ${r.radar_excluded_reason || "no elegible"}</span>`,
+      sortValue: r => r.eligible_radar ? 1 : 0 },
+    { label: "Probabilidad ME", render: r => r.probability_pct !== null ? fmtNum(r.probability_pct) + "%" : '<span class="dim">--</span>', sortValue: r => r.probability_pct },
+    { label: "Semáforo", render: r => semaforoHtml(r.semaforo), sortValue: r => r.semaforo },
   ]);
 }
 
 function renderExitJournal() {
   renderGenericTable("exit-journal-table", _exitJournalSummaries, [
-    { label: "Símbolo", render: r => `<span class="sym">${r.symbol}</span>` },
-    { label: "Fecha", render: r => r.date },
-    { label: "Detección", render: r => fmtTime(r.detected_at) },
-    { label: "Entrada (sellado)", render: r => fmtTime(r.entry_at) },
-    { label: "Máximo", render: r => r.peak_at ? `${fmtTime(r.peak_at)} (${fmtPct(r.peak_return_pct)})` : '<span class="dim">--</span>' },
-    { label: "Rendimiento final", render: r => r.final_return_pct !== null ? fmtPct(r.final_return_pct) : '<span class="dim">--</span>' },
-    { label: "Muestras", render: r => r.sample_count },
+    { label: "Símbolo", render: r => `<span class="sym">${r.symbol}</span>`, sortValue: r => r.symbol },
+    { label: "Fecha", render: r => r.date, sortValue: r => r.date },
+    { label: "Detección", render: r => fmtTime(r.detected_at), sortValue: r => r.detected_at },
+    { label: "Entrada (sellado)", render: r => fmtTime(r.entry_at), sortValue: r => r.entry_at },
+    { label: "Máximo", render: r => r.peak_at ? `${fmtTime(r.peak_at)} (${fmtPct(r.peak_return_pct)})` : '<span class="dim">--</span>', sortValue: r => r.peak_return_pct },
+    { label: "Rendimiento final", render: r => r.final_return_pct !== null ? fmtPct(r.final_return_pct) : '<span class="dim">--</span>', sortValue: r => r.final_return_pct },
+    { label: "Muestras", render: r => r.sample_count, sortValue: r => r.sample_count },
   ]);
 }
 
@@ -2342,15 +2384,15 @@ function renderMissionControl() {
     </div>`;
 
   renderGenericTable("mission-control-table", _missionControlProcesses, [
-    { label: "Proceso", render: r => `${r.process_type} -- ${r.label}` },
-    { label: "Estado", render: r => r.state },
-    { label: "Último latido", render: r => fmtTime(r.last_heartbeat) },
+    { label: "Proceso", render: r => `${r.process_type} -- ${r.label}`, sortValue: r => r.process_type },
+    { label: "Estado", render: r => r.state, sortValue: r => r.state },
+    { label: "Último latido", render: r => fmtTime(r.last_heartbeat), sortValue: r => r.last_heartbeat },
     { label: "Progreso", render: r => {
         const p = r.progress || {};
         return p.total ? `${p.done ?? 0} / ${p.total} ${p.unit || ""}` : '<span class="dim">--</span>';
-      } },
-    { label: "CPU", render: r => r.cpu_percent !== undefined ? `${r.cpu_percent}%` : '<span class="dim">--</span>' },
-    { label: "Memoria", render: r => r.memory_mb !== undefined ? `${r.memory_mb} MB` : '<span class="dim">--</span>' },
+      }, sortValue: r => (r.progress && r.progress.total) ? (r.progress.done ?? 0) / r.progress.total : null },
+    { label: "CPU", render: r => r.cpu_percent !== undefined ? `${r.cpu_percent}%` : '<span class="dim">--</span>', sortValue: r => r.cpu_percent },
+    { label: "Memoria", render: r => r.memory_mb !== undefined ? `${r.memory_mb} MB` : '<span class="dim">--</span>', sortValue: r => r.memory_mb },
   ]);
 }
 

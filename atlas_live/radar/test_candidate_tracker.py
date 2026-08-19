@@ -280,6 +280,28 @@ def test_caida_real_con_volumen_da_flujo_vendedor_no_alerta_temprana():
         _restore()
 
 
+def test_caso_real_ken_precio_mid_bid_ask_no_confunde_direction_con_alcista():
+    """2026-08-19, caso real de producción: KEN detectada con precio del
+    punto medio bid/ask (`price_basis="tradier_bid_ask_mid"`), casi sin
+    volumen real (rvol=0.0), y un change_pct positivo que era aritmética
+    del spread, no un movimiento de mercado real. Confirma que
+    `process_sweep()` propaga `quote.price_basis` hasta
+    `direction_at_detection` -- debe quedar "INDEFINIDA", NUNCA "ALCISTA"."""
+    _fresh()
+    try:
+        h = SweepHistory()
+        quote = Quote(symbol="KEN", name="KEN", last_price=65.09, change_percent=3.5,
+                      volume=0, open=65.09, high=65.09, low=65.09, previous_close=62.9,
+                      average_volume=1000, relative_volume=0.0, price_basis="tradier_bid_ask_mid")
+        tracker.process_sweep({"KEN": quote}, h, "2026-08-19", "premarket", _now())
+
+        deteccion = reg.get_detection("KEN", "2026-08-19")
+        assert deteccion is not None
+        assert deteccion["direction_at_detection"] == "INDEFINIDA"
+    finally:
+        _restore()
+
+
 def test_tag_alert_stage_no_toca_gates_fired_ni_candidate_detection():
     """Confirma explícitamente que la capa observacional no altera nada de
     lo que ya escribía process_sweep antes de esta fase."""
