@@ -153,6 +153,41 @@ def test_listados_active_y_results():
         _restore()
 
 
+def test_list_results_incluye_direction_desde_features():
+    """2026-08-18, pedido explícito del usuario: `direction` (de
+    `features.direction`, calculado en `explosive_engine.py`) debe quedar
+    disponible en `list_results()` para poder ver si un FALLO ya venía
+    cayendo desde la detección -- puramente informativo, no cambia el
+    resultado ni ningún criterio existente."""
+    _fresh()
+    try:
+        alcista = reg.register_signal(
+            ticker="UP", market_date="2026-08-17", session="PREMARKET", detected_at="t1",
+            price_at_detection=10.0, price_as_of="t1", provider="yahoo_finance",
+            features={**_FEATURES, "direction": "ALCISTA"}, score=71.0, reasons=None,
+            conditions=None, historical_group=None, similar_historical_cases=None,
+            detector_version="0.1.0", feature_version="0.1.0", data_version="0.1.0",
+        )
+        bajista = reg.register_signal(
+            ticker="DOWN", market_date="2026-08-17", session="PREMARKET", detected_at="t2",
+            price_at_detection=10.0, price_as_of="t2", provider="yahoo_finance",
+            features={**_FEATURES, "direction": "BAJISTA"}, score=71.0, reasons=None,
+            conditions=None, historical_group=None, similar_historical_cases=None,
+            detector_version="0.1.0", feature_version="0.1.0", data_version="0.1.0",
+        )
+        reg.record_result(alcista["signal_uuid"], "t1r", reg.RESUELTA_ACIERTO,
+                          max_return_pct=45.0, result="ACIERTO")
+        reg.record_result(bajista["signal_uuid"], "t2r", reg.RESUELTA_FALLO,
+                          max_return_pct=-6.5, result="FALLO")
+
+        resultados = {r["ticker"]: r for r in reg.list_results()}
+        assert resultados["UP"]["direction"] == "ALCISTA"
+        assert resultados["DOWN"]["direction"] == "BAJISTA"
+        assert "features_json" not in resultados["UP"]  # no filtra el crudo, solo el campo limpio
+    finally:
+        _restore()
+
+
 def test_persistencia_reconexion():
     _fresh()
     try:

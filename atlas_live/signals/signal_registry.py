@@ -373,14 +373,26 @@ def list_active(limit: int = 500) -> List[Dict[str, Any]]:
 
 
 def list_results(limit: int = 500) -> List[Dict[str, Any]]:
-    """Señales resueltas con su resultado (join señal + resultado)."""
+    """Señales resueltas con su resultado (join señal + resultado). Incluye
+    `direction` (2026-08-18, pedido explícito del usuario) -- la dirección
+    real de la señal AL MOMENTO DE LA DETECCIÓN (`features.direction`, ver
+    `explosive_engine.py`), para poder ver de un vistazo si un FALLO era una
+    candidata que ya venía cayendo -- puramente informativo, no cambia
+    ningún criterio de resultado."""
     with closing(_connect()) as conn:
         rows = conn.execute(
             "SELECT s.ticker, s.market_date, s.session, s.detected_at, s.score, s.historical_group, "
-            "r.* FROM signal_results r JOIN signals s ON s.signal_uuid = r.signal_uuid "
+            "s.features_json, r.* FROM signal_results r JOIN signals s ON s.signal_uuid = r.signal_uuid "
             "ORDER BY r.resolved_at DESC LIMIT ?", (limit,),
         ).fetchall()
-    return [_row(r) for r in rows]
+    out = []
+    for r in rows:
+        d = _row(r)
+        features_json = d.pop("features_json", None)
+        features = json.loads(features_json) if features_json else {}
+        d["direction"] = features.get("direction")
+        out.append(d)
+    return out
 
 
 def count_signals() -> int:

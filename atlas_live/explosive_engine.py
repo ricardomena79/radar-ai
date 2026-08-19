@@ -39,6 +39,7 @@ from atlas.engine.momentum_engine import MomentumResult
 
 from atlas_live.explosive_config import load_config
 from atlas_live.explosive_factors import FACTORS, ExplosiveInputs
+from atlas_live.reference.daily_reference import classify_direction
 
 # Orden real en que se evalúan los filtros de la Etapa A. Es la única
 # fuente de verdad sobre el orden del embudo -- tanto `evaluate()` como
@@ -213,6 +214,18 @@ def evaluate(
         "price_basis": getattr(quote, "price_basis", None),
         "bid": getattr(quote, "bid", None),
         "ask": getattr(quote, "ask", None),
+        # Dirección (2026-08-18, pedido explícito del usuario -- mismo eje
+        # ya construido y probado en el radar Tradier CAPA1/2, `alert_stage.py`,
+        # aplicado acá porque Radar Explosivo nunca lo tuvo): el filtro de
+        # elegibilidad de arriba usa `abs(gap_pct or change_pct)`, así que
+        # acepta con el mismo criterio una acción subiendo o cayendo -- esto
+        # NO cambia ese filtro (ningún gate se toca), solo expone la
+        # dirección real como información adicional, puramente informativa,
+        # igual que `stale_session_fallback`/`price_basis` de arriba. Usa
+        # `quote.change_percent` crudo (no el `change_pct` de más arriba, que
+        # ya reemplaza `None` por 0.0) para que un dato faltante se reporte
+        # como "INDEFINIDA", nunca como un falso "NEUTRAL".
+        "direction": classify_direction(quote.change_percent),
         "bid_timestamp": (
             quote.bid_timestamp.isoformat() if getattr(quote, "bid_timestamp", None) else None
         ),

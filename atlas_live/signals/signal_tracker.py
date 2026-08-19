@@ -94,8 +94,12 @@ def _row_features(row: Dict[str, Any]) -> Dict[str, Any]:
     ESE MOMENTO -- gap, cambio, RVOL, $volumen, volatilidad, market cap. None
     si el proveedor no lo entregó (nunca inventado)."""
     m = (row.get("explosive") or {}).get("metrics") or {}
+    # "direction" (2026-08-18, pedido explícito del usuario): mismo eje ya
+    # probado en el radar Tradier, ahora también en `explosive_engine.py` --
+    # puramente informativo, no cambia qué candidatos se registran como
+    # señal ni el criterio de "acierto" (`ACIERTO_PCT`, sin tocar).
     keys = ("gap_pct", "change_pct", "relative_volume", "dollar_volume",
-            "volatility_score", "market_cap", "price")
+            "volatility_score", "market_cap", "price", "direction")
     return {k: m.get(k) for k in keys}
 
 

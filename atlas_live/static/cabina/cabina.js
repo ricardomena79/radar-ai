@@ -1267,14 +1267,18 @@ function renderSignals() {
     actEl.innerHTML = `<div class="empty-state">Ninguna señal activa en este momento.</div>`;
   } else {
     actEl.innerHTML = `<div style="overflow-x:auto"><table class="data-table">
-      <thead><tr><th>Ticker</th><th>Día</th><th>Sesión</th><th>Detección</th><th style="text-align:right">Precio</th><th style="text-align:right">Score</th><th>Similar a</th><th>Estado</th></tr></thead>
-      <tbody>${_signalsActive.slice(0, 50).map(x => `<tr>
+      <thead><tr><th>Ticker</th><th>Día</th><th>Sesión</th><th>Detección</th><th style="text-align:right">Precio</th><th style="text-align:right">Score</th><th>Dirección</th><th>Similar a</th><th>Estado</th></tr></thead>
+      <tbody>${_signalsActive.slice(0, 50).map(x => {
+        const dir = DIRECTION_STYLE[(x.features || {}).direction] || DIRECTION_STYLE.INDEFINIDA;
+        return `<tr>
         <td>${x.ticker}</td><td>${x.market_date}</td><td>${x.session}</td>
         <td>${fmtTimeSec(x.detected_at)} ET</td>
         <td style="text-align:right">${nd(x.price_at_detection)}</td>
         <td style="text-align:right">${nd(x.score)}</td>
+        <td style="color:${dir.color}">${dir.label}</td>
         <td>${x.historical_group || "—"} <span class="dim" style="font-size:10px">(${nd(x.similar_historical_cases)})</span></td>
-        <td>${x.state}</td></tr>`).join("")}</tbody></table></div>`;
+        <td>${x.state}</td></tr>`;
+      }).join("")}</tbody></table></div>`;
   }
 
   // Resultados
@@ -1282,13 +1286,17 @@ function renderSignals() {
     resEl.innerHTML = `<div class="empty-state">Sin resultados todavía (ninguna señal cerró su día).</div>`;
   } else {
     resEl.innerHTML = `<div style="overflow-x:auto"><table class="data-table">
-      <thead><tr><th>Ticker</th><th>Día</th><th>Resultado</th><th style="text-align:right">Máx</th><th>min→+30%</th><th>min→+100%</th><th>Fin impulso</th></tr></thead>
-      <tbody>${_signalsResults.slice(0, 100).map(x => `<tr>
+      <thead><tr><th>Ticker</th><th>Día</th><th>Dirección al detectar</th><th>Resultado</th><th style="text-align:right">Máx</th><th>min→+30%</th><th>min→+100%</th><th>Fin impulso</th></tr></thead>
+      <tbody>${_signalsResults.slice(0, 100).map(x => {
+        const dir = DIRECTION_STYLE[x.direction] || DIRECTION_STYLE.INDEFINIDA;
+        return `<tr>
         <td>${x.ticker}</td><td>${x.market_date}</td>
+        <td style="color:${dir.color}">${dir.label}</td>
         <td>${x.result === "ACIERTO" ? "🎯 Acierto" : (x.result === "FALLO" ? "❌ Fallo" : "— Sin datos")}</td>
         <td style="text-align:right">${x.max_return_pct != null ? "+" + fmtNum(x.max_return_pct) + "%" : "—"}</td>
         <td>${nd(x.minutes_to_30pct, " min")}</td><td>${nd(x.minutes_to_100pct, " min")}</td>
-        <td>${x.momentum_end_at ? fmtTimeSec(x.momentum_end_at) + " ET" : "—"}</td></tr>`).join("")}</tbody></table></div>`;
+        <td>${x.momentum_end_at ? fmtTimeSec(x.momentum_end_at) + " ET" : "—"}</td></tr>`;
+      }).join("")}</tbody></table></div>`;
   }
 }
 
