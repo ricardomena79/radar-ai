@@ -1255,6 +1255,93 @@ def recent_precision(window_days: int = 21) -> Dict[str, Any]:
     }
 
 
+# --------------------------- marcador de acierto Racional (2026-08-18) ---------------------------
+# Pedido explícito del usuario: Atlas estudia y aprende del universo
+# COMPLETO (arriba, sin cambios -- get_daily_summary/cumulative_precision/
+# recent_precision siguen exactamente iguales, ese es el marcador
+# "universal"). Este bloque agrega, EN PARALELO, el mismo marcador pero
+# recalculado solo sobre tickers disponibles en Racional -- nunca cachea ni
+# agrega columnas nuevas: recalcula `is_available(ticker)` en cada llamada,
+# mismo criterio ya usado en `live_opportunities()`, así que siempre refleja
+# el universo Racional actual, no una foto vieja. No toca `daily_summary`,
+# `run_eod_evaluation` ni ninguna otra función de arriba.
+
+def _racional_stats_for_dates(fechas: List[str]) -> Dict[str, Any]:
+    """Recalcula evaluables/aciertos/tardías/reached_20/50/100 SOLO sobre
+    outcomes de tickers Racional-disponibles ahora, para las fechas dadas.
+    Mismo criterio de "acierto" (`reached_20 AND category != deteccion_tardia`)
+    que usa `run_eod_evaluation()` al poblar `daily_summary` -- se reproduce
+    acá porque `daily_summary` es un agregado por día que ya perdió el
+    detalle de qué ticker era Racional, así que no se puede filtrar
+    retroactivamente sin volver a las filas crudas (`list_outcomes_for_date`,
+    ya existente, sin red)."""
+    try:
+        from atlas.data.universe import is_available
+    except Exception:
+        is_available = None
+
+    evaluables = aciertos = tardias = reached_20 = reached_50 = reached_100 = 0
+    for fecha in fechas:
+        for o in list_outcomes_for_date(fecha):
+            if is_available is None:
+                continue
+            try:
+                if not is_available(o["ticker"]):
+                    continue
+            except Exception:
+                continue
+            evaluables += 1
+            if o.get("reached_20"):
+                reached_20 += 1
+            if o.get("reached_50"):
+                reached_50 += 1
+            if o.get("reached_100"):
+                reached_100 += 1
+            if o.get("category") == "deteccion_tardia":
+                tardias += 1
+            elif o.get("reached_20"):
+                aciertos += 1
+    return {
+        "evaluables": evaluables, "aciertos": aciertos, "tardias": tardias,
+        "reached_20": reached_20, "reached_50": reached_50, "reached_100": reached_100,
+    }
+
+
+def daily_precision_racional(market_date: str) -> Dict[str, Any]:
+    """Versión Racional de la precisión del día -- mismo criterio que
+    `get_daily_summary`, filtrado a Racional-disponible ahora."""
+    stats = _racional_stats_for_dates([market_date])
+    evaluables, aciertos = stats["evaluables"], stats["aciertos"]
+    stats["precision_pct"] = round(100 * aciertos / evaluables, 1) if evaluables else None
+    return stats
+
+
+def cumulative_precision_racional() -> Dict[str, Any]:
+    """Versión Racional de `cumulative_precision()` -- mismas fechas con
+    resumen ya registrado, recalculado solo sobre Racional-disponible ahora."""
+    fechas = [d["market_date"] for d in list_daily_summaries()]
+    stats = _racional_stats_for_dates(fechas)
+    stats["n_dias"] = len(fechas)
+    evaluables, aciertos = stats["evaluables"], stats["aciertos"]
+    stats["precision_pct"] = round(100 * aciertos / evaluables, 1) if evaluables else None
+    return stats
+
+
+def recent_precision_racional(window_days: int = 21) -> Dict[str, Any]:
+    """Versión Racional de `recent_precision()`."""
+    dias = list_daily_summaries()[-window_days:]
+    fechas = [d["market_date"] for d in dias]
+    stats = _racional_stats_for_dates(fechas)
+    evaluables, aciertos = stats["evaluables"], stats["aciertos"]
+    return {
+        "dias_incluidos": len(fechas),
+        "desde": fechas[0] if fechas else None,
+        "hasta": fechas[-1] if fechas else None,
+        "evaluables": evaluables, "aciertos": aciertos,
+        "precision_pct": round(100 * aciertos / evaluables, 1) if evaluables else None,
+    }
+
+
 def phase_stats(phase_tag: Optional[str] = None) -> List[Dict[str, Any]]:
     """Estadística real por fase (Fase 4, clasificador A-G): conteo y % que
     alcanzó cada banda, con `n` SIEMPRE explícito -- una fase con n=2 se

@@ -186,6 +186,63 @@ def test_recent_precision_numerador_y_denominador_explicitos():
         _restore()
 
 
+def test_marcador_racional_solo_cuenta_tickers_racional_disponibles(monkeypatch):
+    """2026-08-18, pedido explícito del usuario: Atlas sigue aprendiendo del
+    universo COMPLETO (el marcador Universal -- cumulative_precision/
+    recent_precision/get_daily_summary -- no se toca, sigue contando TODO);
+    el marcador Racional es un cálculo NUEVO y PARALELO que recalcula
+    is_available() en cada llamada y solo cuenta esos tickers."""
+    _fresh()
+    try:
+        racional_tickers = {"RAC"}
+        monkeypatch.setattr("atlas.data.universe.is_available", lambda t: t in racional_tickers)
+
+        for ticker in ("RAC", "NORAC"):
+            reg.record_detection(ticker, "2026-08-18", "regular", "2026-08-18T14:00:00Z", "s1",
+                                  10.0, 3.0, 1000, 500, 2.0, 1_000_000, gates_fired=[])
+            reg.record_outcome(ticker, "2026-08-18", run_up_before_detection_pct=3.0,
+                                max_price_after_detection=13.0, max_return_after_detection_pct=30.0,
+                                minutes_to_max=20.0, reached_20=True, reached_50=True, reached_100=False,
+                                category="buena_oportunidad")
+        reg.record_daily_summary("2026-08-18", 100, 2, 2, 2, 2, 0, 0, 2, 2, 0)
+
+        # Universal (sin tocar) -- sigue contando AMBOS tickers
+        assert reg.cumulative_precision()["evaluables"] == 2
+        assert reg.cumulative_precision()["aciertos"] == 2
+
+        # Racional -- solo cuenta RAC
+        dia_rac = reg.daily_precision_racional("2026-08-18")
+        assert dia_rac["evaluables"] == 1 and dia_rac["aciertos"] == 1 and dia_rac["precision_pct"] == 100.0
+
+        acum_rac = reg.cumulative_precision_racional()
+        assert acum_rac["evaluables"] == 1 and acum_rac["aciertos"] == 1 and acum_rac["n_dias"] == 1
+
+        reciente_rac = reg.recent_precision_racional(window_days=21)
+        assert reciente_rac["evaluables"] == 1 and reciente_rac["aciertos"] == 1
+        assert reciente_rac["dias_incluidos"] == 1
+    finally:
+        _restore()
+
+
+def test_marcador_racional_sin_universo_disponible_devuelve_cero_no_error(monkeypatch):
+    """Si atlas.data.universe no está disponible (import falla) o ningún
+    ticker es Racional, el marcador Racional debe devolver 0/None, nunca
+    lanzar ni inventar un dato."""
+    _fresh()
+    try:
+        monkeypatch.setattr("atlas.data.universe.is_available", lambda t: False)
+        reg.record_detection("XYZ", "2026-08-18", "regular", "2026-08-18T14:00:00Z", "s1",
+                              10.0, 3.0, 1000, 500, 2.0, 1_000_000, gates_fired=[])
+        reg.record_outcome("XYZ", "2026-08-18", run_up_before_detection_pct=3.0,
+                            max_price_after_detection=13.0, max_return_after_detection_pct=30.0,
+                            minutes_to_max=20.0, reached_20=True, reached_50=True, reached_100=False,
+                            category="buena_oportunidad")
+        dia_rac = reg.daily_precision_racional("2026-08-18")
+        assert dia_rac["evaluables"] == 0 and dia_rac["aciertos"] == 0 and dia_rac["precision_pct"] is None
+    finally:
+        _restore()
+
+
 def test_set_experimental_signals_no_pisa_con_none():
     _fresh()
     try:

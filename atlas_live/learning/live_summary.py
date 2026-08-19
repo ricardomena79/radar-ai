@@ -36,6 +36,16 @@ def get_live_learning_summary(market_date: Optional[str] = None) -> Dict[str, An
     reciente = reg.recent_precision()
     reporte_madurez = mat.compute_maturity()
 
+    # Marcador Racional (2026-08-18, pedido explícito del usuario): mismo
+    # criterio de acierto de arriba, recalculado SOLO sobre tickers
+    # disponibles en Racional ahora mismo -- ver
+    # candidate_registry.py::_racional_stats_for_dates. El bloque de arriba
+    # (universal) sigue exactamente igual, sin tocar; este es puramente
+    # aditivo, en paralelo.
+    hoy_racional = reg.daily_precision_racional(market_date)
+    acumulada_racional = reg.cumulative_precision_racional()
+    reciente_racional = reg.recent_precision_racional()
+
     hoy_evaluables = hoy.get("n_evaluables") if hoy else 0
     hoy_aciertos = hoy.get("n_aciertos") if hoy else 0
 
@@ -69,6 +79,33 @@ def get_live_learning_summary(market_date: Optional[str] = None) -> Dict[str, An
             "dias_incluidos": reciente.get("dias_incluidos") or 0,
             "desde": reciente.get("desde"), "hasta": reciente.get("hasta"),
             "precision": _precision_str(reciente.get("aciertos"), reciente.get("evaluables")),
+        },
+        # Marcador Racional (2026-08-18) -- mismo shape que arriba, pero
+        # solo sobre candidatas disponibles en Racional AHORA (recalculado
+        # en cada llamada, nunca cacheado). "estudiadas"/"candidatas"/
+        # "señales" no aplican acá -- son conceptos de universo completo,
+        # sin sentido filtrados a Racional; solo evaluables/aciertos.
+        "racional": {
+            "hoy": {
+                "evaluables": hoy_racional.get("evaluables") or 0,
+                "aciertos": hoy_racional.get("aciertos") or 0,
+                "tardias": hoy_racional.get("tardias") or 0,
+                "precision": _precision_str(hoy_racional.get("aciertos"), hoy_racional.get("evaluables")),
+            },
+            "acumulada": {
+                "dias": acumulada_racional.get("n_dias") or 0,
+                "evaluables": acumulada_racional.get("evaluables") or 0,
+                "aciertos": acumulada_racional.get("aciertos") or 0,
+                "reached_20": acumulada_racional.get("reached_20") or 0,
+                "reached_50": acumulada_racional.get("reached_50") or 0,
+                "reached_100": acumulada_racional.get("reached_100") or 0,
+                "precision": _precision_str(acumulada_racional.get("aciertos"), acumulada_racional.get("evaluables")),
+            },
+            "reciente": {
+                "dias_incluidos": reciente_racional.get("dias_incluidos") or 0,
+                "desde": reciente_racional.get("desde"), "hasta": reciente_racional.get("hasta"),
+                "precision": _precision_str(reciente_racional.get("aciertos"), reciente_racional.get("evaluables")),
+            },
         },
         "madurez": {
             "estado": reporte_madurez.global_level_label,

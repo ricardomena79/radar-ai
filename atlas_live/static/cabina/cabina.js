@@ -905,6 +905,8 @@ function renderLearningHeadline() {
   const acum = _learningMaturity.acumulada || {};
   const reciente = _learningMaturity.reciente || {};
   const m = _learningMaturity.madurez || {};
+  const rac = _learningMaturity.racional || {};
+  const racHoy = rac.hoy || {}, racAcum = rac.acumulada || {}, racReciente = rac.reciente || {};
 
   const numOr = (v) => (v === null || v === undefined) ? '<span class="dim">No disponible</span>' : v;
   const precOr = (v) => (v === null || v === undefined) ? '<span class="dim">No disponible</span>' : v; // ya viene como "X/Y = Z%"
@@ -924,10 +926,22 @@ function renderLearningHeadline() {
     card("📋", "Casos evaluables hoy", numOr(hoy.evaluables), "ya con resultado cerrado") +
     card("🎯", "Aciertos hoy", numOr(hoy.aciertos), `${numOr(hoy.fallos)} fallos`) +
     card("⏱", "Tardías hoy", numOr(hoy.tardias), "no cuentan como acierto") +
-    card("📊", "Precisión del día", precOr(hoy.precision), "num/denom siempre") +
-    card("📊", "Precisión acumulada", precOr(acum.precision), `${numOr(acum.dias)} días con resumen`) +
-    card("📊", "Precisión reciente", precOr(reciente.precision), reciente.dias_incluidos ? `últimos ${reciente.dias_incluidos} días` : "sin ventana todavía") +
+    card("📊", "Precisión del día (Universal)", precOr(hoy.precision), "num/denom siempre") +
+    card("📊", "Precisión acumulada (Universal)", precOr(acum.precision), `${numOr(acum.dias)} días con resumen`) +
+    card("📊", "Precisión reciente (Universal)", precOr(reciente.precision), reciente.dias_incluidos ? `últimos ${reciente.dias_incluidos} días` : "sin ventana todavía") +
     card("🧠", "Madurez actual", m.estado || "Sin evidencia", `limita: ${m.eje_limitante || "--"}`);
+
+  // Marcador Racional (2026-08-18, pedido explícito del usuario): mismo
+  // criterio de arriba, recalculado solo sobre candidatas disponibles en
+  // Racional ahora -- panel separado, para comparar lado a lado sin mezclar
+  // con el marcador universal (que sigue exactamente igual, arriba).
+  const elRacional = document.getElementById("learning-headline-racional");
+  if (elRacional) {
+    elRacional.innerHTML =
+      card("🎯", "Precisión del día (Racional)", precOr(racHoy.precision), `${numOr(racHoy.aciertos)}/${numOr(racHoy.evaluables)} evaluables`) +
+      card("🎯", "Precisión acumulada (Racional)", precOr(racAcum.precision), `${numOr(racAcum.dias)} días con resumen`) +
+      card("🎯", "Precisión reciente (Racional)", precOr(racReciente.precision), racReciente.dias_incluidos ? `últimos ${racReciente.dias_incluidos} días` : "sin ventana todavía");
+  }
 }
 
 // Los 11 ejes de Madurez, con su evidencia real -- nunca un promedio, la
