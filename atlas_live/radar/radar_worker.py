@@ -230,5 +230,60 @@ def get_last_quotes() -> Dict[str, object]:
     return dict(_last_quotes)
 
 
+RACIONAL_MOVERS_THRESHOLDS = (20, 30, 40, 50, 100)
+
+
+def racional_movers_report(thresholds=RACIONAL_MOVERS_THRESHOLDS) -> Dict[str, object]:
+    """Barrido de solo lectura sobre el universo Racional completo (2026-08-19,
+    pedido explícito del usuario: "cuando cierre el mercado, que Atlas
+    haga un barrido a todas las acciones de Racional y me diga cuántas
+    subieron sobre 30/40/50%"). Pensado para correr DESPUÉS del cierre del
+    mercado regular, para ver el resultado real del día completo.
+
+    Hace un barrido FRESCO vía Tradier (`fetch_universe_quotes()`, la
+    MISMA función ya usada y probada por `run_sweep_once()` para el
+    universo completo) -- deliberadamente NO reutiliza `get_last_quotes()`
+    (memoria del proceso): esa memoria se pierde en cualquier reinicio del
+    contenedor (deploy), y el radar deja de barrer fuera de premarket/
+    regular, así que después del cierre podría quedar vacía o desactualizada
+    para siempre hasta el otro día -- un barrido fresco a pedido es la
+    única forma confiable de que este reporte funcione siempre que se
+    llame, sin depender de cuándo fue el último deploy.
+
+    `change_percent` de cada Quote ya es el cambio vs. cierre anterior
+    (mismo campo usado en todo el proyecto). Bandas ACUMULATIVAS (>=
+    umbral), mismo criterio que `candidate_registry.explosion_bands_tradier()`.
+    No depende de que Atlas haya detectado el símbolo -- barre TODO el
+    universo Racional, detectado o no, a diferencia de `/api/radar-movers`."""
+    from atlas.data.universe import get_equities, get_etfs
+    from atlas_live.data_fusion.universe_quotes import fetch_universe_quotes
+
+    racional = sorted({a.symbol for a in get_equities() + get_etfs()})
+    # fallback_provider=None (2026-08-19, mismo criterio ya documentado y
+    # validado para el radar principal, ver docstring del módulo): el
+    # respaldo Yahoo/Finnhub agrega ~150s extra por símbolo no resuelto
+    # sin sumar resultados nuevos -- se desactiva acá también.
+    result = fetch_universe_quotes(racional, fallback_provider=None)
+
+    movers = []
+    for ticker, q in result.quotes.items():
+        change_pct = getattr(q, "change_percent", None)
+        if change_pct is None:
+            continue
+        movers.append({"ticker": ticker, "change_pct": change_pct, "price": getattr(q, "last_price", None)})
+
+    bandas: Dict[str, object] = {}
+    for t in thresholds:
+        casos = sorted((m for m in movers if m["change_pct"] >= t), key=lambda m: -m["change_pct"])
+        bandas[str(t)] = {"n": len(casos), "movers": casos}
+
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "n_racional_total": len(racional),
+        "n_racional_con_dato": len(movers),
+        "bandas_acumulativas": bandas,
+    }
+
+
 def status() -> Dict[str, object]:
     return reg.radar_status()

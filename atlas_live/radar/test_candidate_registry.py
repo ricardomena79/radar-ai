@@ -743,3 +743,36 @@ def test_caso_xos_obligatorio(monkeypatch):
         assert bandas["por_banda_acumulativa"]["100"]["max_absoluto_pct"] == 136.8
     finally:
         _restore()
+
+
+# --- "Que Atlas aprenda" de lo no detectado (2026-08-19, caso real ETHU/MSTU/BNTX) ---
+
+def test_record_missed_mover_es_write_once_por_ticker_y_dia():
+    _fresh()
+    try:
+        primero = reg.record_missed_mover("BNTX", "2026-08-19", 21.97)
+        segundo = reg.record_missed_mover("BNTX", "2026-08-19", 99.0)  # no debe pisar el original
+        assert primero is True
+        assert segundo is False
+        movidas = reg.list_missed_movers("2026-08-19")
+        assert len(movidas) == 1
+        assert movidas[0]["change_pct_final"] == 21.97
+    finally:
+        _restore()
+
+
+def test_list_missed_movers_ordena_por_magnitud_y_filtra_por_fecha():
+    _fresh()
+    try:
+        reg.record_missed_mover("ETHU", "2026-08-19", 38.04)
+        reg.record_missed_mover("MSTU", "2026-08-19", -31.86)  # baja fuerte tambien cuenta
+        reg.record_missed_mover("BNTX", "2026-08-19", 21.97)
+        reg.record_missed_mover("OLD", "2026-08-18", 99.0)
+
+        hoy = reg.list_missed_movers("2026-08-19")
+        assert [m["ticker"] for m in hoy] == ["ETHU", "MSTU", "BNTX"]  # 38.04, |-31.86|, 21.97
+
+        todo = reg.list_missed_movers()
+        assert len(todo) == 4
+    finally:
+        _restore()

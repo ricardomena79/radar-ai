@@ -121,6 +121,12 @@ def test_run_eod_evaluation_detecta_posibles_no_detectadas():
         report = eod.run_eod_evaluation("2026-08-14", provider, last_sweep_quotes=ultimo_barrido)
         assert any(m["ticker"] == "MOONSHOT" for m in report.posibles_no_detectadas)
         assert not any(m["ticker"] == "XYZ" for m in report.posibles_no_detectadas)  # XYZ SÍ fue detectada
+
+        # "Que Atlas aprenda" (2026-08-19): antes esto se perdía al terminar
+        # la corrida -- ahora queda persistido, consultable después.
+        guardados = reg.list_missed_movers("2026-08-14")
+        assert [m["ticker"] for m in guardados] == ["MOONSHOT"]
+        assert guardados[0]["change_pct_final"] == 45.0
     finally:
         _restore()
 

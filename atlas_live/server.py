@@ -340,6 +340,35 @@ def api_radar_movers():
     return jsonify({"market_date": market_date, "min_pct": min_pct, "n": len(movers), "movers": movers})
 
 
+@app.route("/api/racional-movers")
+def api_racional_movers():
+    """Barrido de solo lectura sobre TODO el universo Racional (2026-08-19,
+    pedido explícito del usuario: "cuando cierre el mercado, que Atlas
+    haga un barrido a todas las acciones de Racional y me diga cuántas
+    subieron sobre 30/40/50%"). A diferencia de `/api/radar-movers` (solo
+    candidatas ya DETECTADAS por Atlas), este barre el universo Racional
+    COMPLETO, detectado o no -- responde "¿hubo algo que Atlas no vio?".
+
+    Hace un barrido FRESCO vía Tradier en el momento de la request (ver
+    `radar_worker.racional_movers_report()`) -- pensado para llamarse
+    DESPUÉS del cierre del mercado regular, para ver el resultado real del
+    día completo. Puede tardar (~2.575 símbolos vía Tradier, mismo orden
+    de magnitud que un barrido normal del radar). `?thresholds=20,30,40,50,100`
+    opcional para cambiar las bandas (default las mismas 5). Público, sin
+    token -- mismo patrón que `/api/radar-movers` (solo lectura, sin
+    escribir ni mutar ningún estado)."""
+    thresholds_param = request.args.get("thresholds")
+    if thresholds_param:
+        try:
+            thresholds = tuple(sorted(float(t) for t in thresholds_param.split(",")))
+        except ValueError:
+            thresholds = radar_worker.RACIONAL_MOVERS_THRESHOLDS
+    else:
+        thresholds = radar_worker.RACIONAL_MOVERS_THRESHOLDS
+
+    return jsonify(radar_worker.racional_movers_report(thresholds=thresholds))
+
+
 @app.route("/api/radar-informe-dia")
 def api_radar_informe_dia():
     """Informe de cierre del radar (2026-08-14): condiciones en detección vs.
@@ -358,6 +387,11 @@ def api_radar_informe_dia():
         "precision_acumulada": radar_registry.cumulative_precision(),
         "outcomes": radar_registry.list_outcomes_for_date(date_param),
         "candidatas": radar_registry.list_candidates_for_date(date_param),
+        # "Que Atlas aprenda" (2026-08-19): movimientos grandes del día que
+        # NINGÚN gate detectó -- se calcula y persiste en cada corrida del
+        # EOD (ver eod_report.py), vacío hasta que el mercado cierre y
+        # corra la evaluación de hoy.
+        "missed_movers": radar_registry.list_missed_movers(date_param),
     })
 
 

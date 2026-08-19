@@ -343,6 +343,12 @@ def run_eod_evaluation(
                 continue
             if q.change_percent is not None and abs(q.change_percent) >= MISSED_OPPORTUNITY_MIN_CHANGE_PCT:
                 posibles_no_detectadas.append({"ticker": symbol, "change_pct_final": q.change_percent})
+                # "Que Atlas aprenda" (2026-08-19, pedido explícito del
+                # usuario, caso real ETHU/MSTU/BNTX): antes esta lista se
+                # calculaba y se perdía al terminar la corrida -- ahora
+                # queda guardada (write-once por ticker/día) para no
+                # perder la evidencia de lo que el radar no detectó.
+                reg.record_missed_mover(symbol, market_date, q.change_percent)
         posibles_no_detectadas.sort(key=lambda x: abs(x["change_pct_final"] or 0), reverse=True)
 
     # Métricas finales -- sobre TODOS los outcomes del día (incluye corridas

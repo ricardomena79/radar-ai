@@ -151,6 +151,24 @@ CREATE TABLE IF NOT EXISTS daily_summary (
     n_reached_100 INTEGER,
     computed_at TEXT NOT NULL
 );
+
+-- "Que Atlas aprenda" (2026-08-19, pedido explícito del usuario, caso real
+-- ETHU/MSTU/BNTX): el EOD ya calculaba `posibles_no_detectadas` -- símbolos
+-- del último barrido con |change_pct| >= MISSED_OPPORTUNITY_MIN_CHANGE_PCT
+-- que NINGÚN gate marcó como candidata -- pero nunca lo guardaba, se
+-- perdía al terminar esa corrida. Esta tabla lo persiste, write-once por
+-- (ticker, market_date), puramente informativo: nunca participa en
+-- ningún gate ni cambia qué se detecta, solo evita perder la evidencia de
+-- lo que el radar no vio.
+CREATE TABLE IF NOT EXISTS missed_mover (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker TEXT NOT NULL,
+    market_date TEXT NOT NULL,
+    change_pct_final REAL,
+    created_at TEXT NOT NULL,
+    UNIQUE(ticker, market_date)
+);
+CREATE INDEX IF NOT EXISTS idx_missed_mover_date ON missed_mover(market_date);
 """
 
 _schema_ready_for: Optional[str] = None
@@ -1109,6 +1127,35 @@ def record_daily_summary(
              n_falsos_positivos, n_tardias, n_reached_20, n_reached_50, n_reached_100, _now()),
         )
         conn.commit()
+
+
+def record_missed_mover(ticker: str, market_date: str, change_pct_final: Optional[float]) -> bool:
+    """Registra un símbolo con movimiento grande el día que TERMINÓ sin que
+    ningún gate de Atlas lo marcara como candidata (2026-08-19, ver
+    `eod_report.MISSED_OPPORTUNITY_MIN_CHANGE_PCT`). Write-once por
+    (ticker, market_date) -- devuelve False si ya estaba registrado, nunca
+    lo pisa. Puramente informativo."""
+    with _connect() as conn:
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO missed_mover (ticker, market_date, change_pct_final, created_at) VALUES (?,?,?,?)",
+            (ticker, market_date, change_pct_final, _now()),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def list_missed_movers(market_date: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Símbolos con movimiento grande no detectado, más recientes/mayores
+    primero. `market_date=None` trae toda la historia."""
+    query = "SELECT * FROM missed_mover"
+    params: tuple = ()
+    if market_date:
+        query += " WHERE market_date = ?"
+        params = (market_date,)
+    query += " ORDER BY market_date DESC, ABS(change_pct_final) DESC"
+    with _connect() as conn:
+        rows = conn.execute(query, params).fetchall()
+        return [_row(r) for r in rows]
 
 
 def get_daily_summary(market_date: str) -> Optional[Dict[str, Any]]:
