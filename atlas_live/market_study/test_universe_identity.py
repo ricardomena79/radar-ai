@@ -117,7 +117,26 @@ def test_classify_instrument_type_right():
 
 def test_classify_instrument_type_preferred():
     assert universe.classify_instrument_type("XYZP", "XYZ Corp 8% Preferred Stock", False) == "PREFERRED"
-    assert universe.classify_instrument_type("XYZP", "XYZ Corp Depositary Shares", False) == "PREFERRED"
+    # "Depositary Shares" con "Preferred" explícito en el nombre -- caso
+    # real (Arch Capital, AGNC, Brighthouse) -- sigue siendo PREFERRED.
+    assert universe.classify_instrument_type(
+        "XYZP", "XYZ Corp Depositary Shares Each Representing a 1/1000th Interest in a Preferred Share", False
+    ) == "PREFERRED"
+
+
+def test_classify_instrument_type_american_depositary_shares_es_equity():
+    """2026-08-20, bug real encontrado en vivo (caso FUTU): "American
+    Depositary Shares" es el mecanismo NORMAL para que empresas
+    extranjeras coticen en EE.UU. -- una acción ordinaria real, no una
+    preferente. Antes del fix, este caso (y 272 empresas reales más,
+    incluidas ARM/BIDU/BILI/argenx) quedaban mal clasificadas como
+    PREFERRED y excluidas del radar en vivo (solo escanea EQUITY)."""
+    assert universe.classify_instrument_type(
+        "FUTU", "Futu Holdings Limited - American Depositary Shares", False
+    ) == "EQUITY"
+    assert universe.classify_instrument_type(
+        "BIDU", "Baidu, Inc. - American Depositary Shares, each representing 8 ordinary shares", False
+    ) == "EQUITY"
 
 
 def test_classify_instrument_type_debt():
@@ -179,3 +198,48 @@ def test_fetch_broad_universe_meta_descarta_cache_vieja_sin_type(monkeypatch):
         universe._CACHE = orig_cache
         universe._CACHE_META = orig_cache_meta
         tmp.unlink(missing_ok=True)
+
+
+def test_fetch_broad_universe_meta_descarta_cache_de_clasificacion_vieja(monkeypatch):
+    """2026-08-20, bug real FUTU/ARM/BIDU/BILI: una caché con "type" pero
+    calculada con una versión ANTERIOR de las reglas de clasificación
+    (sin el archivo de versión, o con una versión distinta) también se
+    descarta -- si no, un fix a `classify_instrument_type()` nunca se
+    aplicaría solo mientras el caché en disco siga "pareciendo" válido."""
+    tmp_meta = Path(tempfile.gettempdir()) / f"atlas_test_stale_version_{_uuid.uuid4().hex}.json"
+    # caché "completa" (tiene type) pero de una clasificación vieja --
+    # FUTU quedó mal clasificado como PREFERRED, la regla ya no existe.
+    tmp_meta.write_text(json.dumps({
+        "FUTU": {"exchange": "NASDAQ", "name": "Futu Holdings - American Depositary Shares", "type": "PREFERRED"},
+    }), encoding="utf-8")
+
+    class _Resp:
+        def __init__(self, text):
+            self.status_code = 200
+            self.text = text
+
+    def _fake_get(url, timeout):
+        if url == universe._NASDAQ_URL:
+            return _Resp(_NASDAQ_ETF_SAMPLE)
+        return _Resp(_OTHER_SAMPLE)
+
+    orig_cache, orig_cache_meta = universe._CACHE, universe._CACHE_META
+    orig_version_file = universe._CACHE_META_VERSION_FILE
+    universe._CACHE_META = tmp_meta
+    universe._CACHE = Path(tempfile.gettempdir()) / f"atlas_test_cache3_{_uuid.uuid4().hex}.json"
+    # sin archivo de versión -- simula una caché escrita ANTES de que este
+    # mecanismo existiera, o con una versión vieja distinta.
+    universe._CACHE_META_VERSION_FILE = Path(tempfile.gettempdir()) / f"atlas_test_no_existe_{_uuid.uuid4().hex}.txt"
+    monkeypatch.setattr(universe.requests, "get", _fake_get)
+    try:
+        meta = universe.fetch_broad_universe_meta(use_cache=True)
+        # se re-descargó (la caché vieja tenía SOLO "FUTU", el sample real
+        # trae AAPL/QQQ/SPY/DNN) -- confirma que no se devolvió tal cual.
+        assert "AAPL" in meta
+        assert universe._CACHE_META_VERSION_FILE.read_text(encoding="utf-8") == universe._CLASSIFICATION_VERSION
+    finally:
+        universe._CACHE = orig_cache
+        universe._CACHE_META = orig_cache_meta
+        universe._CACHE_META_VERSION_FILE.unlink(missing_ok=True)
+        universe._CACHE_META_VERSION_FILE = orig_version_file
+        tmp_meta.unlink(missing_ok=True)

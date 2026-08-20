@@ -39,7 +39,16 @@ _NASDAQ_URL = "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
 _OTHER_URL = "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
 _DATA_DIR = data_dir(default=Path(__file__).parent)
 _CACHE = _DATA_DIR / "broad_universe.json"            # lista de símbolos (compat)
-_CACHE_META = _DATA_DIR / "broad_universe_meta.json"  # símbolo -> {exchange, name}
+_CACHE_META = _DATA_DIR / "broad_universe_meta.json"  # símbolo -> {exchange, name, type}
+# Versión de las reglas de `classify_instrument_type()` (2026-08-20, bug
+# real caso FUTU/ARM/BIDU/BILI): el caché de arriba guarda el `type` ya
+# resuelto -- si las reglas de clasificación cambian pero el caché en
+# disco sigue siendo válido según su propio chequeo (tiene "type"), nunca
+# se reclasifica solo. Este archivo de versión, separado a propósito para
+# no tocar el formato del caché principal, fuerza una redescarga+reclasificación
+# cuando la lógica cambió, sin depender de borrar el archivo a mano.
+_CACHE_META_VERSION_FILE = _DATA_DIR / "broad_universe_meta_version.txt"
+_CLASSIFICATION_VERSION = "2026-08-20-ads-no-es-preferred"
 _TIMEOUT = 20
 
 # Códigos de exchange de otherlisted.txt (columna Exchange) -> etiqueta legible.
@@ -84,7 +93,16 @@ _NAME_TYPE_PATTERNS = (
     ("WARRANT", "WARRANT"),
     ("RIGHT", "RIGHT"),
     ("UNIT", "UNIT"),
-    ("DEPOSITARY SHARES", "PREFERRED"),
+    # "DEPOSITARY SHARES" (2026-08-20, bug real encontrado en vivo, caso
+    # FUTU) se sacó de acá: capturaba tanto preferentes reales ("X% Series A
+    # Preferred Depositary Shares") como "American Depositary Shares", el
+    # mecanismo NORMAL para que empresas extranjeras coticen en EE.UU. --
+    # nada que ver con acciones preferentes. Eso excluía del radar en vivo
+    # (solo escanea EQUITY) a 273 empresas ordinarias reales, incluidas
+    # ARM, BIDU, BILI, argenx. Los preferentes genuinos con "Depositary
+    # Shares" en el nombre (verificado: 47 casos reales, ej. Arch Capital,
+    # AGNC, Brighthouse) siguen bien clasificados por la regla de abajo,
+    # porque también dicen "Preferred" explícitamente en el nombre.
     ("PREFERRED", "PREFERRED"),
     (" PFD", "PREFERRED"),
     ("DEBENTURE", "DEBT"),
@@ -148,10 +166,17 @@ def fetch_broad_universe_meta(use_cache: bool = True) -> Dict[str, Dict[str, str
     if use_cache and _CACHE_META.exists():
         try:
             cached = json.loads(_CACHE_META.read_text(encoding="utf-8"))
+            cached_version = (
+                _CACHE_META_VERSION_FILE.read_text(encoding="utf-8").strip()
+                if _CACHE_META_VERSION_FILE.exists() else None
+            )
             # Caché de una versión anterior a la clasificación (2026-08-17)
             # no tiene "type" -- se descarta y se re-descarga en vez de
             # devolver registros incompletos que romperían el filtro EQUITY.
-            if cached and all("type" in v for v in cached.values()):
+            # Caché con "type" pero de una versión VIEJA de las reglas de
+            # clasificación (2026-08-20) también se descarta -- si no, un
+            # fix como el de FUTU/ARM/BIDU/BILI nunca se aplicaría solo.
+            if cached and all("type" in v for v in cached.values()) and cached_version == _CLASSIFICATION_VERSION:
                 return cached
         except Exception:
             pass
@@ -180,6 +205,7 @@ def fetch_broad_universe_meta(use_cache: bool = True) -> Dict[str, Dict[str, str
     if meta:
         _DATA_DIR.mkdir(parents=True, exist_ok=True)
         _CACHE_META.write_text(json.dumps(meta), encoding="utf-8")
+        _CACHE_META_VERSION_FILE.write_text(_CLASSIFICATION_VERSION, encoding="utf-8")
         # Mantener también la caché legacy de solo-símbolos en sincronía.
         _CACHE.write_text(json.dumps(sorted(meta)), encoding="utf-8")
     return meta
