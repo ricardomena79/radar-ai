@@ -1469,6 +1469,7 @@ function renderRadarUniverso() {
 }
 
 let _alertStages = null;
+let _stageCardFilter = null;  // etapa clickeada en los cuadros de arriba (2026-08-20), o null = todas
 let _flujoSectorial = null;
 
 async function fetchAlertStages() {
@@ -1602,12 +1603,32 @@ function renderAlertStages() {
     return;
   }
   const conteos = _alertStages.conteos_por_etapa || {};
-  const card = (icon, label, value) =>
-    `<div class="lh-card"><div class="lh-icon">${icon}</div><div class="lh-label">${label}</div><div class="lh-value">${value}</div></div>`;
+  // Click en el cuadro para ver el detalle (2026-08-20, pedido explícito
+  // del usuario): cada cuadro filtra la tabla de abajo a esa etapa exacta
+  // -- click de nuevo en el mismo cuadro limpia el filtro. Puramente de
+  // presentación, no cambia ningún dato ni recalcula nada -- filtra la
+  // misma lista `_alertStages.oportunidades` que ya llegó del servidor.
+  const card = (icon, label, value, stage) => {
+    const active = _stageCardFilter === stage;
+    return `<div class="lh-card stage-card${active ? " stage-card-active" : ""}" data-stage="${stage}"
+      style="cursor:pointer${active ? ";outline:2px solid var(--accent, #6ea8fe)" : ""}"
+      title="Ver candidatas en esta etapa">
+      <div class="lh-icon">${icon}</div><div class="lh-label">${label}</div><div class="lh-value">${value}</div>
+    </div>`;
+  };
   conteosEl.innerHTML = ALERT_STAGE_ORDER.map(stage => {
     const st = ALERT_STAGE_STYLE[stage];
-    return card("🔔", st.label, conteos[stage] || 0);
+    return card("🔔", st.label, conteos[stage] || 0, stage);
   }).join("");
+  conteosEl.querySelectorAll(".stage-card").forEach(elCard => {
+    elCard.addEventListener("click", () => {
+      const stage = elCard.dataset.stage;
+      _stageCardFilter = (_stageCardFilter === stage) ? null : stage;
+      renderAlertStages();
+      const tabla = document.getElementById("alert-stage-tabla");
+      if (_stageCardFilter && tabla) tabla.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  });
 
   // Filtro de Racional (2026-08-18, caso real BATL): ya NO es un filtro
   // visual -- el servidor (`/api/radar-oportunidades`) ya devuelve solo
@@ -1629,8 +1650,19 @@ function renderAlertStages() {
   if (filtroEstadoEl && filtroEstadoEl.value) {
     oportunidades = oportunidades.filter(o => o.estado_final === filtroEstadoEl.value);
   }
+  if (_stageCardFilter) {
+    oportunidades = oportunidades.filter(o => o.stage === _stageCardFilter);
+  }
+  const avisoFiltroEl = document.getElementById("oportunidades-filtro-etapa-aviso");
+  if (avisoFiltroEl) {
+    avisoFiltroEl.innerHTML = _stageCardFilter
+      ? `Filtrando por etapa: <b>${(ALERT_STAGE_STYLE[_stageCardFilter] || {}).label || _stageCardFilter}</b> (${oportunidades.length}) -- <a href="#" id="limpiar-filtro-etapa">ver todas</a>`
+      : "";
+    const limpiar = document.getElementById("limpiar-filtro-etapa");
+    if (limpiar) limpiar.addEventListener("click", (e) => { e.preventDefault(); _stageCardFilter = null; renderAlertStages(); });
+  }
   if (!oportunidades.length) {
-    tablaEl.innerHTML = `<div class="empty-state">Sin candidatas detectadas todavía hoy.</div>`;
+    tablaEl.innerHTML = `<div class="empty-state">${_stageCardFilter ? "Ninguna candidata en esta etapa ahora mismo." : "Sin candidatas detectadas todavía hoy."}</div>`;
     return;
   }
   // Orden por defecto: Estado final (🟢→🟡→🔵→🔴), y dentro de cada grupo,
