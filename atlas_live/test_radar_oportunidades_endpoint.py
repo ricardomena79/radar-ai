@@ -64,6 +64,93 @@ def _fresh_quote(last_price, change_percent, previous_close=None, age_seconds=5)
     return q
 
 
+def _quote_con_basis(last_price, change_percent, price_basis, relative_volume=None, age_seconds=5):
+    """Como `_fresh_quote`, pero permite fijar `price_basis`/`relative_volume`
+    -- necesario para los tests del recálculo de dirección en vivo."""
+    q = _fresh_quote(last_price, change_percent, age_seconds=age_seconds)
+    q.price_basis = price_basis
+    q.relative_volume = relative_volume
+    return q
+
+
+def test_direccion_se_recalcula_en_vivo_no_queda_congelada_en_la_etapa(monkeypatch):
+    """2026-08-20, caso real COHR: la etapa (y con ella `direction`,
+    guardada en `alert_stage_log`) no se vuelve a escribir mientras la
+    candidata sigue en la misma etapa -- podía quedar "Comprado" congelado
+    de hace 30 min mientras el precio ya se daba vuelta. `direction` debe
+    reflejar SIEMPRE el `change_pct_actual` de este mismo request."""
+    orig_live_opps = reg.live_opportunities
+    orig_last_quotes = _rw.get_last_quotes
+
+    reg.live_opportunities = lambda market_date: [
+        {"ticker": "COHR", "price_at_detection": 293.5, "stage": "ALERTA_TEMPRANA",
+         "direction": "ALCISTA", "change_pct_confiable": True,  # valor viejo, de hace 30 min
+         "racional_available": True},
+    ]
+    # ahora mismo el precio real ya está apenas negativo, con price_basis normal (tradier_last)
+    _rw.get_last_quotes = lambda: {"COHR": _quote_con_basis(287.25, -0.08, "tradier_last", relative_volume=0.5)}
+    try:
+        r = _client().get("/api/radar-oportunidades")
+        assert r.status_code == 200
+        body = r.get_json()
+        cohr = body["oportunidades"][0]
+        assert cohr["direction"] != "ALCISTA"  # ya no puede seguir diciendo "Comprado"
+        assert cohr["direction"] in ("BAJISTA", "NEUTRAL")
+        assert cohr["change_pct_confiable"] is True  # RVOL 0.5 y precio real -- sigue siendo un dato confiable
+    finally:
+        reg.live_opportunities = orig_live_opps
+        _rw.get_last_quotes = orig_last_quotes
+
+
+def test_direccion_indefinida_cuando_precio_sintetico_sin_volumen_real(monkeypatch):
+    """Mismo caso KEN de anoche, ahora también recalculado en vivo en cada
+    request (no solo al momento de la detección): precio del punto medio
+    bid/ask + RVOL casi nulo -> INDEFINIDA, sin importar qué decía la
+    etapa guardada."""
+    orig_live_opps = reg.live_opportunities
+    orig_last_quotes = _rw.get_last_quotes
+
+    reg.live_opportunities = lambda market_date: [
+        {"ticker": "KEN", "price_at_detection": 65.0, "stage": "INICIO",
+         "direction": "ALCISTA", "change_pct_confiable": True,
+         "racional_available": True},
+    ]
+    _rw.get_last_quotes = lambda: {"KEN": _quote_con_basis(65.09, 1.6, "tradier_bid_ask_mid", relative_volume=0.0071)}
+    try:
+        r = _client().get("/api/radar-oportunidades")
+        body = r.get_json()
+        ken = body["oportunidades"][0]
+        assert ken["direction"] == "INDEFINIDA"
+        assert ken["change_pct_confiable"] is False
+    finally:
+        reg.live_opportunities = orig_live_opps
+        _rw.get_last_quotes = orig_last_quotes
+
+
+def test_direccion_no_se_toca_si_no_hay_quote_fresco():
+    """Sin quote en el último barrido (ticker no visto en este ciclo), no
+    hay nada más fresco que recalcular -- se preserva la última dirección
+    conocida tal cual vino de `live_opportunities()`, igual que ya pasa
+    con `price_actual`."""
+    orig_live_opps = reg.live_opportunities
+    orig_last_quotes = _rw.get_last_quotes
+
+    reg.live_opportunities = lambda market_date: [
+        {"ticker": "SIN_QUOTE", "price_at_detection": 10.0, "stage": "ALERTA_TEMPRANA",
+         "direction": "ALCISTA", "change_pct_confiable": True, "racional_available": True},
+    ]
+    _rw.get_last_quotes = lambda: {}
+    try:
+        r = _client().get("/api/radar-oportunidades")
+        body = r.get_json()
+        o = body["oportunidades"][0]
+        assert o["direction"] == "ALCISTA"
+        assert o["change_pct_confiable"] is True
+    finally:
+        reg.live_opportunities = orig_live_opps
+        _rw.get_last_quotes = orig_last_quotes
+
+
 def test_no_llama_a_ningun_proveedor_yahoo_finnhub():
     """Prioridad 2: la función del endpoint nunca debe LLAMAR a
     Yahoo/Finnhub -- server.py sí importa `get_default_provider` para
@@ -125,7 +212,12 @@ def test_cruza_sector_y_flujo_de_dinero_desde_el_snapshot_de_scan_worker():
         {"ticker": "AAPL", "price_at_detection": 200.0, "stage": "PREPARACION", "racional_available": True},
     ]
 
-    _rw.get_last_quotes = lambda: {"XOM": _fresh_quote(111.0, 0.9), "AAPL": _fresh_quote(111.0, 0.9)}
+    # change_percent=2.5 (2026-08-20): antes 0.9 -- alcanzaba porque
+    # `direction` venía fijo en el mock de live_opportunities(). Ahora se
+    # recalcula en vivo desde el quote (ver fix "dirección en vivo"), y
+    # 0.9% cae bajo el piso neutral (NEUTRAL_BAND_PCT=1.0) -- se sube el
+    # cambio real del quote para seguir probando un caso ALCISTA genuino.
+    _rw.get_last_quotes = lambda: {"XOM": _fresh_quote(112.75, 2.5), "AAPL": _fresh_quote(112.75, 2.5)}
     _sw.STATE.sector_flow_snapshot = {
         "generated_at": "2026-08-18T09:00:00+00:00",
         "cobertura": "Racional (watchlist escaneado por Yahoo en este ciclo)",

@@ -475,7 +475,9 @@ def api_radar_oportunidades():
     from atlas_live.learning import historical_scoring as hsc
     from atlas_live.memory import market_hours as _mh
     from atlas_live.radar import candidate_registry as radar_registry
+    from atlas_live.radar import phase_classifier as pcls
     from atlas_live.radar import priority_classifier as pc
+    from atlas_live.reference.daily_reference import classify_direction
 
     market_date = _mh.market_date()
     oportunidades = radar_registry.live_opportunities(market_date)
@@ -552,6 +554,35 @@ def api_radar_oportunidades():
         else:
             estado_validacion = pc.VALIDACION_OK
         o["estado_validacion"] = estado_validacion
+
+        # Dirección EN VIVO (2026-08-20, pedido explícito del usuario, caso
+        # real COHR/SMCI): `o["direction"]` venía de `alert_stage_log`, que
+        # solo se re-escribe cuando la ETAPA cambia (para no duplicar miles
+        # de filas por sweep, ver `candidate_registry.record_alert_stage`)
+        # -- si una candidata lleva mucho tiempo en la misma etapa, esa
+        # dirección quedaba vieja mientras el precio seguía moviéndose
+        # (ej. "Comprado" congelado de hace 30 min junto a un % actual ya
+        # negativo). Se recalcula acá, en el MISMO lugar donde ya se
+        # recalculan precio/antigüedad, con el mismo criterio de
+        # confiabilidad que `phase_classifier.py` (RVOL casi nulo + precio
+        # sintético = no confiar, caso KEN) -- para que "Dirección" y "%
+        # cambio" sean siempre del mismo instante. No toca
+        # `alert_stage_log` ni cómo/cuándo se escribe -- solo lo que se
+        # MUESTRA en este endpoint de solo lectura.
+        if q is not None:
+            q_rvol = getattr(q, "relative_volume", None)
+            direction_confiable = True
+            if q.change_percent is None:
+                direction_confiable = False
+            elif o["price_basis"] == "tradier_bid_ask_mid" and (q_rvol is None or q_rvol < pcls.CHANGE_PCT_MIN_RVOL_TO_TRUST_ZERO):
+                direction_confiable = False
+            elif q.change_percent == 0.0 and q_rvol is not None and q_rvol < pcls.CHANGE_PCT_MIN_RVOL_TO_TRUST_ZERO:
+                direction_confiable = False
+            o["direction"] = classify_direction(q.change_percent) if direction_confiable else "INDEFINIDA"
+            o["change_pct_confiable"] = direction_confiable
+        # si `q` es None (ticker fuera del último barrido), no hay nada más
+        # fresco -- se deja `direction`/`change_pct_confiable` tal como
+        # vinieron de `live_opportunities()` (última lectura conocida).
 
         sector = symbol_sector_map.get(o["ticker"])
         o["sector"] = sector
