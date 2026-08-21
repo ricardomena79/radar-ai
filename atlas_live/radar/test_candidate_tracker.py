@@ -405,6 +405,104 @@ def test_retroceso_no_se_dispara_si_el_precio_actual_es_el_nuevo_maximo():
         _restore()
 
 
+# --- Predicción de magnitud (2026-08-20, aprobado por el usuario) ---
+
+def _mock_evidencia_real(direction="ALCISTA", timing="al_comienzo", mediana=30.0, n=34):
+    """Tabla de referencia sintética controlada, mismo estilo que
+    test_historical_scoring.py -- todas las filas con el mismo
+    max_advance_pct para que la mediana sea exactamente ese valor."""
+    rows = [
+        {"direction": direction, "timing_deteccion": timing,
+         "volatility_14d_pct": float(v), "max_advance_pct": mediana}
+        for v in range(1, n + 1)
+    ]
+    return tracker.hsc.compute_reference_table(rows, ["volatility_14d_pct"], min_rows=30)
+
+
+def test_candidata_llega_a_inicio_congela_prediccion_de_magnitud_real():
+    _fresh()
+    try:
+        from atlas_live.radar import phase_classifier as pc_module
+        from atlas_live.reference import reference_registry as ref_reg
+
+        orig_from_live = tracker.pc.from_live_detection
+        orig_vol = ref_reg.latest_volatility_14d_pct
+        orig_recent = ref_reg.recent_daily_features
+        orig_pct = ref_reg.percentile_change_pct
+        orig_table = tracker.hsc.get_cached_reference_table
+
+        tracker.pc.from_live_detection = lambda *a, **k: pc_module.PhaseTag(
+            timing_deteccion="al_comienzo", direction="ALCISTA",
+            comportamiento_post_apertura="desconocido", reason="test", change_pct_confiable=True,
+        )
+        ref_reg.latest_volatility_14d_pct = lambda symbol: None
+        ref_reg.recent_daily_features = lambda symbol, n=5: []
+        ref_reg.percentile_change_pct = lambda symbol, p: None
+        tabla = _mock_evidencia_real(mediana=30.0)
+        tracker.hsc.get_cached_reference_table = lambda: tabla
+        try:
+            h = SweepHistory()
+            tracker.process_sweep({"MRNA": _quote("MRNA", 65.0, 5.0, rvol=8.0)}, h, "2026-08-19", "regular", _now())
+            assert reg.latest_alert_stage("MRNA", "2026-08-19") == "INICIO"
+
+            pred = reg.get_magnitud_prediction("MRNA", "2026-08-19")
+            assert pred is not None
+            assert pred["predicted_pct"] == 30.0
+            assert pred["estado_final_al_congelar"] == "OPORTUNIDAD_PRIORITARIA"
+            assert pred["direction"] == "ALCISTA"
+
+            # segundo barrido, mismo día -- aunque la etapa cambie, la
+            # predicción congelada NUNCA se pisa (write-once).
+            tracker.process_sweep({"MRNA": _quote("MRNA", 90.0, 45.0, rvol=20.0)}, h, "2026-08-19", "regular", _now())
+            pred2 = reg.get_magnitud_prediction("MRNA", "2026-08-19")
+            assert pred2["predicted_pct"] == 30.0
+        finally:
+            tracker.pc.from_live_detection = orig_from_live
+            ref_reg.latest_volatility_14d_pct = orig_vol
+            ref_reg.recent_daily_features = orig_recent
+            ref_reg.percentile_change_pct = orig_pct
+            tracker.hsc.get_cached_reference_table = orig_table
+    finally:
+        _restore()
+
+
+def test_candidata_en_preparacion_no_congela_prediccion_sin_evidencia_accionable():
+    _fresh()
+    try:
+        from atlas_live.radar import phase_classifier as pc_module
+        from atlas_live.reference import reference_registry as ref_reg
+
+        orig_from_live = tracker.pc.from_live_detection
+        orig_vol = ref_reg.latest_volatility_14d_pct
+        orig_recent = ref_reg.recent_daily_features
+        orig_pct = ref_reg.percentile_change_pct
+        orig_table = tracker.hsc.get_cached_reference_table
+
+        # "antes_del_movimiento" + volatilidad elevada -> PREPARACION (no
+        # accionable) -- ver alert_stage.py. Nunca debería congelar nada.
+        tracker.pc.from_live_detection = lambda *a, **k: pc_module.PhaseTag(
+            timing_deteccion="antes_del_movimiento", direction="NEUTRAL",
+            comportamiento_post_apertura="desconocido", reason="test", change_pct_confiable=True,
+        )
+        ref_reg.latest_volatility_14d_pct = lambda symbol: 15.0
+        ref_reg.recent_daily_features = lambda symbol, n=5: []
+        ref_reg.percentile_change_pct = lambda symbol, p: None
+        tracker.hsc.get_cached_reference_table = lambda: _mock_evidencia_real(direction="NEUTRAL", timing="antes_del_movimiento")
+        try:
+            h = SweepHistory()
+            tracker.process_sweep({"ZZZZ": _quote("ZZZZ", 10.0, 4.0, rvol=1.0)}, h, "2026-08-19", "regular", _now())
+            assert reg.latest_alert_stage("ZZZZ", "2026-08-19") == "PREPARACION"
+            assert reg.get_magnitud_prediction("ZZZZ", "2026-08-19") is None
+        finally:
+            tracker.pc.from_live_detection = orig_from_live
+            ref_reg.latest_volatility_14d_pct = orig_vol
+            ref_reg.recent_daily_features = orig_recent
+            ref_reg.percentile_change_pct = orig_pct
+            tracker.hsc.get_cached_reference_table = orig_table
+    finally:
+        _restore()
+
+
 if __name__ == "__main__":
     import traceback
 

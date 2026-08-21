@@ -776,3 +776,86 @@ def test_list_missed_movers_ordena_por_magnitud_y_filtra_por_fecha():
         assert len(todo) == 4
     finally:
         _restore()
+
+
+# --- Predicción de magnitud (2026-08-20, aprobado por el usuario) ---
+
+def test_record_magnitud_prediction_es_write_once_por_ticker_y_dia():
+    _fresh()
+    try:
+        primero = reg.record_magnitud_prediction(
+            "MRNA", "2026-08-19", "2026-08-19T10:47:00Z", 28.0,
+            estado_final_al_congelar="OPORTUNIDAD_PRIORITARIA", direction="ALCISTA",
+            timing_deteccion="al_comienzo", bucket="alto", muestra_n=187,
+        )
+        segundo = reg.record_magnitud_prediction(
+            "MRNA", "2026-08-19", "2026-08-19T14:00:00Z", 99.0,  # no debe pisar la original
+        )
+        assert primero is True
+        assert segundo is False
+        pred = reg.get_magnitud_prediction("MRNA", "2026-08-19")
+        assert pred["predicted_pct"] == 28.0
+        assert pred["muestra_n"] == 187
+    finally:
+        _restore()
+
+
+def test_magnitud_predictions_for_date_lista_por_fecha():
+    _fresh()
+    try:
+        reg.record_magnitud_prediction("MRNA", "2026-08-19", "2026-08-19T10:47:00Z", 28.0)
+        reg.record_magnitud_prediction("CONL", "2026-08-19", "2026-08-19T09:38:00Z", 19.0)
+        reg.record_magnitud_prediction("OLD", "2026-08-18", "2026-08-18T09:00:00Z", 10.0)
+
+        hoy = reg.magnitud_predictions_for_date("2026-08-19")
+        assert {p["ticker"] for p in hoy} == {"MRNA", "CONL"}
+    finally:
+        _restore()
+
+
+def _record_outcome_simple(ticker, market_date, max_return_after_detection_pct, is_final=True):
+    reg.record_outcome(
+        ticker, market_date, run_up_before_detection_pct=None,
+        max_price_after_detection=None, max_return_after_detection_pct=max_return_after_detection_pct,
+        minutes_to_max=None, reached_20=False, reached_50=False, reached_100=False,
+        category="mejor_oportunidad", is_final=is_final,
+    )
+
+
+def test_magnitud_precision_report_acierto_y_fallo_reales():
+    _fresh()
+    try:
+        # MRNA: predijo >=28%, llegó a 170.6% -> acierto.
+        reg.record_magnitud_prediction("MRNA", "2026-08-19", "2026-08-19T10:47:00Z", 28.0)
+        _record_outcome_simple("MRNA", "2026-08-19", 170.6)
+        # CONL: predijo >=19%, llegó a 15.1% -> falló.
+        reg.record_magnitud_prediction("CONL", "2026-08-19", "2026-08-19T09:38:00Z", 19.0)
+        _record_outcome_simple("CONL", "2026-08-19", 15.1)
+        # PEND: predicción congelada pero el outcome todavía no cerró (is_final=False) -- no se evalúa.
+        reg.record_magnitud_prediction("PEND", "2026-08-19", "2026-08-19T11:00:00Z", 10.0)
+        _record_outcome_simple("PEND", "2026-08-19", 50.0, is_final=False)
+
+        reporte = reg.magnitud_precision_report("2026-08-19")
+        assert reporte["n_predicciones"] == 3
+        assert reporte["n_evaluables"] == 2  # PEND queda afuera -- no cerró
+        assert reporte["n_aciertos"] == 1
+        assert reporte["precision_pct"] == 50.0
+
+        por_ticker = {c["ticker"]: c for c in reporte["candidatas"]}
+        assert por_ticker["MRNA"]["acierto"] is True
+        assert por_ticker["CONL"]["acierto"] is False
+        assert "PEND" not in por_ticker
+    finally:
+        _restore()
+
+
+def test_magnitud_precision_report_sin_predicciones_no_rompe():
+    _fresh()
+    try:
+        reporte = reg.magnitud_precision_report("2026-08-19")
+        assert reporte == {
+            "market_date": "2026-08-19", "n_predicciones": 0, "n_evaluables": 0,
+            "n_aciertos": 0, "precision_pct": None, "candidatas": [],
+        }
+    finally:
+        _restore()

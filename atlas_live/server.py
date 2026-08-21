@@ -392,6 +392,13 @@ def api_radar_informe_dia():
         # EOD (ver eod_report.py), vacío hasta que el mercado cierre y
         # corra la evaluación de hoy.
         "missed_movers": radar_registry.list_missed_movers(date_param),
+        # Predicción de magnitud (2026-08-20, aprobado por el usuario): cruza
+        # cada predicción congelada (`candidate_tracker._tag_magnitud_prediction`)
+        # con el resultado real ya cerrado -- "acierto" = el resultado real
+        # igualó o superó la predicción. Vacío hasta que haya predicciones
+        # congeladas Y resultados finales para ese día.
+        "precision_de_magnitud": radar_registry.magnitud_precision_report(date_param),
+        "precision_de_magnitud_acumulada": radar_registry.magnitud_precision_report(),
     })
 
 
@@ -497,6 +504,13 @@ def api_radar_oportunidades():
         # si la Base Histórica no está disponible todavía, la lista
         # operativa sigue funcionando sin esa anotación.
         reference_table = None
+
+    # Predicción de magnitud (2026-08-20): un solo fetch para todo el día,
+    # nunca una consulta por candidata (serían miles) -- indexado por
+    # ticker para lookup O(1) dentro del loop de abajo.
+    magnitud_preds_by_ticker = {
+        p["ticker"]: p for p in radar_registry.magnitud_predictions_for_date(market_date)
+    }
 
     now = datetime.now(timezone.utc)
 
@@ -604,6 +618,14 @@ def api_radar_oportunidades():
                 {"volatility_14d_pct": vol, "daily_range_pct": rng},
             )
         o["evidencia_historica"] = historical
+
+        # Predicción de magnitud congelada (2026-08-20, aprobado por el
+        # usuario): la mediana histórica en el momento EXACTO en que esta
+        # candidata se volvió accionable por primera vez -- ver
+        # `candidate_tracker._tag_magnitud_prediction`. `None` hasta que
+        # exista una (nunca se recalcula acá, para que se pueda calificar
+        # después contra el resultado real sin que "se mueva").
+        o["prediccion_magnitud_congelada"] = magnitud_preds_by_ticker.get(o["ticker"])
 
         estado_final, motivo_estado_final = pc.classify_final_priority(
             stage=o["stage"],

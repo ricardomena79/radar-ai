@@ -99,7 +99,7 @@ def score_candidate(table: Dict[GroupKey, GroupReference], direction: str, timin
     if ref is None:
         return {"direction": direction, "timing_deteccion": timing_deteccion, "grupo_existe": False,
                 "bucket": None, "n": 0, "aciertos_20": 0, "aciertos_50": 0, "aciertos_100": 0,
-                "pct_20": None, "pct_50": None, "pct_100": None}
+                "pct_20": None, "pct_50": None, "pct_100": None, "mediana_max_advance_pct": None}
 
     feature_cols = list(ref.cuts.keys())
     bucket = _bucket_of_row(feature_values, feature_cols, ref.cuts)

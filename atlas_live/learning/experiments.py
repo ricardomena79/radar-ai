@@ -43,17 +43,32 @@ class BucketStats:
     aciertos_20: int = 0
     aciertos_50: int = 0
     aciertos_100: int = 0
+    # Predicción de magnitud (2026-08-20, aprobado por el usuario): valores
+    # reales de `max_advance_pct` del bucket, para poder responder "¿a qué %
+    # estima Atlas que puede llegar?" con la MEDIANA real de casos parecidos,
+    # no solo con la fracción que cruzó 20/50/100. Aditivo -- no cambia
+    # ningún conteo/porcentaje ya existente.
+    values: List[float] = field(default_factory=list)
 
     def add(self, max_advance_pct: Optional[float]) -> None:
         self.n += 1
         if max_advance_pct is None:
             return
+        self.values.append(max_advance_pct)
         if max_advance_pct >= 20:
             self.aciertos_20 += 1
         if max_advance_pct >= 50:
             self.aciertos_50 += 1
         if max_advance_pct >= 100:
             self.aciertos_100 += 1
+
+    def mediana(self) -> Optional[float]:
+        if not self.values:
+            return None
+        s = sorted(self.values)
+        mid = len(s) // 2
+        m = s[mid] if len(s) % 2 else (s[mid - 1] + s[mid]) / 2
+        return round(m, 1)
 
     def to_dict(self) -> Dict[str, Any]:
         def pct(a: int) -> Optional[float]:
@@ -63,6 +78,7 @@ class BucketStats:
             "aciertos_20": self.aciertos_20, "pct_20": pct(self.aciertos_20),
             "aciertos_50": self.aciertos_50, "pct_50": pct(self.aciertos_50),
             "aciertos_100": self.aciertos_100, "pct_100": pct(self.aciertos_100),
+            "mediana_max_advance_pct": self.mediana(),
         }
 
 

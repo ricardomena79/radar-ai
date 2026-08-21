@@ -10,10 +10,12 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 from atlas.data.models.quote import Quote
+from atlas_live.learning import historical_scoring as hsc
 from atlas_live.radar import alert_stage as als
 from atlas_live.radar import candidate_gates as gates
 from atlas_live.radar import candidate_registry as reg
 from atlas_live.radar import phase_classifier as pc
+from atlas_live.radar import priority_classifier as prio
 from atlas_live.radar.sweep_history import SweepHistory, SweepSnapshot
 
 
@@ -187,6 +189,68 @@ def _tag_alert_stage(
         timing_deteccion_hoy=tag.timing_deteccion, racional_available=racional_available,
         direction=tag.direction, change_pct_confiable=tag.change_pct_confiable,
         retroceso_desde_maximo_pct=retroceso_desde_maximo_pct,
+    )
+
+    _tag_magnitud_prediction(
+        symbol, market_date, observed_at, quote, stage,
+        tag.direction, tag.change_pct_confiable, tag.timing_deteccion, volatility_14d_pct,
+    )
+
+
+def _tag_magnitud_prediction(
+    symbol: str, market_date: str, observed_at: str, quote: Optional[Quote], stage: str,
+    direction: Optional[str], change_pct_confiable: Optional[bool],
+    timing_deteccion: Optional[str], volatility_14d_pct: Optional[float],
+) -> None:
+    """Predicción de magnitud (2026-08-20, aprobado por el usuario, ver
+    mockup "Predicción de Magnitud"): la PRIMERA vez que esta candidata se
+    vuelve accionable (`estado_final` OPORTUNIDAD_PRIORITARIA/VIGILAR),
+    congela la mediana histórica de `historical_scoring.score_candidate()`
+    de ESE momento en `candidate_registry.magnitud_prediction` -- write-once
+    (ver esa tabla), nunca se recalcula después, para poder calificarla más
+    tarde contra el resultado real (`candidate_outcome`) sin que la
+    predicción "se mueva" con el tiempo.
+
+    Puramente informativo: no participa en `estado_final` ni en ningún
+    gate. Usa las MISMAS fuentes que ya usa `_tag_alert_stage` (Tradier +
+    Base Histórica vía `historical_scoring`), nunca Yahoo/Memory Engine --
+    por eso `classify_final_priority()` se llama acá con
+    `sector_flow_active=None` (esa señal vive en `scan_worker.py`, fuera
+    del alcance de este módulo de detección Tradier-only)."""
+    if reg.get_magnitud_prediction(symbol, market_date) is not None:
+        return  # ya está congelada -- nunca se pisa
+
+    estado_final, _motivo = prio.classify_final_priority(
+        stage=stage, direction=direction, change_pct_confiable=change_pct_confiable,
+        tiene_precio_actual=quote is not None,
+    )
+    if estado_final not in ("OPORTUNIDAD_PRIORITARIA", "VIGILAR"):
+        return
+    if not timing_deteccion or direction not in ("ALCISTA", "BAJISTA", "NEUTRAL"):
+        return
+
+    daily_range_pct = None
+    if quote is not None and quote.high is not None and quote.low is not None and quote.last_price:
+        daily_range_pct = round(100 * (quote.high - quote.low) / quote.last_price, 3)
+
+    try:
+        table = hsc.get_cached_reference_table()
+        evidencia = hsc.score_candidate(
+            table, direction, timing_deteccion,
+            {"volatility_14d_pct": volatility_14d_pct, "daily_range_pct": daily_range_pct},
+        )
+    except Exception:
+        return
+
+    predicted_pct = evidencia.get("mediana_max_advance_pct")
+    if not evidencia.get("grupo_existe") or predicted_pct is None:
+        return  # sin evidencia real comparable -- nunca se inventa una predicción
+
+    reg.record_magnitud_prediction(
+        symbol, market_date, observed_at, predicted_pct,
+        estado_final_al_congelar=estado_final, direction=direction,
+        timing_deteccion=timing_deteccion, bucket=evidencia.get("bucket"),
+        muestra_n=evidencia.get("n"),
     )
 
 

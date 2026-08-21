@@ -71,6 +71,13 @@ def test_score_candidate_bucket_alto_tiene_mejor_tasa_que_bajo():
     assert bajo["aciertos_20"] == 2               # solo vol 1,2
     assert alto["pct_20"] > bajo["pct_20"]        # la condición "alto" es realmente mejor, con evidencia
 
+    # Predicción de magnitud (2026-08-20): mediana real de max_advance_pct
+    # del bucket -- "alto" es vol 32..45 (12 filas en 60.0, 2 en 10.0) ->
+    # mediana 60.0; "bajo" es vol 1..16 (14 filas en 5.0, 2 en 25.0) ->
+    # mediana 5.0. Valores calculados a mano contra _make_controlled_group.
+    assert alto["mediana_max_advance_pct"] == 60.0
+    assert bajo["mediana_max_advance_pct"] == 5.0
+
 
 def test_score_candidate_grupo_inexistente_no_inventa_evidencia():
     table = hs.compute_reference_table(_make_controlled_group(), ["volatility_14d_pct"], min_rows=30)
@@ -78,7 +85,7 @@ def test_score_candidate_grupo_inexistente_no_inventa_evidencia():
     assert result == {
         "direction": "BAJISTA", "timing_deteccion": "agotamiento", "grupo_existe": False,
         "bucket": None, "n": 0, "aciertos_20": 0, "aciertos_50": 0, "aciertos_100": 0,
-        "pct_20": None, "pct_50": None, "pct_100": None,
+        "pct_20": None, "pct_50": None, "pct_100": None, "mediana_max_advance_pct": None,
     }
 
 

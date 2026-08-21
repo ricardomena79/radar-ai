@@ -169,6 +169,31 @@ CREATE TABLE IF NOT EXISTS missed_mover (
     UNIQUE(ticker, market_date)
 );
 CREATE INDEX IF NOT EXISTS idx_missed_mover_date ON missed_mover(market_date);
+
+-- Predicción de magnitud (2026-08-20, aprobado por el usuario, ver mockup
+-- "Predicción de Magnitud"): la PRIMERA vez que una candidata se vuelve
+-- accionable (estado_final OPORTUNIDAD_PRIORITARIA/VIGILAR), se congela acá
+-- la mediana histórica de `historical_scoring.score_candidate()` de ese
+-- momento -- write-once por (ticker, market_date), nunca se recalcula
+-- después, para poder calificarla contra el resultado real al cierre
+-- (`candidate_outcome`) sin que la predicción "se mueva" con el tiempo.
+-- Puramente informativo/de trazabilidad: no participa en ningún gate ni en
+-- el `estado_final` en sí.
+CREATE TABLE IF NOT EXISTS magnitud_prediction (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker TEXT NOT NULL,
+    market_date TEXT NOT NULL,
+    frozen_at TEXT NOT NULL,
+    estado_final_al_congelar TEXT,
+    direction TEXT,
+    timing_deteccion TEXT,
+    bucket TEXT,
+    muestra_n INTEGER,
+    predicted_pct REAL NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(ticker, market_date)
+);
+CREATE INDEX IF NOT EXISTS idx_magnitud_pred_date ON magnitud_prediction(market_date);
 """
 
 _schema_ready_for: Optional[str] = None
@@ -1156,6 +1181,98 @@ def list_missed_movers(market_date: Optional[str] = None) -> List[Dict[str, Any]
     with _connect() as conn:
         rows = conn.execute(query, params).fetchall()
         return [_row(r) for r in rows]
+
+
+def get_magnitud_prediction(ticker: str, market_date: str) -> Optional[Dict[str, Any]]:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM magnitud_prediction WHERE ticker=? AND market_date=?",
+            (ticker, market_date),
+        ).fetchone()
+        return _row(row) if row else None
+
+
+def record_magnitud_prediction(
+    ticker: str, market_date: str, frozen_at: str, predicted_pct: float,
+    estado_final_al_congelar: Optional[str] = None, direction: Optional[str] = None,
+    timing_deteccion: Optional[str] = None, bucket: Optional[str] = None,
+    muestra_n: Optional[int] = None,
+) -> bool:
+    """Congela la predicción de magnitud UNA sola vez por (ticker,
+    market_date) -- INSERT OR IGNORE, devuelve False si ya existía (nunca se
+    pisa, para que calificarla después contra el resultado real tenga
+    sentido: la predicción tiene que quedar fija en el momento en que se
+    hizo)."""
+    with _connect() as conn:
+        cur = conn.execute(
+            """INSERT OR IGNORE INTO magnitud_prediction
+               (ticker, market_date, frozen_at, estado_final_al_congelar, direction,
+                timing_deteccion, bucket, muestra_n, predicted_pct, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (ticker, market_date, frozen_at, estado_final_al_congelar, direction,
+             timing_deteccion, bucket, muestra_n, predicted_pct, _now()),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def magnitud_predictions_for_date(market_date: str) -> List[Dict[str, Any]]:
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM magnitud_prediction WHERE market_date=? ORDER BY frozen_at",
+            (market_date,),
+        ).fetchall()
+        return [_row(r) for r in rows]
+
+
+def magnitud_precision_report(market_date: Optional[str] = None) -> Dict[str, Any]:
+    """Cruza cada predicción congelada con el resultado real ya cerrado
+    (`candidate_outcome.is_final=1`) -- "acierto" = el resultado real
+    (`max_return_after_detection_pct`) igualó o superó la predicción
+    congelada (`predicted_pct`). Calculado en cada llamada (mismo patrón que
+    `alert_stage_effectiveness_report`), nunca pre-agregado -- no toca
+    `daily_summary`. `market_date=None` trae toda la historia registrada."""
+    with _connect() as conn:
+        if market_date:
+            preds = conn.execute(
+                "SELECT * FROM magnitud_prediction WHERE market_date=? ORDER BY frozen_at",
+                (market_date,),
+            ).fetchall()
+        else:
+            preds = conn.execute(
+                "SELECT * FROM magnitud_prediction ORDER BY market_date, frozen_at"
+            ).fetchall()
+        preds = [_row(r) for r in preds]
+
+        candidatas: List[Dict[str, Any]] = []
+        n_evaluables = 0
+        n_aciertos = 0
+        for p in preds:
+            outcome = conn.execute(
+                "SELECT * FROM candidate_outcome WHERE ticker=? AND market_date=? AND is_final=1",
+                (p["ticker"], p["market_date"]),
+            ).fetchone()
+            if outcome is None:
+                continue  # todavía no cerró -- no se evalúa como pendiente, no se inventa un resultado
+            resultado_real_pct = outcome["max_return_after_detection_pct"]
+            n_evaluables += 1
+            acierto = resultado_real_pct is not None and resultado_real_pct >= p["predicted_pct"]
+            if acierto:
+                n_aciertos += 1
+            candidatas.append({
+                "ticker": p["ticker"], "market_date": p["market_date"], "frozen_at": p["frozen_at"],
+                "predicted_pct": p["predicted_pct"], "muestra_n": p["muestra_n"],
+                "resultado_real_pct": resultado_real_pct, "acierto": acierto,
+            })
+
+    return {
+        "market_date": market_date,
+        "n_predicciones": len(preds),
+        "n_evaluables": n_evaluables,
+        "n_aciertos": n_aciertos,
+        "precision_pct": round(100 * n_aciertos / n_evaluables, 1) if n_evaluables else None,
+        "candidatas": candidatas,
+    }
 
 
 def get_daily_summary(market_date: str) -> Optional[Dict[str, Any]]:

@@ -1466,6 +1466,51 @@ function renderRadarUniverso() {
     </div>
     <div class="detail-note" style="margin-top:8px">"Detección tardía" = la acción ya había corrido la mayor parte del movimiento ANTES de que el radar la detectara -- no cuenta como buen acierto operativo aunque el día haya cerrado muy arriba.</div>`;
   }
+
+  renderPrecisionMagnitud();
+}
+
+// Precisión de Magnitud (2026-08-20, aprobado por el usuario): predicción
+// congelada (mediana histórica en el momento en que la candidata se volvió
+// accionable por primera vez) vs. resultado real ya cerrado -- ver
+// candidate_registry.magnitud_precision_report(). Puramente de solo
+// lectura, mismo patrón que el resto del informe de cierre.
+function renderPrecisionMagnitud() {
+  const el = document.getElementById("radar-universo-precision-magnitud");
+  if (!el) return;
+  const hoy = _radarInforme && _radarInforme.precision_de_magnitud;
+  const acum = _radarInforme && _radarInforme.precision_de_magnitud_acumulada;
+  if (!hoy) { el.innerHTML = `<div class="empty-state">No disponible.</div>`; return; }
+
+  const fmtN = (v) => (v === null || v === undefined) ? "—" : Number(v).toLocaleString("es");
+  const card = (icon, label, value, sub) =>
+    `<div class="lh-card"><div class="lh-icon">${icon}</div><div class="lh-label">${label}</div><div class="lh-value">${value}</div>${sub ? `<div class="lh-sub">${sub}</div>` : ""}</div>`;
+
+  const cards =
+    card("🎯", "Aciertos hoy", fmtN(hoy.n_aciertos), `de ${fmtN(hoy.n_evaluables)} evaluables`) +
+    card("📊", "Precisión de magnitud (hoy)", hoy.precision_pct != null ? fmtNum(hoy.precision_pct) + "%" : "No disponible", `${fmtN(hoy.n_aciertos)}/${fmtN(hoy.n_evaluables)}`) +
+    card("📊", "Precisión de magnitud (histórica)", (acum && acum.precision_pct != null) ? fmtNum(acum.precision_pct) + "%" : "No disponible", (acum && acum.n_evaluables) ? `${fmtN(acum.n_aciertos)}/${fmtN(acum.n_evaluables)}` : "");
+
+  if (!hoy.candidatas || !hoy.candidatas.length) {
+    el.innerHTML = `<div class="lh-grid" style="margin-bottom:10px">${cards}</div>
+      <div class="empty-state">Sin predicciones de magnitud cerradas todavía hoy.</div>`;
+    return;
+  }
+
+  const filas = hoy.candidatas.map(c => `<tr class="${c.acierto ? "acierto-row-hit" : "acierto-row-miss"}">
+      <td>${c.ticker}</td>
+      <td style="text-align:right">${c.predicted_pct != null ? "≥" + fmtNum(c.predicted_pct) + "%" : "—"}</td>
+      <td class="dim">${c.frozen_at ? fmtTimeSec(c.frozen_at) + " ET" : "—"}</td>
+      <td style="text-align:right">${c.resultado_real_pct != null ? fmtPct(c.resultado_real_pct) : "—"}</td>
+      <td>${c.acierto ? '<span style="color:var(--green);font-weight:700">✅ Acierto</span>' : '<span style="color:var(--red);font-weight:700">❌ Falló</span>'}</td>
+    </tr>`).join("");
+
+  el.innerHTML = `<div class="lh-grid" style="margin-bottom:10px">${cards}</div>
+    <div style="overflow-x:auto"><table class="data-table">
+      <thead><tr><th>Ticker</th><th style="text-align:right">Predicción congelada</th><th>Congelada al</th><th style="text-align:right">Resultado real</th><th>Resultado</th></tr></thead>
+      <tbody>${filas}</tbody>
+    </table></div>
+    <div class="detail-note" style="margin-top:8px">"Predicción congelada" = la mediana histórica en el momento exacto en que la candidata se volvió accionable (🟢/🟡) por primera vez -- nunca se recalcula después. "Acierto" = el resultado real igualó o superó ese número.</div>`;
 }
 
 let _alertStages = null;
@@ -1560,7 +1605,7 @@ function _explicacionTop3(o) {
   partes.push("dirección alcista ya confirmada");
   const ev = o.evidencia_historica;
   if (ev && ev.grupo_existe) {
-    partes.push(`históricamente ${fmtNum(ev.pct_20)}% de casos similares (n=${ev.n}) llegó a +20%`);
+    partes.push(`mediana histórica de casos similares (n=${ev.n}): ~${fmtNum(ev.mediana_max_advance_pct)}% · ${fmtNum(ev.pct_20)}% llegó a +20%`);
   }
   return partes.join(", ") + ".";
 }
@@ -1579,6 +1624,8 @@ function renderMejoresOportunidadesAhora(oportunidades) {
   el.innerHTML = top3.map((o, i) => {
     const st = ALERT_STAGE_STYLE[o.stage] || { label: o.stage, color: "var(--text-dim)" };
     const dir = DIRECTION_STYLE[o.direction];
+    const ev = o.evidencia_historica;
+    const estimadoPct = (ev && ev.grupo_existe) ? ev.mediana_max_advance_pct : null;
     return `<div class="top3-card">
       <div class="top3-card-top"><span class="top3-medal">${MEDALLA_ICONO[i]}</span><span class="dim" style="font-size:11px;text-transform:uppercase;letter-spacing:.03em">${MEDALLAS[i]}</span></div>
       <div class="top3-ticker">${o.ticker}</div>
@@ -1589,6 +1636,10 @@ function renderMejoresOportunidadesAhora(oportunidades) {
       <div class="kv-row"><span class="k">Etapa</span><span class="v"><span style="color:${st.color};font-weight:${st.bold ? 700 : 600}">${st.label}</span></span></div>
       <div class="kv-row"><span class="k">Antigüedad del precio</span><span class="v">${o.price_age_seconds != null ? fmtAge(o.price_age_seconds) : "—"}</span></div>
       <div class="kv-row"><span class="k">Disponible en Racional</span><span class="v">${o.racional_available === true ? "Sí" : "No"}</span></div>
+      <div class="kv-row" style="background:var(--panel-2);margin:4px -10px 0;padding:7px 10px;border-radius:4px;border-bottom:none">
+        <span class="k" style="color:var(--accent);font-weight:600">📈 % estimado (histórico)</span>
+        <span class="v" style="color:var(--accent);font-size:14px">${estimadoPct != null ? "~" + fmtNum(estimadoPct) + "%" : "No disponible"}</span>
+      </div>
       <div class="detail-explain" style="margin-top:10px;font-size:12.5px">${_explicacionTop3(o)}</div>
     </div>`;
   }).join("");
@@ -1678,7 +1729,7 @@ function renderAlertStages() {
     return (b.detected_at || "").localeCompare(a.detected_at || "");
   });
   tablaEl.innerHTML = `<div style="overflow-x:auto"><table class="data-table">
-    <thead><tr><th>Ticker</th><th>Estado</th><th>Etapa</th><th>Dirección</th><th>Sector</th><th style="text-align:right">Precio actual</th><th>Antigüedad</th><th style="text-align:right">Precio detección</th><th>Hora detección</th><th style="text-align:right">Min. desde detección</th><th style="text-align:right">Cambio desde detección</th><th>Fuente</th><th style="text-align:right">RVOL actual</th><th style="text-align:right">RVOL detección</th><th>Evidencia</th><th>Racional</th></tr></thead>
+    <thead><tr><th>Ticker</th><th>Estado</th><th>Etapa</th><th>Dirección</th><th>Sector</th><th style="text-align:right">Precio actual</th><th>Antigüedad</th><th style="text-align:right">Precio detección</th><th>Hora detección</th><th style="text-align:right">Min. desde detección</th><th style="text-align:right">Cambio desde detección</th><th>Fuente</th><th style="text-align:right">RVOL actual</th><th style="text-align:right">RVOL detección</th><th style="text-align:right;color:var(--accent)">📈 % Estimado</th><th>Evidencia</th><th>Racional</th></tr></thead>
     <tbody>${oportunidades.map(o => {
       const st = ALERT_STAGE_STYLE[o.stage] || { label: o.stage, color: "var(--text-dim)" };
       const fs = FINAL_STATE_STYLE[o.estado_final] || { label: o.estado_final || "—", color: "var(--text-dim)" };
@@ -1706,6 +1757,16 @@ function renderAlertStages() {
       const etapaTooltip = o.retroceso_desde_maximo_pct != null
         ? `Retrocedió ${fmtNum(o.retroceso_desde_maximo_pct)}% desde su máximo de hoy`.replace(/"/g, "&quot;")
         : "";
+      // % estimado (2026-08-20, aprobado por el usuario): mediana real de
+      // cuánto llegaron a subir casos históricos parecidos (misma
+      // dirección + mismo momento de detección) -- ver
+      // historical_scoring.score_candidate(). Nunca inventado: "—" si no
+      // hay grupo comparable con evidencia suficiente todavía.
+      const ev = o.evidencia_historica;
+      const estimadoPct = (ev && ev.grupo_existe) ? ev.mediana_max_advance_pct : null;
+      const estimadoTooltip = (ev && ev.grupo_existe)
+        ? `Mediana de ${ev.n} casos históricos similares (${ev.direction}, "${ev.timing_deteccion}", bucket ${ev.bucket})`.replace(/"/g, "&quot;")
+        : "Sin suficiente evidencia histórica comparable todavía";
       return `<tr>
         <td>${o.ticker}</td>
         <td title="${motivoTooltip}"><span style="color:${fs.color};font-weight:${fs.bold ? 700 : 600}">${fs.label}</span></td>
@@ -1721,6 +1782,7 @@ function renderAlertStages() {
         <td>${o.price_actual_source || o.source || "—"}</td>
         <td style="text-align:right">${o.relative_volume_hoy != null ? fmtNum(o.relative_volume_hoy) + "x" : "—"}</td>
         <td style="text-align:right">${o.relative_volume_at_detection != null ? fmtNum(o.relative_volume_at_detection) + "x" : "—"}</td>
+        <td style="text-align:right;color:var(--accent);font-weight:700" title="${estimadoTooltip}">${estimadoPct != null ? "~" + fmtNum(estimadoPct) + "%" : '<span class="dim">—</span>'}</td>
         <td class="dim" title="${evidencia}">${evidencia}</td>
         <td>${o.racional_available === true ? "Sí" : (o.racional_available === false ? "No" : "—")}</td>
       </tr>`;
