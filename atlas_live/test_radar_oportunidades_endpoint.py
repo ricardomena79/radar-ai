@@ -127,6 +127,54 @@ def test_direccion_indefinida_cuando_precio_sintetico_sin_volumen_real(monkeypat
         _rw.get_last_quotes = orig_last_quotes
 
 
+def test_evidencia_historica_no_exige_daily_range_pct_para_calcularse():
+    """Bug real encontrado en vivo (2026-08-20/21, caso COHR/CLSK/MRNA):
+    la condición vieja exigía `daily_range_pct_at_detection` no-None ADEMÁS
+    de `volatility_14d_pct_at_detection` -- pero ese campo solo se llena si
+    Tradier ya tenía high/low en el instante EXACTO de la detección, algo
+    que las candidatas más frescas (justo las accionables) sistemáticamente
+    no tenían todavía. `historical_scoring.score_candidate()` ya degrada
+    con gracia a bucket "poblacion_total" cuando falta una sola feature --
+    alcanza con `direction`/`timing_deteccion_hoy` para calcular evidencia."""
+    from atlas_live.learning import historical_scoring as hsc
+
+    orig_live_opps = reg.live_opportunities
+    orig_last_quotes = _rw.get_last_quotes
+    orig_table = hsc.get_cached_reference_table
+
+    # Mismas 2 features que usa `hsc.REPORT_FEATURE_COLS` en producción --
+    # para reproducir el caso real hay que exigir AMBAS en la tabla, así
+    # `daily_range_pct=None` (el caso real de MRNA) cae en el chequeo
+    # "falta una feature" de `_bucket_of_row` y degrada a poblacion_total.
+    rows = [
+        {"direction": "ALCISTA", "timing_deteccion": "al_comienzo",
+         "volatility_14d_pct": float(v), "daily_range_pct": float(v), "max_advance_pct": 30.0}
+        for v in range(1, 35)
+    ]
+    tabla = hsc.compute_reference_table(rows, list(hsc.REPORT_FEATURE_COLS), min_rows=30)
+
+    reg.live_opportunities = lambda market_date: [
+        {"ticker": "MRNA", "price_at_detection": 65.0, "stage": "INICIO",
+         "direction": "ALCISTA", "change_pct_confiable": True, "racional_available": True,
+         "timing_deteccion_hoy": "al_comienzo", "volatility_14d_pct_at_detection": 6.279,
+         "daily_range_pct_at_detection": None},  # justo el caso real -- todavía sin high/low
+    ]
+    _rw.get_last_quotes = lambda: {"MRNA": _fresh_quote(68.0, 4.2)}
+    hsc.get_cached_reference_table = lambda: tabla
+    try:
+        r = _client().get("/api/radar-oportunidades")
+        body = r.get_json()
+        mrna = body["oportunidades"][0]
+        assert mrna["evidencia_historica"] is not None
+        assert mrna["evidencia_historica"]["grupo_existe"] is True
+        assert mrna["evidencia_historica"]["bucket"] == "poblacion_total"
+        assert mrna["evidencia_historica"]["mediana_max_advance_pct"] == 30.0
+    finally:
+        reg.live_opportunities = orig_live_opps
+        _rw.get_last_quotes = orig_last_quotes
+        hsc.get_cached_reference_table = orig_table
+
+
 def test_direccion_no_se_toca_si_no_hay_quote_fresco():
     """Sin quote en el último barrido (ticker no visto en este ciclo), no
     hay nada más fresco que recalcular -- se preserva la última dirección

@@ -608,11 +608,26 @@ def api_radar_oportunidades():
         except (TypeError, ValueError):
             o["minutos_desde_deteccion"] = None
 
+        # Bug real encontrado en vivo (2026-08-20/21, caso COHR/CLSK/MRNA):
+        # esta condición exigía `daily_range_pct_at_detection` no-None ADEMÁS
+        # de `volatility_14d_pct_at_detection` -- pero ese campo solo se
+        # calcula si `quote.high`/`quote.low` ya estaban poblados en el
+        # instante EXACTO de la primera detección (write-once, ver
+        # `_tag_experimental_signals_at_detection`), algo que Tradier
+        # sistemáticamente todavía no tiene en los primeros ticks de una
+        # sesión -- por eso las candidatas más frescas y accionables
+        # (INICIO/CONFIRMACION recién detectadas) eran justo las que se
+        # quedaban SIEMPRE sin evidencia histórica, sin ningún caso real
+        # donde ambos campos coincidieran a tiempo. `historical_scoring.
+        # score_candidate()`/`_bucket_of_row()` YA está diseñado para
+        # degradar con gracia a `"poblacion_total"` cuando falta una sola
+        # feature (ver sus tests) -- alcanza con `direction`/`timing_deteccion_hoy`
+        # para intentarlo; `vol`/`rng` viajan tal cual (incluso `None`) a
+        # `feature_values`, nunca se inventan.
         historical = None
         vol = o.get("volatility_14d_pct_at_detection")
         rng = o.get("daily_range_pct_at_detection")
-        if reference_table is not None and o.get("direction") and o.get("timing_deteccion_hoy") \
-                and vol is not None and rng is not None:
+        if reference_table is not None and o.get("direction") and o.get("timing_deteccion_hoy"):
             historical = hsc.score_candidate(
                 reference_table, o["direction"], o["timing_deteccion_hoy"],
                 {"volatility_14d_pct": vol, "daily_range_pct": rng},
