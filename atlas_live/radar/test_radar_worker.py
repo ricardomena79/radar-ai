@@ -141,18 +141,24 @@ def test_un_barrido_roto_no_tumba_el_mecanismo():
         _restore()
 
 
-def test_sweep_usa_universo_completo_solo_equity():
+def test_sweep_usa_universo_completo_equity_mas_etfs_apalancados():
     """Fase 5 (2026-08-17) -- el barrido ya NO se limita al universo
     Racional: usa fetch_broad_universe_meta() filtrado a EQUITY (misma
     clasificación ya aprobada en build_historical_reference.py). ETFs y
-    derivados quedan afuera de la detección."""
+    derivados quedan afuera de la detección, CON UNA EXCEPCIÓN (2026-08-20,
+    caso real MSTU): los ETFs apalancados (1x/2x/3x sobre una sola acción/
+    cripto) sí se incluyen -- amplifican directamente su subyacente. Un
+    ETF sin ese patrón en el nombre (QQQ) sigue excluido, sin cambios."""
     _fresh()
     saved = _install_fakes(session="regular", quotes={})
     orig_meta = w.broad_universe.fetch_broad_universe_meta
     captured = {}
     w.broad_universe.fetch_broad_universe_meta = lambda: {
-        "AAPL": {"type": "EQUITY"}, "ZZZZ": {"type": "EQUITY"},
-        "QQQ": {"type": "ETF"}, "XYZW": {"type": "WARRANT"},
+        "AAPL": {"type": "EQUITY", "name": "Apple Inc."},
+        "ZZZZ": {"type": "EQUITY", "name": "ZZZZ Corp"},
+        "QQQ": {"type": "ETF", "name": "Invesco QQQ Trust Series 1"},
+        "MSTU": {"type": "ETF", "name": "T-Rex 2X Long MSTR Daily Target ETF"},
+        "XYZW": {"type": "WARRANT", "name": "XYZ Corp Warrants"},
     }
     orig_fetch = w.fetch_universe_quotes
 
@@ -163,7 +169,9 @@ def test_sweep_usa_universo_completo_solo_equity():
     w.fetch_universe_quotes = _capturing_fetch
     try:
         w.run_sweep_once()
-        assert captured["symbols"] == ["AAPL", "ZZZZ"]  # solo EQUITY, ordenado
+        # EQUITY + el ETF apalancado (MSTU), ordenado -- QQQ (ETF normal) y
+        # XYZW (warrant) siguen afuera.
+        assert captured["symbols"] == ["AAPL", "MSTU", "ZZZZ"]
     finally:
         w.broad_universe.fetch_broad_universe_meta = orig_meta
         w.fetch_universe_quotes = orig_fetch

@@ -143,6 +143,45 @@ def test_classify_instrument_type_debt():
     assert universe.classify_instrument_type("XYZN", "XYZ Corp 5% Notes due 2030", False) == "DEBT"
 
 
+def test_is_leveraged_etf_name_casos_reales():
+    """2026-08-20, pedido explícito del usuario, caso real MSTU/ETHU/CONL/
+    BITX: nombres reales de ETFs apalancados verificados contra el
+    universo real -- deben reconocerse para poder sumarse al radar en
+    vivo (ver radar_worker.py)."""
+    reales_apalancados = [
+        "T-Rex 2X Long MSTR Daily Target ETF",       # MSTU
+        "2x Ether ETF",                               # ETHU
+        "GraniteShares 2x Long COIN Daily ETF",        # CONL
+        "2x Bitcoin ETF",                              # BITX
+        "GraniteShares 2x Long NVDA Daily ETF",        # NVDL
+        "Direxion Daily AMZN Bull 2X ETF",             # AMZU
+        "Leverage Shares 2X Long AAPL Daily ETF",      # AAPB
+        "Direxion Daily AAPL Bear 1X ETF",             # AAPD
+    ]
+    for name in reales_apalancados:
+        assert universe.is_leveraged_etf_name(name) is True, name
+
+
+def test_is_leveraged_etf_name_etf_normal_no_apalancado():
+    """ETFs pasivos/normales (índices amplios, bonos, sectoriales sin
+    apalancamiento) NO deben matchear -- son justo los que se siguen
+    excluyendo del radar en vivo."""
+    normales = [
+        "Invesco QQQ Trust Series 1",
+        "SPDR S&P 500 ETF Trust",
+        "Vanguard Total Bond Market ETF",
+        "iShares MSCI Emerging Markets ETF",
+        "Energy Select Sector SPDR Fund",
+    ]
+    for name in normales:
+        assert universe.is_leveraged_etf_name(name) is False, name
+
+
+def test_is_leveraged_etf_name_sin_nombre_no_rompe():
+    assert universe.is_leveraged_etf_name(None) is False
+    assert universe.is_leveraged_etf_name("") is False
+
+
 def test_fetch_broad_universe_meta_incluye_type(monkeypatch):
     """Verifica que el resultado final de fetch_broad_universe_meta trae
     'type' por símbolo -- sin red, mockeando requests.get."""

@@ -104,8 +104,23 @@ def run_sweep_once() -> Optional[float]:
         # lectura). Misma fuente/clasificación ya aprobada y probada en
         # scripts/build_historical_reference.py: solo EQUITY, sin ETFs ni
         # derivados mezclados en la misma detección.
+        #
+        # Excepción quirúrgica (2026-08-20, pedido explícito del usuario,
+        # caso real MSTU/ETHU/CONL/BITX): se suman los ETFs APALANCADOS
+        # (1x/2x/3x sobre una sola acción/cripto, ver
+        # `broad_universe.is_leveraged_etf_name`) -- amplifican
+        # directamente el movimiento de su subyacente, la categoría exacta
+        # que causó una brecha real (un rally de cripto se movió sobre
+        # todo a través de estos ETFs, invisibles para el radar). El resto
+        # de los ~4.780 ETFs (bonos, índices pasivos, sectoriales sin
+        # apalancamiento) sigue excluido, sin cambios -- no se toca
+        # `classify_instrument_type()` ni la Base Histórica.
         meta = broad_universe.fetch_broad_universe_meta()
-        symbols = sorted(s for s, info in meta.items() if info.get("type") == "EQUITY")
+        symbols = sorted(
+            s for s, info in meta.items()
+            if info.get("type") == "EQUITY"
+            or (info.get("type") == "ETF" and broad_universe.is_leveraged_etf_name(info.get("name")))
+        )
         market_date = market_hours.market_date()
 
         t0 = time.time()

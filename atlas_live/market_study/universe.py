@@ -28,6 +28,7 @@ inventa una categoría más específica sin evidencia en el nombre.
 """
 
 import json
+import re
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
@@ -126,6 +127,33 @@ def classify_instrument_type(symbol: str, name: str, etf_flag: bool) -> str:
         if pattern in upper_name:
             return label
     return "EQUITY"
+
+
+# ETFs apalancados/inversos (2026-08-20, pedido explícito del usuario, caso
+# real MSTU/ETHU/CONL/BITX): el radar en vivo excluye TODO tipo=ETF a
+# propósito (evita mezclar ETFs pasivos -- bonos, índices amplios -- que
+# casi nunca se mueven fuerte en un día, con el aprendizaje de movimientos
+# explosivos). Pero un ETF apalancado 1x/2x/3x sobre una sola acción/cripto
+# es justo lo opuesto: amplifica directamente el movimiento de su
+# subyacente, y es la categoría exacta que causó una brecha real (Atlas no
+# vio el rally de cripto de MSTU/ETHU/CONL/BITX porque son ETFs). Patrón de
+# nombre verificado contra el universo real: "2X"/"3X" (palabra completa,
+# no dentro de otro texto), "ULTRA", "DAILY TARGET", "LEVERAGED" -- mismo
+# vocabulario que usan los emisores reales (Direxion, GraniteShares,
+# T-Rex, Leverage Shares) en el nombre oficial del instrumento. Nunca
+# cambia `classify_instrument_type()` ni el campo `type` guardado -- es un
+# filtro ADICIONAL, aplicado solo al armar el universo que barre el radar
+# en vivo (`radar_worker.py`), para no tocar la Base Histórica (que sigue
+# excluyendo TODOS los ETFs, sin cambios)."""
+_LEVERAGED_ETF_PATTERN = re.compile(r"\b[123]X\b|ULTRA|DAILY TARGET|LEVERAGED", re.IGNORECASE)
+
+
+def is_leveraged_etf_name(name: Optional[str]) -> bool:
+    """True si `name` (Security Name real del feed) tiene el patrón de un
+    ETF apalancado/inverso conocido. Solo tiene sentido llamarla sobre un
+    símbolo YA clasificado como type=="ETF" -- no reclasifica nada por su
+    cuenta."""
+    return bool(name) and bool(_LEVERAGED_ETF_PATTERN.search(name))
 
 
 def _parse_pipe_meta(text: str, symbol_col: int, name_col: int, test_col: int,
