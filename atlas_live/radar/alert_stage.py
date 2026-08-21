@@ -48,8 +48,6 @@ DIAS_ELEVADOS_PARA_ALERTA_FUERTE = 2   # 2+ de los últimos 5 días -- separó B
 # Configurable, para poder ajustarlo con más evidencia sin tocar código.
 DRAWDOWN_FROM_PEAK_THRESHOLD_PCT = float(os.environ.get("ATLAS_DRAWDOWN_FROM_PEAK_THRESHOLD_PCT", 8.0))
 
-_TARDIO_O_AGOTAMIENTO = ("demasiado_tarde", "agotamiento")
-
 
 def classify_alert_stage(
     relative_volume_hoy: Optional[float],
@@ -83,30 +81,53 @@ def classify_alert_stage(
     esto compara contra el propio máximo de HOY, así que detecta una
     reversión real aunque el símbolo siga positivo en el día.
 
+    "demasiado_tarde" vs "agotamiento" ante un retroceso nulo (2026-08-21,
+    caso real MSTU: +13% al detectarlo, subió sostenido y parejo hasta
+    +19% sin nunca retroceder, y quedó SIEMPRE en NO_PERSEGUIR): ambos
+    valores de `timing_deteccion_hoy` decían "ya se movió mucho", pero
+    "agotamiento" YA implica venir de un pico con un retroceso posterior
+    (`phase_classifier.near_trough_after_peak`, vía la puerta
+    `recuperacion`) -- "demasiado_tarde" NO, solo dice que el cambio % ya
+    superó el percentil 90 histórico del símbolo sin estar acelerando en
+    ESE barrido puntual (la aceleración se mide en saltos de ~20 min, no
+    detecta una subida sostenida y pareja). Por eso "demasiado_tarde"
+    SOLO fuerza NO_PERSEGUIR si además hubo algún retroceso real desde el
+    máximo de hoy (`retroceso_desde_maximo_pct is not None`) -- si el
+    símbolo sigue EN su máximo del día (retroceso `None`), se trata igual
+    que `recorrido_significativo_ya_hecho` (mismo criterio ya existente,
+    nunca un umbral nuevo). "agotamiento" nunca cambia -- ya implica ese
+    retroceso por construcción.
+
     Orden de evaluación (el primero que matchea gana):
     1. Retroceso fuerte desde el máximo de hoy
        (>= `DRAWDOWN_FROM_PEAK_THRESHOLD_PCT`) -> NO_PERSEGUIR, sin importar
        qué diga el resto -- si ya está revirtiendo desde su propio pico, no
        hay timing ni volumen que lo compense.
-    2. `timing_deteccion_hoy` ya avanzado (demasiado_tarde/agotamiento) -> NO_PERSEGUIR.
-    3. `recorrido_significativo_ya_hecho` -> CONFIRMACION si `direction=="ALCISTA"`,
-       FLUJO_VENDEDOR si `direction=="BAJISTA"` -- si no, sigue evaluando abajo.
-    4. `al_comienzo` -> INICIO si `direction=="ALCISTA"`, FLUJO_VENDEDOR si
+    2. `agotamiento` -> NO_PERSEGUIR, siempre (ya implica un retroceso real).
+    3. `demasiado_tarde` CON algún retroceso desde el máximo de hoy
+       (`retroceso_desde_maximo_pct is not None`) -> NO_PERSEGUIR.
+    4. `recorrido_significativo_ya_hecho`, o `demasiado_tarde` SIN
+       retroceso (sigue en su máximo de hoy) -> CONFIRMACION si
+       `direction=="ALCISTA"`, FLUJO_VENDEDOR si `direction=="BAJISTA"` --
+       si no, sigue evaluando abajo.
+    5. `al_comienzo` -> INICIO si `direction=="ALCISTA"`, FLUJO_VENDEDOR si
        `direction=="BAJISTA"` -- si no, sigue evaluando abajo.
-    5. Volumen persistente (2+ días elevados) + volatilidad de régimen
+    6. Volumen persistente (2+ días elevados) + volatilidad de régimen
        elevada + aceleración positiva -> ALERTA_FUERTE (FLUJO_VENDEDOR si
        `direction=="BAJISTA"`).
-    6. Al menos 1 día con volumen elevado, o volumen elevado HOY ->
+    7. Al menos 1 día con volumen elevado, o volumen elevado HOY ->
        ALERTA_TEMPRANA (FLUJO_VENDEDOR si `direction=="BAJISTA"`).
-    7. Solo volatilidad de régimen elevada, sin nada de volumen todavía ->
+    8. Solo volatilidad de régimen elevada, sin nada de volumen todavía ->
        PREPARACION (direccionalmente neutral por diseño -- "hay actividad,
        observando").
-    8. Nada de lo anterior -> `None` (sin alerta)."""
+    9. Nada de lo anterior -> `None` (sin alerta)."""
     if retroceso_desde_maximo_pct is not None and retroceso_desde_maximo_pct >= DRAWDOWN_FROM_PEAK_THRESHOLD_PCT:
         return "NO_PERSEGUIR"
-    if timing_deteccion_hoy in _TARDIO_O_AGOTAMIENTO:
+    if timing_deteccion_hoy == "agotamiento":
         return "NO_PERSEGUIR"
-    if timing_deteccion_hoy == "recorrido_significativo_ya_hecho":
+    if timing_deteccion_hoy == "demasiado_tarde" and retroceso_desde_maximo_pct is not None:
+        return "NO_PERSEGUIR"
+    if timing_deteccion_hoy in ("recorrido_significativo_ya_hecho", "demasiado_tarde"):
         if direction == "ALCISTA":
             return "CONFIRMACION"
         if direction == "BAJISTA":

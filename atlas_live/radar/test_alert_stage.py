@@ -5,15 +5,61 @@ derivados del estudio histórico."""
 from atlas_live.radar import alert_stage as als
 
 
-def test_timing_tardio_gana_sobre_todo_lo_demas():
-    assert als.classify_alert_stage(
-        relative_volume_hoy=50.0, dias_volumen_elevado=5, aceleracion_volumen=10.0,
-        volatility_14d_pct=50.0, timing_deteccion_hoy="demasiado_tarde",
-    ) == "NO_PERSEGUIR"
+def test_agotamiento_gana_sobre_todo_lo_demas_siempre():
+    """"agotamiento" YA implica un retroceso real desde un pico (viene de
+    `phase_classifier.near_trough_after_peak`, vía la puerta `recuperacion`)
+    -- por eso sigue forzando NO_PERSEGUIR sin importar el resto, CON o SIN
+    `retroceso_desde_maximo_pct` explícito."""
     assert als.classify_alert_stage(
         relative_volume_hoy=50.0, dias_volumen_elevado=5, aceleracion_volumen=10.0,
         volatility_14d_pct=50.0, timing_deteccion_hoy="agotamiento",
     ) == "NO_PERSEGUIR"
+    assert als.classify_alert_stage(
+        relative_volume_hoy=50.0, dias_volumen_elevado=5, aceleracion_volumen=10.0,
+        volatility_14d_pct=50.0, timing_deteccion_hoy="agotamiento",
+        direction="ALCISTA", retroceso_desde_maximo_pct=None,
+    ) == "NO_PERSEGUIR"
+
+
+def test_demasiado_tarde_con_retroceso_real_da_no_perseguir():
+    """"demasiado_tarde" CON algún retroceso desde el máximo de hoy (aunque
+    sea chico, no necesita cruzar DRAWDOWN_FROM_PEAK_THRESHOLD_PCT) sigue
+    dando NO_PERSEGUIR -- ya mostró que se retiró de su propio pico."""
+    assert als.classify_alert_stage(
+        relative_volume_hoy=50.0, dias_volumen_elevado=5, aceleracion_volumen=10.0,
+        volatility_14d_pct=50.0, timing_deteccion_hoy="demasiado_tarde",
+        direction="ALCISTA", retroceso_desde_maximo_pct=1.5,
+    ) == "NO_PERSEGUIR"
+
+
+def test_demasiado_tarde_caso_real_mstu_sin_retroceso_da_confirmacion():
+    """Caso real MSTU (2026-08-21): detectado a +13%, subió sostenido y
+    parejo hasta +19% SIN nunca retroceder desde su máximo de hoy -- quedó
+    SIEMPRE en NO_PERSEGUIR porque "demasiado_tarde" se trataba igual que
+    "agotamiento", aunque nunca hubo un retroceso real que lo respalde.
+    `retroceso_desde_maximo_pct=None` (sigue en su máximo del día) ahora se
+    trata igual que "recorrido_significativo_ya_hecho"."""
+    assert als.classify_alert_stage(
+        relative_volume_hoy=0.11, dias_volumen_elevado=0, aceleracion_volumen=None,
+        volatility_14d_pct=None, timing_deteccion_hoy="demasiado_tarde",
+        direction="ALCISTA", retroceso_desde_maximo_pct=None,
+    ) == "CONFIRMACION"
+    assert als.classify_alert_stage(
+        relative_volume_hoy=0.11, dias_volumen_elevado=0, aceleracion_volumen=None,
+        volatility_14d_pct=None, timing_deteccion_hoy="demasiado_tarde",
+        direction="BAJISTA", retroceso_desde_maximo_pct=None,
+    ) == "FLUJO_VENDEDOR"
+
+
+def test_demasiado_tarde_sin_retroceso_ni_direccion_sigue_evaluando_volumen():
+    """Sin dirección ALCISTA/BAJISTA confirmada, "demasiado_tarde" sin
+    retroceso tampoco alcanza para CONFIRMACION/FLUJO_VENDEDOR -- sigue
+    evaluando por volumen/volatilidad, mismo criterio que
+    "recorrido_significativo_ya_hecho" ya usa."""
+    assert als.classify_alert_stage(
+        relative_volume_hoy=50.0, dias_volumen_elevado=5, aceleracion_volumen=10.0,
+        volatility_14d_pct=50.0, timing_deteccion_hoy="demasiado_tarde",
+    ) == "ALERTA_FUERTE"
 
 
 def test_recorrido_significativo_da_confirmacion():
