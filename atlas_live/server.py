@@ -88,6 +88,25 @@ def index():
 
 @app.route("/<path:filename>")
 def static_files(filename):
+    # Cache-busting de la Cabina (2026-08-21, caso real: el usuario vio un
+    # deploy ya confirmado en el servidor -- verificado con curl -- pero su
+    # navegador seguía sirviendo el `cabina.js`/`cabina.css` viejo desde
+    # caché, porque `index.html` los referencia con la MISMA URL siempre
+    # (`src="cabina.js"`, sin query string) y los navegadores cachean ese
+    # tipo de recurso agresivamente entre cargas normales de la página,
+    # incluso con un F5 simple. Se agrega `?v=<mtime>` -- el timestamp real
+    # de modificación de cada archivo -- así la URL cambia sola en cada
+    # deploy que toque esos 2 archivos, forzando al navegador a pedir la
+    # versión nueva, sin afectar el caching normal entre deploys (mismo
+    # archivo = misma URL = sigue sirviendo desde caché sin red de más).
+    if filename == "cabina/index.html":
+        path = STATIC_DIR / "cabina" / "index.html"
+        html = path.read_text(encoding="utf-8")
+        js_v = int((STATIC_DIR / "cabina" / "cabina.js").stat().st_mtime)
+        css_v = int((STATIC_DIR / "cabina" / "cabina.css").stat().st_mtime)
+        html = html.replace('src="cabina.js"', f'src="cabina.js?v={js_v}"')
+        html = html.replace('href="cabina.css"', f'href="cabina.css?v={css_v}"')
+        return html
     return send_from_directory(STATIC_DIR, filename)
 
 
