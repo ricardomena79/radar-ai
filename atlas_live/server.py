@@ -424,6 +424,12 @@ def api_radar_informe_dia():
         # realmente se puede comprar, no contra todo el mercado estudiado.
         "precision_de_magnitud_racional": radar_registry.magnitud_precision_report_racional(date_param),
         "precision_de_magnitud_racional_acumulada": radar_registry.magnitud_precision_report_racional(),
+        # Evolución día por día (2026-08-23, pedido explícito del usuario:
+        # "tiene q hacerlo todo los dias. para que ese % baje o suba") --
+        # responde si la precisión mejora o empeora con el tiempo, no solo
+        # un acumulado total.
+        "precision_de_magnitud_por_dia": radar_registry.magnitud_precision_by_day(),
+        "precision_de_magnitud_por_dia_racional": radar_registry.magnitud_precision_by_day_racional(),
     })
 
 

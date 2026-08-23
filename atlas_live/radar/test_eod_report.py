@@ -189,6 +189,12 @@ def test_evaluate_outcome_desglose_por_tramo_dia():
     assert outcome.max_price_regular_session == 13.5
     assert outcome.max_return_post_apertura_pct == round(100 * (13.5 - 11.2) / 11.2, 3)
     assert outcome.total_day_change_pct == round(100 * (12.7 - 10.0) / 10.0, 3)
+    # Cierre real del día vs. precio de detección (2026-08-23, caso real
+    # MRNX: tocó +44,3% intradía pero cerró en +17,8% -- "eso no es
+    # acierto") -- MISMA base que max_return_after_detection_pct, pero
+    # contra el último Close del día, no el máximo intradía.
+    assert outcome.close_price_after_detection == 12.7
+    assert outcome.close_return_after_detection_pct == round(100 * (12.7 - 10.0) / 10.0, 3)
 
 
 def test_evaluate_outcome_sin_apertura_deja_tramos_post_apertura_en_none():

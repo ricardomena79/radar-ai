@@ -813,12 +813,23 @@ def test_magnitud_predictions_for_date_lista_por_fecha():
         _restore()
 
 
-def _record_outcome_simple(ticker, market_date, max_return_after_detection_pct, is_final=True):
+def _record_outcome_simple(ticker, market_date, max_return_after_detection_pct, is_final=True,
+                            close_return_after_detection_pct=None, confiable_para_aprendizaje=True):
+    """`close_return_after_detection_pct` (2026-08-23, criterio de acierto
+    pasó de máximo intradía a cierre real -- ver `magnitud_precision_report`)
+    por defecto es IGUAL al retorno pasado, para no reescribir cada test
+    viejo que ya pensaba en un solo "resultado real" -- se puede pisar
+    explícito cuando un test necesita que difieran (caso real MRNX)."""
     reg.record_outcome(
         ticker, market_date, run_up_before_detection_pct=None,
         max_price_after_detection=None, max_return_after_detection_pct=max_return_after_detection_pct,
         minutes_to_max=None, reached_20=False, reached_50=False, reached_100=False,
         category="mejor_oportunidad", is_final=is_final,
+        confiable_para_aprendizaje=confiable_para_aprendizaje,
+        close_return_after_detection_pct=(
+            max_return_after_detection_pct if close_return_after_detection_pct is None
+            else close_return_after_detection_pct
+        ),
     )
 
 
@@ -845,6 +856,72 @@ def test_magnitud_precision_report_acierto_y_fallo_reales():
         assert por_ticker["MRNA"]["acierto"] is True
         assert por_ticker["CONL"]["acierto"] is False
         assert "PEND" not in por_ticker
+    finally:
+        _restore()
+
+
+def test_magnitud_precision_report_usa_cierre_no_maximo_intradia():
+    """Caso real MRNX (2026-08-23): tocó +44,3% intradía pero cerró en
+    +17,8% -- "eso no es acierto", pedido explícito del usuario de que el
+    criterio sea el CIERRE, no el máximo intradía."""
+    _fresh()
+    try:
+        reg.record_magnitud_prediction("MRNX", "2026-08-21", "2026-08-21T10:00:00Z", 20.5)
+        reg.record_outcome(
+            "MRNX", "2026-08-21", run_up_before_detection_pct=-3.1,
+            max_price_after_detection=103.86, max_return_after_detection_pct=44.29,
+            minutes_to_max=387.0, reached_20=True, reached_50=False, reached_100=False,
+            category="buena_oportunidad", is_final=True, confiable_para_aprendizaje=True,
+            close_price_after_detection=84.85, close_return_after_detection_pct=17.9,
+        )
+        reporte = reg.magnitud_precision_report("2026-08-21")
+        assert reporte["n_evaluables"] == 1
+        mrnx = reporte["candidatas"][0]
+        assert mrnx["resultado_real_pct"] == 17.9  # el cierre, no el 44.29 intradía
+        assert mrnx["acierto"] is False  # 17.9 < 20.5 predicho -- con el máximo hubiera sido acierto
+    finally:
+        _restore()
+
+
+def test_magnitud_precision_report_excluye_resultados_no_confiables():
+    """Caso real XCH (2026-08-23, "el listado tiene hartas fallas"): $10
+    de volumen en dólares, "acierto" de +2064% que en realidad fue un tick
+    ilíquido -- Atlas mismo ya lo marca `confiable_para_aprendizaje=0`.
+    Nunca debe contar como acierto ni aparecer como evaluable."""
+    _fresh()
+    try:
+        reg.record_magnitud_prediction("XCH", "2026-08-21", "2026-08-21T13:01:00Z", 10.0)
+        reg.record_outcome(
+            "XCH", "2026-08-21", run_up_before_detection_pct=0.0,
+            max_price_after_detection=5.0, max_return_after_detection_pct=2064.5,
+            minutes_to_max=29.0, reached_20=True, reached_50=True, reached_100=True,
+            category="mejor_oportunidad", is_final=True, confiable_para_aprendizaje=False,
+            motivos_sospecha=["dinero_insuficiente", "rvol_anomalo"],
+            close_price_after_detection=5.0, close_return_after_detection_pct=2064.5,
+        )
+        reporte = reg.magnitud_precision_report("2026-08-21")
+        assert reporte["n_evaluables"] == 0
+        assert reporte["candidatas"] == []
+    finally:
+        _restore()
+
+
+def test_magnitud_precision_report_sin_close_return_no_cuenta_como_evaluable():
+    """Resultados calculados ANTES del campo close_return_after_detection_pct
+    (`None`) se excluyen de evaluables -- nunca se mezcla la base vieja
+    (máximo intradía) con la nueva (cierre) en el mismo % reportado."""
+    _fresh()
+    try:
+        reg.record_magnitud_prediction("OLD", "2026-08-19", "2026-08-19T10:00:00Z", 10.0)
+        reg.record_outcome(
+            "OLD", "2026-08-19", run_up_before_detection_pct=None,
+            max_price_after_detection=None, max_return_after_detection_pct=50.0,
+            minutes_to_max=None, reached_20=True, reached_50=True, reached_100=False,
+            category="mejor_oportunidad", is_final=True, confiable_para_aprendizaje=True,
+            close_return_after_detection_pct=None,  # nunca se calculó -- campo nuevo
+        )
+        reporte = reg.magnitud_precision_report("2026-08-19")
+        assert reporte["n_evaluables"] == 0
     finally:
         _restore()
 
@@ -883,5 +960,54 @@ def test_magnitud_precision_report_racional_filtra_al_universo_operable(monkeypa
         assert racional["n_aciertos"] == 1
         assert racional["precision_pct"] == 100.0
         assert [c["ticker"] for c in racional["candidatas"]] == ["MRNA"]
+    finally:
+        _restore()
+
+
+def test_magnitud_precision_by_day_evolucion_real_dia_a_dia(monkeypatch):
+    """2026-08-23, pedido explícito del usuario: "tiene q hacerlo todo los
+    dias. para que ese % baje o suba" -- un solo acumulado no dice si
+    mejora o empeora. Cada día trae `n_estudiadas` (universo escaneado ESE
+    día, de daily_summary) + su propia precisión de magnitud."""
+    _fresh()
+    try:
+        monkeypatch.setattr("atlas.data.universe.is_available", lambda t: t == "MRNA")
+
+        # Día 1: 5000 estudiadas, 2 predicciones, 1 acierto.
+        reg.record_daily_summary("2026-08-19", n_estudiadas=5000, n_candidatas=100, n_senales=90,
+                                  n_evaluables=100, n_aciertos=5, n_falsos_positivos=80, n_tardias=2,
+                                  n_reached_20=5, n_reached_50=1, n_reached_100=0)
+        reg.record_magnitud_prediction("MRNA", "2026-08-19", "2026-08-19T10:00:00Z", 10.0)
+        _record_outcome_simple("MRNA", "2026-08-19", 15.0)  # acierto
+        reg.record_magnitud_prediction("XYZQ", "2026-08-19", "2026-08-19T11:00:00Z", 30.0)
+        _record_outcome_simple("XYZQ", "2026-08-19", 5.0)  # fallo, no Racional
+
+        # Día 2: 6000 estudiadas, 1 prediccion, 0 aciertos.
+        reg.record_daily_summary("2026-08-20", n_estudiadas=6000, n_candidatas=120, n_senales=110,
+                                  n_evaluables=120, n_aciertos=8, n_falsos_positivos=90, n_tardias=1,
+                                  n_reached_20=8, n_reached_50=2, n_reached_100=1)
+        reg.record_magnitud_prediction("MRNA", "2026-08-20", "2026-08-20T10:00:00Z", 20.0)
+        _record_outcome_simple("MRNA", "2026-08-20", 5.0)  # fallo
+
+        evolucion = reg.magnitud_precision_by_day()
+        assert [d["market_date"] for d in evolucion] == ["2026-08-20", "2026-08-19"]  # mas reciente primero
+
+        dia1 = next(d for d in evolucion if d["market_date"] == "2026-08-19")
+        assert dia1["n_estudiadas"] == 5000
+        assert dia1["n_predicciones"] == 2
+        assert dia1["n_evaluables"] == 2
+        assert dia1["n_aciertos"] == 1
+        assert dia1["precision_pct"] == 50.0
+
+        dia2 = next(d for d in evolucion if d["market_date"] == "2026-08-20")
+        assert dia2["n_estudiadas"] == 6000
+        assert dia2["n_aciertos"] == 0
+        assert dia2["precision_pct"] == 0.0
+
+        evolucion_rac = reg.magnitud_precision_by_day_racional()
+        dia1_rac = next(d for d in evolucion_rac if d["market_date"] == "2026-08-19")
+        assert dia1_rac["n_predicciones"] == 1  # solo MRNA, XYZQ queda afuera
+        assert dia1_rac["n_aciertos"] == 1
+        assert dia1_rac["precision_pct"] == 100.0
     finally:
         _restore()

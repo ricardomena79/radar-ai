@@ -277,6 +277,15 @@ def _connect() -> sqlite3.Connection:
         _ensure_column(conn, "candidate_outcome", "max_price_regular_session", "REAL")
         _ensure_column(conn, "candidate_outcome", "max_return_post_apertura_pct", "REAL")
         _ensure_column(conn, "candidate_outcome", "total_day_change_pct", "REAL")
+        # Retorno al CIERRE desde la detección (2026-08-23, caso real MRNX:
+        # tocó +44,3% intradía pero cerró en +17,8% -- "eso no es acierto",
+        # pedido explícito del usuario de cambiar el criterio de Precisión
+        # de Magnitud de "máximo intradía" a "cierre real del día", en TODA
+        # esa función. `max_return_after_detection_pct` no se toca --
+        # sigue siendo la fuente de reached_20/50/100/category en el resto
+        # de Atlas, sin cambios.
+        _ensure_column(conn, "candidate_outcome", "close_price_after_detection", "REAL")
+        _ensure_column(conn, "candidate_outcome", "close_return_after_detection_pct", "REAL")
         _schema_ready_for = str(DB_PATH)
     return conn
 
@@ -940,6 +949,8 @@ def record_outcome(
     max_price_regular_session: Optional[float] = None,
     max_return_post_apertura_pct: Optional[float] = None,
     total_day_change_pct: Optional[float] = None,
+    close_price_after_detection: Optional[float] = None,
+    close_return_after_detection_pct: Optional[float] = None,
 ) -> bool:
     """Upsert por (ticker, market_date) -- 2026-08-18, pedido explícito del
     usuario: un resultado "en curso" (`is_final=False`, calculado barato
@@ -959,8 +970,9 @@ def record_outcome(
                 confiable_para_aprendizaje, motivos_sospecha, is_final,
                 price_at_market_open, max_price_premarket_after_detection,
                 max_return_premarket_after_detection_pct, max_price_regular_session,
-                max_return_post_apertura_pct, total_day_change_pct, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                max_return_post_apertura_pct, total_day_change_pct,
+                close_price_after_detection, close_return_after_detection_pct, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(ticker, market_date) DO UPDATE SET
                  computed_at=excluded.computed_at,
                  run_up_before_detection_pct=excluded.run_up_before_detection_pct,
@@ -978,7 +990,9 @@ def record_outcome(
                  max_return_premarket_after_detection_pct=excluded.max_return_premarket_after_detection_pct,
                  max_price_regular_session=excluded.max_price_regular_session,
                  max_return_post_apertura_pct=excluded.max_return_post_apertura_pct,
-                 total_day_change_pct=excluded.total_day_change_pct""",
+                 total_day_change_pct=excluded.total_day_change_pct,
+                 close_price_after_detection=excluded.close_price_after_detection,
+                 close_return_after_detection_pct=excluded.close_return_after_detection_pct""",
             (ticker, market_date, _now(), run_up_before_detection_pct, max_price_after_detection,
              max_return_after_detection_pct, minutes_to_max, int(reached_20), int(reached_50),
              int(reached_100), category, notes,
@@ -988,7 +1002,8 @@ def record_outcome(
              json.dumps(motivos_sospecha or [], ensure_ascii=False), int(is_final),
              price_at_market_open, max_price_premarket_after_detection,
              max_return_premarket_after_detection_pct, max_price_regular_session,
-             max_return_post_apertura_pct, total_day_change_pct, _now()),
+             max_return_post_apertura_pct, total_day_change_pct,
+             close_price_after_detection, close_return_after_detection_pct, _now()),
         )
         conn.commit()
         return True
@@ -1227,11 +1242,12 @@ def magnitud_predictions_for_date(market_date: str) -> List[Dict[str, Any]]:
 
 def magnitud_precision_report(market_date: Optional[str] = None, solo_racional: bool = False) -> Dict[str, Any]:
     """Cruza cada predicción congelada con el resultado real ya cerrado
-    (`candidate_outcome.is_final=1`) -- "acierto" = el resultado real
-    (`max_return_after_detection_pct`) igualó o superó la predicción
-    congelada (`predicted_pct`). Calculado en cada llamada (mismo patrón que
-    `alert_stage_effectiveness_report`), nunca pre-agregado -- no toca
-    `daily_summary`. `market_date=None` trae toda la historia registrada.
+    (`candidate_outcome.is_final=1`, `confiable_para_aprendizaje=1`) --
+    "acierto" = el CIERRE real del día (`close_return_after_detection_pct`)
+    igualó o superó la predicción congelada (`predicted_pct`). Calculado en
+    cada llamada (mismo patrón que `alert_stage_effectiveness_report`),
+    nunca pre-agregado -- no toca `daily_summary`. `market_date=None` trae
+    toda la historia registrada.
 
     `solo_racional` (2026-08-23, pedido explícito del usuario: "esa info
     la quiero en atlas" -- el desglose Racional que antes solo calculaba a
@@ -1270,9 +1286,31 @@ def magnitud_precision_report(market_date: Optional[str] = None, solo_racional: 
             ).fetchone()
             if outcome is None:
                 continue  # todavía no cerró -- no se evalúa como pendiente, no se inventa un resultado
-            resultado_real_pct = outcome["max_return_after_detection_pct"]
+            # Filtro de calidad (2026-08-23, caso real XCH: detectado con
+            # $10 de volumen en dólares, "acierto" de +2064% que en
+            # realidad fue un tick ilíquido -- Atlas mismo ya lo marca
+            # `confiable_para_aprendizaje=0` con motivos_sospecha
+            # explícitos, mismo criterio que usa TODO el resto de Atlas
+            # (`list_all_evaluated_candidates(solo_confiables=True)`) --
+            # acá no se estaba aplicando. "el listado tiene hartas fallas",
+            # pedido explícito del usuario.
+            if not outcome["confiable_para_aprendizaje"]:
+                continue
+            # Criterio de acierto = CIERRE real del día (2026-08-23, caso
+            # real MRNX: tocó +44,3% intradía pero cerró en +17,8% -- "eso
+            # no es acierto", pedido explícito del usuario). Nunca
+            # `max_return_after_detection_pct` (el máximo intradía, que
+            # sobrestima lo que un trader real podría haber capturado).
+            # `close_return_after_detection_pct` es un campo NUEVO -- los
+            # resultados calculados ANTES de este cambio no lo tienen
+            # todavía (`None`), y se excluyen de evaluables en vez de
+            # mostrar un acierto/fallo con la base vieja mezclada con la
+            # nueva; se van a recuperar con un backfill aparte.
+            resultado_real_pct = outcome["close_return_after_detection_pct"]
+            if resultado_real_pct is None:
+                continue
             n_evaluables += 1
-            acierto = resultado_real_pct is not None and resultado_real_pct >= p["predicted_pct"]
+            acierto = resultado_real_pct >= p["predicted_pct"]
             if acierto:
                 n_aciertos += 1
             candidatas.append({
@@ -1295,6 +1333,76 @@ def magnitud_precision_report_racional(market_date: Optional[str] = None) -> Dic
     """Versión Racional de `magnitud_precision_report()` -- mismo criterio
     de acierto, filtrado a `atlas.data.universe.is_available(ticker)`."""
     return magnitud_precision_report(market_date, solo_racional=True)
+
+
+def magnitud_precision_by_day(solo_racional: bool = False) -> List[Dict[str, Any]]:
+    """Evolución día por día de Precisión de Magnitud (2026-08-23, pedido
+    explícito del usuario: "tiene q hacerlo todo los dias. para que ese %
+    baje o suba" -- un acumulado total no responde si está mejorando o
+    empeorando, hace falta el desglose por fecha). Por cada día con al
+    menos una predicción congelada, devuelve `n_estudiadas` (universo
+    escaneado ESE día, de `daily_summary.n_estudiadas`, ya registrado por
+    el EOD -- la misma fuente que ya usa "Aprendizaje en Vivo"),
+    `n_predicciones` (cuántas se congelaron), `n_evaluables` (cuántas ya
+    cerraron) y `n_aciertos`/`precision_pct` sobre esas evaluables. Más
+    reciente primero. `solo_racional` usa el mismo filtro estático que
+    `magnitud_precision_report_racional`."""
+    is_available = None
+    if solo_racional:
+        try:
+            from atlas.data.universe import is_available
+        except Exception:
+            is_available = None
+
+    with _connect() as conn:
+        preds = [_row(r) for r in conn.execute(
+            "SELECT * FROM magnitud_prediction ORDER BY market_date, frozen_at"
+        ).fetchall()]
+        if solo_racional:
+            preds = [p for p in preds if is_available is not None and is_available(p["ticker"])]
+
+        por_dia: Dict[str, Dict[str, int]] = {}
+        for p in preds:
+            d = por_dia.setdefault(p["market_date"], {"n_predicciones": 0, "n_evaluables": 0, "n_aciertos": 0})
+            d["n_predicciones"] += 1
+            outcome = conn.execute(
+                "SELECT close_return_after_detection_pct, confiable_para_aprendizaje FROM candidate_outcome "
+                "WHERE ticker=? AND market_date=? AND is_final=1",
+                (p["ticker"], p["market_date"]),
+            ).fetchone()
+            if outcome is None or not outcome["confiable_para_aprendizaje"]:
+                continue
+            resultado = outcome["close_return_after_detection_pct"]
+            if resultado is None:
+                continue
+            d["n_evaluables"] += 1
+            if resultado >= p["predicted_pct"]:
+                d["n_aciertos"] += 1
+
+        resumenes_por_dia = {
+            r["market_date"]: _row(r) for r in conn.execute("SELECT * FROM daily_summary").fetchall()
+        }
+
+    out = []
+    for market_date in sorted(por_dia.keys(), reverse=True):
+        stats = por_dia[market_date]
+        resumen_dia = resumenes_por_dia.get(market_date)
+        n_aciertos = stats["n_aciertos"]
+        n_evaluables = stats["n_evaluables"]
+        out.append({
+            "market_date": market_date,
+            "n_estudiadas": resumen_dia["n_estudiadas"] if resumen_dia else None,
+            "n_predicciones": stats["n_predicciones"],
+            "n_evaluables": n_evaluables,
+            "n_aciertos": n_aciertos,
+            "precision_pct": round(100 * n_aciertos / n_evaluables, 1) if n_evaluables else None,
+        })
+    return out
+
+
+def magnitud_precision_by_day_racional() -> List[Dict[str, Any]]:
+    """Versión Racional de `magnitud_precision_by_day()`."""
+    return magnitud_precision_by_day(solo_racional=True)
 
 
 def get_daily_summary(market_date: str) -> Optional[Dict[str, Any]]:

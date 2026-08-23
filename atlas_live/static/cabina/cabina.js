@@ -1571,13 +1571,42 @@ function renderPrecisionMagnitud() {
   const tablaOAviso = (candidatas, aviso) =>
     (candidatas && candidatas.length) ? tablaHtml(candidatas) : `<div class="empty-state">${aviso}</div>`;
 
+  // Evolución día por día (2026-08-23, pedido explícito del usuario:
+  // "tiene q hacerlo todo los dias. para que ese % baje o suba" -- un
+  // acumulado total no dice si mejora o empeora, hace falta ver cada día
+  // por separado). `n_estudiadas` = universo escaneado ESE día (misma
+  // fuente que "Aprendizaje en Vivo", ya registrado por el EOD).
+  const filaEvolucionHtml = (d) => `<tr>
+      <td>${d.market_date}</td>
+      <td style="text-align:right">${fmtN(d.n_estudiadas)}</td>
+      <td style="text-align:right">${fmtN(d.n_predicciones)}</td>
+      <td style="text-align:right">${fmtN(d.n_evaluables)}</td>
+      <td style="text-align:right">${fmtN(d.n_aciertos)}</td>
+      <td style="text-align:right;font-weight:700;color:${d.precision_pct != null ? "var(--accent)" : "var(--text-faint)"}">${d.precision_pct != null ? fmtNum(d.precision_pct) + "%" : "—"}</td>
+    </tr>`;
+  const tablaEvolucionHtml = (dias) => {
+    if (!dias || !dias.length) return `<div class="empty-state">Sin días registrados todavía.</div>`;
+    return `<div style="overflow-x:auto"><table class="data-table">
+      <thead><tr><th>Fecha</th><th style="text-align:right">Estudiadas</th><th style="text-align:right">Predicciones</th><th style="text-align:right">Evaluables</th><th style="text-align:right">Aciertos</th><th style="text-align:right">% Acierto</th></tr></thead>
+      <tbody>${dias.map(filaEvolucionHtml).join("")}</tbody>
+    </table></div>`;
+  };
+  const evolucion = _radarInforme && _radarInforme.precision_de_magnitud_por_dia;
+  const evolucionRac = _radarInforme && _radarInforme.precision_de_magnitud_por_dia_racional;
+
   el.innerHTML = `<div class="lh-grid" style="margin-bottom:10px">${cards}</div>
+    <h3 style="font-size:14px">📅 Evolución día por día <span class="dim" style="font-size:12px">(¿sube o baja? -- más reciente primero)</span></h3>
+    ${tablaEvolucionHtml(evolucion)}
+    <h3 style="margin-top:22px;font-size:14px">📋 Detalle de hoy</h3>
     ${tablaOAviso(hoy.candidatas, "Sin predicciones de magnitud cerradas todavía hoy.")}
-    <div class="detail-note" style="margin-top:8px">"Predicción congelada" = la mediana histórica en el momento exacto en que la candidata se volvió accionable (🟢/🟡) por primera vez -- nunca se recalcula después. "Acierto" = el resultado real igualó o superó ese número.</div>
+    <div class="detail-note" style="margin-top:8px">"Predicción congelada" = la mediana histórica en el momento exacto en que la candidata se volvió accionable (🟢/🟡) por primera vez -- nunca se recalcula después. "Resultado real" = el CIERRE del día (no el máximo intradía, que sobrestima lo que un trader real puede capturar). "Acierto" = el cierre igualó o superó ese número. Solo cuenta resultados marcados confiables por Atlas (descarta ticks ilíquidos/datos sospechosos).</div>
     <h3 style="margin-top:22px;font-size:14px">🏆 Todos los aciertos (histórico) <span class="dim" style="font-size:12px">(los tickers detrás del % de precisión histórica de arriba, más reciente primero)</span></h3>
     ${tablaAciertosHtml(acum && acum.candidatas)}
     <h3 style="margin-top:22px;font-size:14px">🎯 Solo Racional <span class="dim" style="font-size:12px">(mismo criterio, filtrado a lo que realmente podés comprar)</span></h3>
     <div class="lh-grid" style="margin:10px 0">${cardsRacional}</div>
+    <h3 style="margin-top:14px;font-size:14px">📅 Evolución día por día (Racional)</h3>
+    ${tablaEvolucionHtml(evolucionRac)}
+    <h3 style="margin-top:14px;font-size:14px">📋 Detalle de hoy (Racional)</h3>
     ${tablaOAviso(hoyRac && hoyRac.candidatas, "Sin predicciones Racional cerradas todavía hoy.")}
     <h3 style="margin-top:14px;font-size:14px">🏆 Todos los aciertos Racional (histórico)</h3>
     ${tablaAciertosHtml(acumRac && acumRac.candidatas)}`;

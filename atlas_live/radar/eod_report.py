@@ -68,6 +68,13 @@ class CandidateOutcome:
     max_price_regular_session: Optional[float] = None
     max_return_post_apertura_pct: Optional[float] = None
     total_day_change_pct: Optional[float] = None
+    # Retorno al CIERRE desde la detección (2026-08-23, caso real MRNX:
+    # tocó +44,3% intradía -- `max_return_after_detection_pct` -- pero
+    # cerró en +17,8%, pedido explícito del usuario de que Precisión de
+    # Magnitud califique contra el cierre real, no contra el máximo
+    # intradía que un trader real casi nunca puede capturar).
+    close_price_after_detection: Optional[float] = None
+    close_return_after_detection_pct: Optional[float] = None
 
 
 def _categorize(run_up_before: Optional[float], max_after: Optional[float]) -> str:
@@ -190,11 +197,21 @@ def evaluate_candidate_outcome(
     # 4) MOVIMIENTO TOTAL DEL DÍA -- solo informativo, apertura->cierre del
     # día completo de las velas disponibles, independiente de la detección.
     total_day_change_pct = None
+    close_price_after_detection = None
+    close_return_after_detection_pct = None
     if not df.empty:
         open_dia = float(df.iloc[0]["Open"])
         close_dia = float(df.iloc[-1]["Close"])
         if open_dia:
             total_day_change_pct = round(100 * (close_dia - open_dia) / open_dia, 3)
+        # 5) CIERRE real del día vs. precio de detección -- la MISMA base
+        # de comparación que `max_return_after_detection_pct`, pero contra
+        # el último precio del día en vez del máximo intradía.
+        close_price_after_detection = close_dia
+        if price_at_detection:
+            close_return_after_detection_pct = round(
+                100 * (close_dia - price_at_detection) / price_at_detection, 3
+            )
 
     return CandidateOutcome(
         ticker=ticker, run_up_before_detection_pct=change_pct_at_detection,
@@ -208,6 +225,8 @@ def evaluate_candidate_outcome(
         max_price_regular_session=max_price_regular,
         max_return_post_apertura_pct=max_return_post_apertura_pct,
         total_day_change_pct=total_day_change_pct,
+        close_price_after_detection=close_price_after_detection,
+        close_return_after_detection_pct=close_return_after_detection_pct,
     )
 
 
@@ -284,6 +303,8 @@ def run_eod_evaluation(
                 max_price_regular_session=outcome.max_price_regular_session,
                 max_return_post_apertura_pct=outcome.max_return_post_apertura_pct,
                 total_day_change_pct=outcome.total_day_change_pct,
+                close_price_after_detection=outcome.close_price_after_detection,
+                close_return_after_detection_pct=outcome.close_return_after_detection_pct,
             )
 
             # comportamiento_post_apertura -- solo tiene sentido si la detección
