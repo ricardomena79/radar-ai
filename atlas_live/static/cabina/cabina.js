@@ -1526,6 +1526,29 @@ function renderPrecisionMagnitud() {
       <tbody>${candidatas.map(filaHtml).join("")}</tbody>
     </table></div>`;
 
+  // Lista nombrada de TODOS los aciertos históricos (2026-08-23, pedido
+  // explícito del usuario: "los 6 aciertos que tuvo no están nombrados" --
+  // la tarjeta "histórica" solo mostraba un %, nunca los tickers reales
+  // detrás de ese número; y la tabla de arriba solo mostraba el día de
+  // HOY, que en fin de semana/fuera de sesión queda vacía). Sale del mismo
+  // `acumulada` ya usado en las tarjetas -- ningún cálculo nuevo, filtrado
+  // a `acierto===true` y ordenado más reciente primero.
+  const filaConFechaHtml = (c) => `<tr class="acierto-row-hit">
+      <td>${c.ticker}</td>
+      <td class="dim">${c.market_date || "—"}</td>
+      <td style="text-align:right">${c.predicted_pct != null ? "≥" + fmtNum(c.predicted_pct) + "%" : "—"}</td>
+      <td style="text-align:right">${c.resultado_real_pct != null ? fmtPct(c.resultado_real_pct) : "—"}</td>
+    </tr>`;
+  const tablaAciertosHtml = (candidatas) => {
+    const aciertos = (candidatas || []).filter(c => c.acierto)
+      .sort((a, b) => (b.market_date || "").localeCompare(a.market_date || "") || (b.frozen_at || "").localeCompare(a.frozen_at || ""));
+    if (!aciertos.length) return `<div class="empty-state">Sin aciertos registrados todavía.</div>`;
+    return `<div style="overflow-x:auto"><table class="data-table">
+      <thead><tr><th>Ticker</th><th>Fecha</th><th style="text-align:right">Predijo ≥</th><th style="text-align:right">Resultado real</th></tr></thead>
+      <tbody>${aciertos.map(filaConFechaHtml).join("")}</tbody>
+    </table></div>`;
+  };
+
   // Desglose Racional (2026-08-23, pedido explícito del usuario: "esa
   // info la quiero en atlas") -- mismo criterio de acierto, filtrado al
   // universo operable real (atlas.data.universe), para juzgar el % de
@@ -1551,9 +1574,13 @@ function renderPrecisionMagnitud() {
   el.innerHTML = `<div class="lh-grid" style="margin-bottom:10px">${cards}</div>
     ${tablaOAviso(hoy.candidatas, "Sin predicciones de magnitud cerradas todavía hoy.")}
     <div class="detail-note" style="margin-top:8px">"Predicción congelada" = la mediana histórica en el momento exacto en que la candidata se volvió accionable (🟢/🟡) por primera vez -- nunca se recalcula después. "Acierto" = el resultado real igualó o superó ese número.</div>
+    <h3 style="margin-top:22px;font-size:14px">🏆 Todos los aciertos (histórico) <span class="dim" style="font-size:12px">(los tickers detrás del % de precisión histórica de arriba, más reciente primero)</span></h3>
+    ${tablaAciertosHtml(acum && acum.candidatas)}
     <h3 style="margin-top:22px;font-size:14px">🎯 Solo Racional <span class="dim" style="font-size:12px">(mismo criterio, filtrado a lo que realmente podés comprar)</span></h3>
     <div class="lh-grid" style="margin:10px 0">${cardsRacional}</div>
-    ${tablaOAviso(hoyRac && hoyRac.candidatas, "Sin predicciones Racional cerradas todavía hoy.")}`;
+    ${tablaOAviso(hoyRac && hoyRac.candidatas, "Sin predicciones Racional cerradas todavía hoy.")}
+    <h3 style="margin-top:14px;font-size:14px">🏆 Todos los aciertos Racional (histórico)</h3>
+    ${tablaAciertosHtml(acumRac && acumRac.candidatas)}`;
 }
 
 let _alertStages = null;
