@@ -1514,12 +1514,6 @@ function renderPrecisionMagnitud() {
     card("📊", "Precisión de magnitud (hoy)", hoy.precision_pct != null ? fmtNum(hoy.precision_pct) + "%" : "No disponible", `${fmtN(hoy.n_aciertos)}/${fmtN(hoy.n_evaluables)}`) +
     card("📊", "Precisión de magnitud (histórica)", (acum && acum.precision_pct != null) ? fmtNum(acum.precision_pct) + "%" : "No disponible", (acum && acum.n_evaluables) ? `${fmtN(acum.n_aciertos)}/${fmtN(acum.n_evaluables)}` : "");
 
-  if (!hoy.candidatas || !hoy.candidatas.length) {
-    el.innerHTML = `<div class="lh-grid" style="margin-bottom:10px">${cards}</div>
-      <div class="empty-state">Sin predicciones de magnitud cerradas todavía hoy.</div>`;
-    return;
-  }
-
   const filaHtml = (c) => `<tr class="${c.acierto ? "acierto-row-hit" : "acierto-row-miss"}">
       <td>${c.ticker}</td>
       <td style="text-align:right">${c.predicted_pct != null ? "≥" + fmtNum(c.predicted_pct) + "%" : "—"}</td>
@@ -1545,12 +1539,21 @@ function renderPrecisionMagnitud() {
     card("📊", "Precisión de magnitud histórica (Racional)", (acumRac && acumRac.precision_pct != null) ? fmtNum(acumRac.precision_pct) + "%" : "No disponible", (acumRac && acumRac.n_evaluables) ? `${fmtN(acumRac.n_aciertos)}/${fmtN(acumRac.n_evaluables)}` : "")
   ) : "";
 
+  // Bug real encontrado en vivo (2026-08-23, fin de semana -- 0 predicciones
+  // cerradas HOY): un `return` acá adentro cortaba la función ANTES de
+  // llegar a la sección "Solo Racional" de abajo -- esa sección depende de
+  // datos ACUMULADOS (históricos), que siguen existiendo aunque hoy no haya
+  // nada nuevo. Ahora el caso "sin nada hoy" solo cambia la tabla de arriba
+  // por un aviso, nunca corta el resto del panel.
+  const tablaOAviso = (candidatas, aviso) =>
+    (candidatas && candidatas.length) ? tablaHtml(candidatas) : `<div class="empty-state">${aviso}</div>`;
+
   el.innerHTML = `<div class="lh-grid" style="margin-bottom:10px">${cards}</div>
-    ${tablaHtml(hoy.candidatas)}
+    ${tablaOAviso(hoy.candidatas, "Sin predicciones de magnitud cerradas todavía hoy.")}
     <div class="detail-note" style="margin-top:8px">"Predicción congelada" = la mediana histórica en el momento exacto en que la candidata se volvió accionable (🟢/🟡) por primera vez -- nunca se recalcula después. "Acierto" = el resultado real igualó o superó ese número.</div>
     <h3 style="margin-top:22px;font-size:14px">🎯 Solo Racional <span class="dim" style="font-size:12px">(mismo criterio, filtrado a lo que realmente podés comprar)</span></h3>
     <div class="lh-grid" style="margin:10px 0">${cardsRacional}</div>
-    ${(hoyRac && hoyRac.candidatas && hoyRac.candidatas.length) ? tablaHtml(hoyRac.candidatas) : '<div class="empty-state">Sin predicciones Racional cerradas todavía hoy.</div>'}`;
+    ${tablaOAviso(hoyRac && hoyRac.candidatas, "Sin predicciones Racional cerradas todavía hoy.")}`;
 }
 
 let _alertStages = null;
