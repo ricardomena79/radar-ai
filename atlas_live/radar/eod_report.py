@@ -15,6 +15,7 @@ Tradier del día completo, tomando solo las velas POSTERIORES a
 `detected_at` -- separación anti-leakage estricta con la detección misma.
 """
 
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -415,3 +416,120 @@ def run_eod_evaluation(
         mejores_oportunidades=mejores[:20], posibles_no_detectadas=posibles_no_detectadas[:20],
         errores=errores[:20],
     )
+
+
+def backfill_close_return(
+    market_date: str, tradier_provider: TradierProvider,
+    symbol_query_map: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
+    """Recalcula SOLO `close_price_after_detection`/`close_return_after_detection_pct`
+    para candidatas de `market_date` que ya tienen resultado final (EOD ya
+    corrido) pero fueron calculadas ANTES de que existiera ese campo
+    (2026-08-23, Precisión de Magnitud pasó de "máximo intradía" a "cierre
+    real" -- ver `magnitud_precision_report`, caso real MRNX).
+
+    A propósito NO toca nada más: `max_return_after_detection_pct`,
+    `category`, `reached_20/50/100`, `confiable_para_aprendizaje` ya están
+    bien calculados y no dependen de este cambio -- ver
+    `candidate_registry.update_close_return_after_detection` (UPDATE
+    angosto, nunca un upsert completo). Salta candidatas que ya tienen el
+    campo (idempotente, se puede reintentar sin gastar llamadas de más a
+    Tradier) y las que no tienen resultado final todavía (nada que
+    recalcular).
+
+    Alcance acotado a propósito: solo los tickers con una predicción de
+    magnitud congelada ese día (`magnitud_prediction`, no las ~6.000
+    candidatas detectadas en total) -- son los únicos cuyo cierre importa
+    para `magnitud_precision_report()`."""
+    predicciones = reg.magnitud_predictions_for_date(market_date)
+    detecciones_por_ticker = {c["ticker"]: c for c in reg.list_candidates_for_date(market_date)}
+    actualizadas: List[str] = []
+    saltadas_ya_tenian = 0
+    saltadas_sin_final = 0
+    errores: List[str] = []
+
+    for pred in predicciones:
+        ticker = pred["ticker"]
+        c = detecciones_por_ticker.get(ticker)
+        if c is None:
+            errores.append(f"{ticker}: sin fila en candidate_detection (no deberia pasar)")
+            continue
+        outcome_actual = reg.get_outcome(ticker, market_date)
+        if not outcome_actual or not outcome_actual.get("is_final"):
+            saltadas_sin_final += 1
+            continue
+        if outcome_actual.get("close_return_after_detection_pct") is not None:
+            saltadas_ya_tenian += 1
+            continue
+        try:
+            query_symbol = (symbol_query_map or {}).get(ticker) or normalize_symbol(ticker).query_symbol
+            outcome = evaluate_candidate_outcome(
+                ticker, c["detected_at"], c["price_at_detection"], c["change_pct_at_detection"],
+                tradier_provider, query_symbol=query_symbol,
+            )
+            if outcome.close_return_after_detection_pct is None:
+                errores.append(f"{ticker}: sin velas suficientes para calcular el cierre")
+                continue
+            reg.update_close_return_after_detection(
+                ticker, market_date, outcome.close_price_after_detection,
+                outcome.close_return_after_detection_pct,
+            )
+            actualizadas.append(ticker)
+        except Exception as exc:
+            logger.warning(f"backfill_close_return: excepción evaluando {ticker}: {type(exc).__name__}: {exc}")
+            errores.append(f"{ticker}: {type(exc).__name__}: {exc}")
+
+    return {
+        "market_date": market_date,
+        "n_predicciones": len(predicciones),
+        "n_actualizadas": len(actualizadas),
+        "n_saltadas_ya_tenian": saltadas_ya_tenian,
+        "n_saltadas_sin_resultado_final": saltadas_sin_final,
+        "n_errores": len(errores),
+        "errores": errores[:50],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Backfill en hilo de fondo (2026-08-23) -- mismo patrón que
+# scripts/build_historical_reference.py::start_background_build: puede
+# tardar minutos (una llamada de red por ticker), así que no puede correr
+# sincrónico dentro de un único request HTTP. No-reentrante por fecha.
+# ---------------------------------------------------------------------------
+
+_backfill_lock = threading.Lock()
+_backfill_state: Dict[str, Any] = {"running": False, "market_date": None, "result": None, "error": None}
+
+
+def start_background_backfill_close_return(
+    market_date: str, tradier_provider: TradierProvider,
+    symbol_query_map: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
+    with _backfill_lock:
+        if _backfill_state["running"]:
+            return {"started": False, "reason": f"ya hay un backfill corriendo ({_backfill_state['market_date']})"}
+        _backfill_state["running"] = True
+        _backfill_state["market_date"] = market_date
+        _backfill_state["result"] = None
+        _backfill_state["error"] = None
+
+    def _run() -> None:
+        try:
+            result = backfill_close_return(market_date, tradier_provider, symbol_query_map)
+            with _backfill_lock:
+                _backfill_state["result"] = result
+        except Exception as exc:
+            logger.warning(f"start_background_backfill_close_return: {type(exc).__name__}: {exc}")
+            with _backfill_lock:
+                _backfill_state["error"] = f"{type(exc).__name__}: {exc}"
+        finally:
+            with _backfill_lock:
+                _backfill_state["running"] = False
+
+    threading.Thread(target=_run, daemon=True, name=f"backfill-close-return-{market_date}").start()
+    return {"started": True, "market_date": market_date}
+
+
+def get_backfill_close_return_status() -> Dict[str, Any]:
+    with _backfill_lock:
+        return dict(_backfill_state)

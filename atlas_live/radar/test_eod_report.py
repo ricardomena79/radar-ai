@@ -338,6 +338,74 @@ def test_ticker_roto_no_detiene_el_lote_y_queda_marcado_como_fallido():
         _restore()
 
 
+# --- Backfill de close_return_after_detection_pct (2026-08-23) ---
+
+def test_backfill_close_return_recalcula_solo_lo_que_falta():
+    """Caso real MRNX/viernes: outcomes ya calculados ANTES de que
+    existiera close_return_after_detection_pct (max_return_after_detection_pct
+    ya correcto, close en None) -- el backfill lo completa sin tocar nada
+    más."""
+    _fresh()
+    try:
+        reg.record_detection("XYZ", "2026-08-21", "premarket", "2026-08-21T10:00:00Z", "s1",
+                              10.0, 3.0, 1000, 500, 2.0, 10000, gates_fired=[{"name": "cambio_de_precio"}])
+        # Outcome "viejo": is_final=True, con max_return_after_detection_pct
+        # correcto pero SIN el campo nuevo -- exactamente el estado real de
+        # las candidatas del viernes tras el deploy del criterio de cierre.
+        reg.record_outcome(
+            "XYZ", "2026-08-21", run_up_before_detection_pct=3.0,
+            max_price_after_detection=15.0, max_return_after_detection_pct=50.0,
+            minutes_to_max=20.0, reached_20=True, reached_50=True, reached_100=False,
+            category="mejor_oportunidad", is_final=True, confiable_para_aprendizaje=True,
+        )
+        reg.record_magnitud_prediction("XYZ", "2026-08-21", "2026-08-21T10:05:00Z", 20.0)
+
+        prices = [10, 10.2, 10.5, 11, 12, 15, 14, 13]  # cierra en 13 -> +30% desde detección
+        provider = _FakeTradier({"XYZ": _df(prices, start="2026-08-21T10:00:00Z")})
+        resultado = eod.backfill_close_return("2026-08-21", provider)
+
+        assert resultado["n_predicciones"] == 1
+        assert resultado["n_actualizadas"] == 1
+        assert resultado["n_errores"] == 0
+
+        outcome = reg.get_outcome("XYZ", "2026-08-21")
+        assert outcome["close_price_after_detection"] == 13.0
+        assert outcome["close_return_after_detection_pct"] == round(100 * (13.0 - 10.0) / 10.0, 3)
+        # Nada más se tocó -- sigue siendo el mismo resultado ya correcto.
+        assert outcome["max_return_after_detection_pct"] == 50.0
+        assert outcome["category"] == "mejor_oportunidad"
+        assert outcome["reached_20"] == 1
+    finally:
+        _restore()
+
+
+def test_backfill_close_return_salta_los_que_ya_lo_tienen_sin_gastar_llamadas():
+    """Idempotente: un ticker que ya tiene close_return_after_detection_pct
+    no vuelve a pedir velas -- si lo hiciera, `_FakeTradier` con el símbolo
+    marcado "broken" lanzaría una excepción y el test fallaría."""
+    _fresh()
+    try:
+        reg.record_detection("YA_LISTO", "2026-08-21", "regular", "2026-08-21T13:32:00Z", "s1",
+                              10.0, 3.0, 1000, 500, 2.0, 10000, gates_fired=[{"name": "cambio_de_precio"}])
+        reg.record_outcome(
+            "YA_LISTO", "2026-08-21", run_up_before_detection_pct=3.0,
+            max_price_after_detection=15.0, max_return_after_detection_pct=50.0,
+            minutes_to_max=20.0, reached_20=True, reached_50=True, reached_100=False,
+            category="mejor_oportunidad", is_final=True, confiable_para_aprendizaje=True,
+            close_price_after_detection=12.0, close_return_after_detection_pct=20.0,
+        )
+        reg.record_magnitud_prediction("YA_LISTO", "2026-08-21", "2026-08-21T10:05:00Z", 15.0)
+
+        provider = _FakeTradier({}, broken_symbols=["YA_LISTO"])
+        resultado = eod.backfill_close_return("2026-08-21", provider)
+
+        assert resultado["n_actualizadas"] == 0
+        assert resultado["n_saltadas_ya_tenian"] == 1
+        assert resultado["n_errores"] == 0
+    finally:
+        _restore()
+
+
 if __name__ == "__main__":
     import traceback
 

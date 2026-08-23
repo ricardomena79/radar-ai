@@ -846,6 +846,47 @@ def api_admin_build_historical_reference_status():
     return jsonify(bhr.build_status())
 
 
+@app.route("/api/admin/backfill-close-return", methods=["POST"])
+def api_admin_backfill_close_return():
+    """Dispara, en un hilo de fondo, el recálculo de `close_price_after_detection`/
+    `close_return_after_detection_pct` para las candidatas de `?date=` que
+    ya tienen resultado final pero fueron calculadas ANTES de que existiera
+    ese campo (2026-08-23, Precisión de Magnitud pasó de "máximo intradía"
+    a "cierre real" -- ver `eod_report.backfill_close_return`, caso real
+    MRNX). Solo pide velas de Tradier para los tickers que realmente
+    tienen una predicción de magnitud congelada ese día -- no las miles de
+    candidatas detectadas en total. No-reentrante: si ya hay un backfill
+    corriendo, devuelve 409. Protegido con ATLAS_ADMIN_TOKEN."""
+    if not _admin_token_ok():
+        return jsonify({"error": "no autorizado"}), 403
+
+    market_date = request.args.get("date")
+    if not market_date:
+        return jsonify({"error": "falta ?date=YYYY-MM-DD"}), 400
+
+    from atlas_live.data_fusion.universe_quotes import build_tradier_provider
+    from atlas_live.radar import eod_report as eod
+
+    provider = build_tradier_provider()
+    if provider is None:
+        return jsonify({"error": "TRADIER_API_TOKEN no configurado"}), 503
+
+    result = eod.start_background_backfill_close_return(market_date, provider)
+    return jsonify(result), (202 if result.get("started") else 409)
+
+
+@app.route("/api/admin/backfill-close-return/status")
+def api_admin_backfill_close_return_status():
+    """Solo lectura: estado del backfill en curso o el resultado del
+    último que corrió (actualizados/saltados/errores, todo real)."""
+    if not _admin_token_ok():
+        return jsonify({"error": "no autorizado"}), 403
+
+    from atlas_live.radar import eod_report as eod
+
+    return jsonify(eod.get_backfill_close_return_status())
+
+
 @app.route("/api/admin/historical-scoring-report")
 def api_admin_historical_scoring_report():
     """Solo lectura (2026-08-17, Fase 3): reporte estadístico real sobre la

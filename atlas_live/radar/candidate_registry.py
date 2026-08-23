@@ -1009,6 +1009,30 @@ def record_outcome(
         return True
 
 
+def update_close_return_after_detection(
+    ticker: str, market_date: str, close_price_after_detection: Optional[float],
+    close_return_after_detection_pct: Optional[float],
+) -> bool:
+    """Actualización ANGOSTA -- SOLO estos 2 campos (2026-08-23, backfill
+    del criterio de cierre de Precisión de Magnitud, ver
+    `eod_report.backfill_close_return`). A propósito NO es un upsert de
+    `record_outcome()`: un resultado ya `is_final=1` correctamente
+    calculado (`max_return_after_detection_pct`, `category`,
+    `reached_20/50/100`, `confiable_para_aprendizaje`) nunca debe volver a
+    tocarse acá -- esos campos ya están bien, no dependen de este cambio.
+    Devuelve `False` si el ticker/fecha no tiene ninguna fila (nunca crea
+    una nueva)."""
+    with _connect() as conn:
+        cur = conn.execute(
+            """UPDATE candidate_outcome SET
+                 close_price_after_detection=?, close_return_after_detection_pct=?
+               WHERE ticker=? AND market_date=? AND is_final=1""",
+            (close_price_after_detection, close_return_after_detection_pct, ticker, market_date),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
 def list_outcomes_for_date(market_date: str) -> List[Dict[str, Any]]:
     with _connect() as conn:
         rows = conn.execute(

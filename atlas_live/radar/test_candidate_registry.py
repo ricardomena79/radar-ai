@@ -860,6 +860,40 @@ def test_magnitud_precision_report_acierto_y_fallo_reales():
         _restore()
 
 
+def test_update_close_return_after_detection_es_angosto_no_toca_lo_demas():
+    """2026-08-23, backfill de Precisión de Magnitud: solo actualiza los 2
+    campos de cierre -- category/max_return_after_detection_pct/reached_20
+    (ya correctos) quedan intactos."""
+    _fresh()
+    try:
+        reg.record_outcome(
+            "XYZ", "2026-08-21", run_up_before_detection_pct=3.0,
+            max_price_after_detection=15.0, max_return_after_detection_pct=50.0,
+            minutes_to_max=20.0, reached_20=True, reached_50=True, reached_100=False,
+            category="mejor_oportunidad", is_final=True, confiable_para_aprendizaje=True,
+        )
+        actualizado = reg.update_close_return_after_detection("XYZ", "2026-08-21", 13.0, 30.0)
+        assert actualizado is True
+
+        outcome = reg.get_outcome("XYZ", "2026-08-21")
+        assert outcome["close_price_after_detection"] == 13.0
+        assert outcome["close_return_after_detection_pct"] == 30.0
+        assert outcome["max_return_after_detection_pct"] == 50.0  # sin tocar
+        assert outcome["category"] == "mejor_oportunidad"  # sin tocar
+        assert outcome["reached_20"] == 1  # sin tocar
+    finally:
+        _restore()
+
+
+def test_update_close_return_after_detection_sin_fila_devuelve_false():
+    _fresh()
+    try:
+        actualizado = reg.update_close_return_after_detection("NO_EXISTE", "2026-08-21", 13.0, 30.0)
+        assert actualizado is False
+    finally:
+        _restore()
+
+
 def test_magnitud_precision_report_usa_cierre_no_maximo_intradia():
     """Caso real MRNX (2026-08-23): tocó +44,3% intradía pero cerró en
     +17,8% -- "eso no es acierto", pedido explícito del usuario de que el
