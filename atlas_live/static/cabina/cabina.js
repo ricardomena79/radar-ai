@@ -942,6 +942,13 @@ function renderLearningHeadline() {
       card("🎯", "Precisión acumulada (Racional)", precOr(racAcum.precision), `${numOr(racAcum.dias)} días con resumen`) +
       card("🎯", "Precisión reciente (Racional)", precOr(racReciente.precision), racReciente.dias_incluidos ? `últimos ${racReciente.dias_incluidos} días` : "sin ventana todavía");
   }
+
+  // Se re-renderiza acá también (2026-08-21, pedido explícito del usuario:
+  // "quiero que aparezca en el mismo panel, no quiero estar buscando en
+  // diferentes lugares") -- Precisión de Magnitud vive en la vista Radar
+  // Universo, pero necesita cuánto estudió/Madurez de ACÁ (Aprendizaje en
+  // Vivo, Evolución) -- cada poll de cualquiera de los dos refresca ambos.
+  renderPrecisionMagnitud();
 }
 
 // Los 11 ejes de Madurez, con su evidencia real -- nunca un promedio, la
@@ -1486,7 +1493,23 @@ function renderPrecisionMagnitud() {
   const card = (icon, label, value, sub) =>
     `<div class="lh-card"><div class="lh-icon">${icon}</div><div class="lh-label">${label}</div><div class="lh-value">${value}</div>${sub ? `<div class="lh-sub">${sub}</div>` : ""}</div>`;
 
+  // Cuánto estudió Atlas + Madurez (2026-08-21, pedido explícito del
+  // usuario: "quiero que aparezca en el mismo panel" -- el % de acierto
+  // de magnitud sin el tamaño real de la muestra que lo respalda, y sin
+  // saber si Atlas ya aprendió lo suficiente, es un número suelto).
+  // `_learningMaturity` es la MISMA fuente que ya usa "Aprendizaje en
+  // Vivo" (/api/learning-maturity) -- nunca un cálculo nuevo, solo se
+  // reutiliza acá.
+  const lm = _learningMaturity;
+  const lmAcum = (lm && lm.acumulada) || {};
+  const madurez = (lm && lm.madurez) || {};
+  const cardsAprendizaje = lm ? (
+    card("🔎", "Estudiadas (acumulado)", fmtN(lmAcum.estudiadas), `${fmtN(lmAcum.dias)} días con resumen`) +
+    card("🧠", "Madurez del aprendizaje", madurez.estado || "Sin evidencia", madurez.eje_limitante ? `limita: ${madurez.eje_limitante}` : "")
+  ) : "";
+
   const cards =
+    cardsAprendizaje +
     card("🎯", "Aciertos hoy", fmtN(hoy.n_aciertos), `de ${fmtN(hoy.n_evaluables)} evaluables`) +
     card("📊", "Precisión de magnitud (hoy)", hoy.precision_pct != null ? fmtNum(hoy.precision_pct) + "%" : "No disponible", `${fmtN(hoy.n_aciertos)}/${fmtN(hoy.n_evaluables)}`) +
     card("📊", "Precisión de magnitud (histórica)", (acum && acum.precision_pct != null) ? fmtNum(acum.precision_pct) + "%" : "No disponible", (acum && acum.n_evaluables) ? `${fmtN(acum.n_aciertos)}/${fmtN(acum.n_evaluables)}` : "");
