@@ -1225,13 +1225,27 @@ def magnitud_predictions_for_date(market_date: str) -> List[Dict[str, Any]]:
         return [_row(r) for r in rows]
 
 
-def magnitud_precision_report(market_date: Optional[str] = None) -> Dict[str, Any]:
+def magnitud_precision_report(market_date: Optional[str] = None, solo_racional: bool = False) -> Dict[str, Any]:
     """Cruza cada predicción congelada con el resultado real ya cerrado
     (`candidate_outcome.is_final=1`) -- "acierto" = el resultado real
     (`max_return_after_detection_pct`) igualó o superó la predicción
     congelada (`predicted_pct`). Calculado en cada llamada (mismo patrón que
     `alert_stage_effectiveness_report`), nunca pre-agregado -- no toca
-    `daily_summary`. `market_date=None` trae toda la historia registrada."""
+    `daily_summary`. `market_date=None` trae toda la historia registrada.
+
+    `solo_racional` (2026-08-23, pedido explícito del usuario: "esa info
+    la quiero en atlas" -- el desglose Racional que antes solo calculaba a
+    mano): filtra a `atlas.data.universe.is_available(ticker)`, el MISMO
+    universo estático real que ya usa `_racional_stats_for_dates` -- no
+    depende de un barrido en vivo (por eso funciona incluso de noche o el
+    fin de semana, a diferencia de filtrar contra `/api/radar-oportunidades`)."""
+    is_available = None
+    if solo_racional:
+        try:
+            from atlas.data.universe import is_available
+        except Exception:
+            is_available = None
+
     with _connect() as conn:
         if market_date:
             preds = conn.execute(
@@ -1243,6 +1257,8 @@ def magnitud_precision_report(market_date: Optional[str] = None) -> Dict[str, An
                 "SELECT * FROM magnitud_prediction ORDER BY market_date, frozen_at"
             ).fetchall()
         preds = [_row(r) for r in preds]
+        if solo_racional:
+            preds = [p for p in preds if is_available is not None and is_available(p["ticker"])]
 
         candidatas: List[Dict[str, Any]] = []
         n_evaluables = 0
@@ -1273,6 +1289,12 @@ def magnitud_precision_report(market_date: Optional[str] = None) -> Dict[str, An
         "precision_pct": round(100 * n_aciertos / n_evaluables, 1) if n_evaluables else None,
         "candidatas": candidatas,
     }
+
+
+def magnitud_precision_report_racional(market_date: Optional[str] = None) -> Dict[str, Any]:
+    """Versión Racional de `magnitud_precision_report()` -- mismo criterio
+    de acierto, filtrado a `atlas.data.universe.is_available(ticker)`."""
+    return magnitud_precision_report(market_date, solo_racional=True)
 
 
 def get_daily_summary(market_date: str) -> Optional[Dict[str, Any]]:

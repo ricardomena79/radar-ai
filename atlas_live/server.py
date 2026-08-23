@@ -418,6 +418,12 @@ def api_radar_informe_dia():
         # congeladas Y resultados finales para ese día.
         "precision_de_magnitud": radar_registry.magnitud_precision_report(date_param),
         "precision_de_magnitud_acumulada": radar_registry.magnitud_precision_report(),
+        # Versión Racional (2026-08-23, pedido explícito del usuario: "esa
+        # info la quiero en atlas") -- mismo criterio, filtrado al universo
+        # operable real, para que el % de acierto se juzgue contra lo que
+        # realmente se puede comprar, no contra todo el mercado estudiado.
+        "precision_de_magnitud_racional": radar_registry.magnitud_precision_report_racional(date_param),
+        "precision_de_magnitud_racional_acumulada": radar_registry.magnitud_precision_report_racional(),
     })
 
 

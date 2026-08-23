@@ -1520,20 +1520,37 @@ function renderPrecisionMagnitud() {
     return;
   }
 
-  const filas = hoy.candidatas.map(c => `<tr class="${c.acierto ? "acierto-row-hit" : "acierto-row-miss"}">
+  const filaHtml = (c) => `<tr class="${c.acierto ? "acierto-row-hit" : "acierto-row-miss"}">
       <td>${c.ticker}</td>
       <td style="text-align:right">${c.predicted_pct != null ? "≥" + fmtNum(c.predicted_pct) + "%" : "—"}</td>
       <td class="dim">${c.frozen_at ? fmtTimeSec(c.frozen_at) + " ET" : "—"}</td>
       <td style="text-align:right">${c.resultado_real_pct != null ? fmtPct(c.resultado_real_pct) : "—"}</td>
       <td>${c.acierto ? '<span style="color:var(--green);font-weight:700">✅ Acierto</span>' : '<span style="color:var(--red);font-weight:700">❌ Falló</span>'}</td>
-    </tr>`).join("");
+    </tr>`;
+  const tablaHtml = (candidatas) => `<div style="overflow-x:auto"><table class="data-table">
+      <thead><tr><th>Ticker</th><th style="text-align:right">Predicción congelada</th><th>Congelada al</th><th style="text-align:right">Resultado real</th><th>Resultado</th></tr></thead>
+      <tbody>${candidatas.map(filaHtml).join("")}</tbody>
+    </table></div>`;
+
+  // Desglose Racional (2026-08-23, pedido explícito del usuario: "esa
+  // info la quiero en atlas") -- mismo criterio de acierto, filtrado al
+  // universo operable real (atlas.data.universe), para juzgar el % de
+  // acierto contra lo que realmente se puede comprar, no contra todo el
+  // mercado estudiado -- mismo espíritu que "Aprendizaje en Vivo (Racional)".
+  const hoyRac = _radarInforme && _radarInforme.precision_de_magnitud_racional;
+  const acumRac = _radarInforme && _radarInforme.precision_de_magnitud_racional_acumulada;
+  const cardsRacional = hoyRac ? (
+    card("🎯", "Aciertos hoy (Racional)", fmtN(hoyRac.n_aciertos), `de ${fmtN(hoyRac.n_evaluables)} evaluables`) +
+    card("📊", "Precisión de magnitud hoy (Racional)", hoyRac.precision_pct != null ? fmtNum(hoyRac.precision_pct) + "%" : "No disponible", `${fmtN(hoyRac.n_aciertos)}/${fmtN(hoyRac.n_evaluables)}`) +
+    card("📊", "Precisión de magnitud histórica (Racional)", (acumRac && acumRac.precision_pct != null) ? fmtNum(acumRac.precision_pct) + "%" : "No disponible", (acumRac && acumRac.n_evaluables) ? `${fmtN(acumRac.n_aciertos)}/${fmtN(acumRac.n_evaluables)}` : "")
+  ) : "";
 
   el.innerHTML = `<div class="lh-grid" style="margin-bottom:10px">${cards}</div>
-    <div style="overflow-x:auto"><table class="data-table">
-      <thead><tr><th>Ticker</th><th style="text-align:right">Predicción congelada</th><th>Congelada al</th><th style="text-align:right">Resultado real</th><th>Resultado</th></tr></thead>
-      <tbody>${filas}</tbody>
-    </table></div>
-    <div class="detail-note" style="margin-top:8px">"Predicción congelada" = la mediana histórica en el momento exacto en que la candidata se volvió accionable (🟢/🟡) por primera vez -- nunca se recalcula después. "Acierto" = el resultado real igualó o superó ese número.</div>`;
+    ${tablaHtml(hoy.candidatas)}
+    <div class="detail-note" style="margin-top:8px">"Predicción congelada" = la mediana histórica en el momento exacto en que la candidata se volvió accionable (🟢/🟡) por primera vez -- nunca se recalcula después. "Acierto" = el resultado real igualó o superó ese número.</div>
+    <h3 style="margin-top:22px;font-size:14px">🎯 Solo Racional <span class="dim" style="font-size:12px">(mismo criterio, filtrado a lo que realmente podés comprar)</span></h3>
+    <div class="lh-grid" style="margin:10px 0">${cardsRacional}</div>
+    ${(hoyRac && hoyRac.candidatas && hoyRac.candidatas.length) ? tablaHtml(hoyRac.candidatas) : '<div class="empty-state">Sin predicciones Racional cerradas todavía hoy.</div>'}`;
 }
 
 let _alertStages = null;

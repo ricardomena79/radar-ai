@@ -859,3 +859,29 @@ def test_magnitud_precision_report_sin_predicciones_no_rompe():
         }
     finally:
         _restore()
+
+
+def test_magnitud_precision_report_racional_filtra_al_universo_operable(monkeypatch):
+    """2026-08-23, pedido explícito del usuario: "esa info la quiero en
+    atlas" -- mismo cruce predicción/resultado, pero solo sobre tickers
+    Racional-disponibles (universo estático real, no un barrido en vivo)."""
+    _fresh()
+    try:
+        # MRNA es Racional, XYZQ no lo es -- ambos con acierto real.
+        reg.record_magnitud_prediction("MRNA", "2026-08-21", "2026-08-21T10:47:00Z", 14.3)
+        _record_outcome_simple("MRNA", "2026-08-21", 16.4)
+        reg.record_magnitud_prediction("XYZQ", "2026-08-21", "2026-08-21T10:00:00Z", 20.0)
+        _record_outcome_simple("XYZQ", "2026-08-21", 55.0)
+
+        monkeypatch.setattr("atlas.data.universe.is_available", lambda t: t == "MRNA")
+
+        universal = reg.magnitud_precision_report("2026-08-21")
+        assert universal["n_evaluables"] == 2  # sin filtrar, ambas cuentan
+
+        racional = reg.magnitud_precision_report_racional("2026-08-21")
+        assert racional["n_evaluables"] == 1
+        assert racional["n_aciertos"] == 1
+        assert racional["precision_pct"] == 100.0
+        assert [c["ticker"] for c in racional["candidatas"]] == ["MRNA"]
+    finally:
+        _restore()
