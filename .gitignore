@@ -29,6 +29,11 @@ atlas_live/radar/*.db
 atlas_live/radar/*.db-wal
 atlas_live/radar/*.db-shm
 
+# Motor de Catalizadores (2026-08-23) -- base de runtime (vive en el Volume, no en el repo)
+atlas_live/catalyst/*.db
+atlas_live/catalyst/*.db-wal
+atlas_live/catalyst/*.db-shm
+
 # Base histórica de referencia (2026-08-15) -- base de runtime (vive en el Volume, no en el repo)
 atlas_live/reference/*.db
 atlas_live/reference/*.db-wal

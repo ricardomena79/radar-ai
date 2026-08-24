@@ -1649,6 +1649,7 @@ function renderPrecisionMagnitud() {
 let _alertStages = null;
 let _stageCardFilter = null;  // etapa clickeada en los cuadros de arriba (2026-08-20), o null = todas
 let _flujoSectorial = null;
+let _catalystEvents = null;
 
 async function fetchAlertStages() {
   try {
@@ -1962,12 +1963,99 @@ function renderFlujoSectorial() {
     </tr>`).join("")}</tbody>`;
 }
 
+const CATALYST_LIFECYCLE_STYLE = {
+  FUTURO: { label: "🔵 Futuro", color: "var(--text-dim)" },
+  INMINENTE: { label: "🟢 Inminente", color: "var(--green)", bold: true },
+  EN_ANTICIPACION: { label: "🟢 En anticipación", color: "var(--green)" },
+  OCURRIDO: { label: "🟡 Ocurrido", color: "var(--amber)" },
+  EXTENDIDA: { label: "🔴 Extendida -- no perseguir", color: "var(--red)", bold: true },
+};
+
+async function fetchCatalystEvents() {
+  try {
+    const res = await fetch("/api/catalyst-events");
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    _catalystEvents = await res.json();
+  } catch (err) {
+    console.error("fetchCatalystEvents:", err);
+    _catalystEvents = null;
+  }
+  renderCatalystEvents();
+}
+
+function renderCatalystEvents() {
+  const saludEl = document.getElementById("catalizadores-salud");
+  const catTableEl = document.getElementById("catalizadores-table");
+  const newsTableEl = document.getElementById("catalizadores-noticias-table");
+  if (!saludEl || !catTableEl || !newsTableEl) return;
+
+  if (!_catalystEvents) {
+    saludEl.innerHTML = `<span style="color:var(--text-dim)">No disponible.</span>`;
+    catTableEl.innerHTML = "";
+    newsTableEl.innerHTML = "";
+    return;
+  }
+
+  const salud = _catalystEvents.provider_health || {};
+  const saludStyle = salud.status === "OK" ? "var(--green)" : (salud.status === "OFFLINE" ? "var(--red)" : "var(--text-dim)");
+  const saludLabel = salud.status === "OK" ? "🟢 En línea" : (salud.status === "OFFLINE" ? "🔴 NEWS/CATALYST DATA OFFLINE" : "⚪ Sin configurar");
+  saludEl.innerHTML = `<span style="color:${saludStyle};font-weight:700">${saludLabel}</span>`
+    + (salud.reason ? ` <span class="dim">— ${salud.reason}</span>` : "")
+    + (_catalystEvents.generated_at ? ` <span class="dim">· Actualizado: ${fmtTimeSec(_catalystEvents.generated_at)} ET</span>` : "");
+
+  const catalizadores = _catalystEvents.catalizadores || [];
+  if (!catalizadores.length) {
+    catTableEl.innerHTML = `<tbody><tr><td class="empty-state">Sin catalizadores con fecha en los próximos/últimos 14 días.</td></tr></tbody>`;
+  } else {
+    catTableEl.innerHTML = `
+      <thead><tr><th>Ticker</th><th style="text-align:right">Precio</th><th style="text-align:right">Cambio</th><th>Tipo</th><th>Fecha</th><th>Hora</th><th>Estado</th><th style="text-align:right">Catalyst Score</th><th style="text-align:right">MRNA Similarity</th></tr></thead>
+      <tbody>${catalizadores.map(c => {
+        const lc = CATALYST_LIFECYCLE_STYLE[c.lifecycle_state] || { label: c.lifecycle_state || "—", color: "var(--text-dim)" };
+        return `<tr>
+          <td>${c.ticker}</td>
+          <td style="text-align:right">${c.price_actual != null ? "$" + fmtNum(c.price_actual) : "—"}</td>
+          <td style="text-align:right">${c.change_pct_actual != null ? fmtPct(c.change_pct_actual) : "—"}</td>
+          <td class="dim">${c.catalyst_type || "—"}</td>
+          <td>${c.event_date || "—"}</td>
+          <td class="dim">${c.event_time || "—"}</td>
+          <td><span style="color:${lc.color};font-weight:${lc.bold ? 700 : 600}">${lc.label}</span></td>
+          <td style="text-align:right">${c.catalyst_score != null ? fmtNum(c.catalyst_score, 0) : "—"}</td>
+          <td style="text-align:right">${c.mrna_similarity_score != null ? fmtNum(c.mrna_similarity_score, 0) : "—"}</td>
+        </tr>`;
+      }).join("")}</tbody>`;
+  }
+
+  const noticias = _catalystEvents.noticias_recientes || [];
+  if (!noticias.length) {
+    newsTableEl.innerHTML = `<tbody><tr><td class="empty-state">Sin noticias procesadas todavía.</td></tr></tbody>`;
+  } else {
+    newsTableEl.innerHTML = `
+      <thead><tr><th>Hora</th><th>Ticker</th><th>Titular</th><th>Tipo</th><th>Importancia</th><th>Dirección</th><th>Fuente</th></tr></thead>
+      <tbody>${noticias.map(n => {
+        const dir = DIRECTION_STYLE[n.direction] || null;
+        const titular = n.url
+          ? `<a href="${n.url}" target="_blank" rel="noopener">${n.headline}</a>`
+          : n.headline;
+        return `<tr>
+          <td class="dim">${n.published_at ? fmtTimeSec(n.published_at) + " ET" : "—"}</td>
+          <td>${n.ticker}</td>
+          <td>${titular}</td>
+          <td class="dim">${n.catalyst_type || "—"}</td>
+          <td class="dim">${n.importance || "—"}</td>
+          <td>${dir ? `<span style="color:${dir.color}">${dir.label}</span>` : "—"}</td>
+          <td class="dim">${n.source || "—"}</td>
+        </tr>`;
+      }).join("")}</tbody>`;
+  }
+}
+
 function startPanelStatusPolling() {
   const filtroEstadoEl = document.getElementById("oportunidades-filtro-estado");
   if (filtroEstadoEl) filtroEstadoEl.addEventListener("change", renderAlertStages);
   fetchRadarUniverso();
   fetchAlertStages();
   fetchFlujoSectorial();
+  fetchCatalystEvents();
   fetchEstudio();
   fetchSignals();
   fetchExplosionHistory();
@@ -1995,6 +2083,7 @@ function startPanelStatusPolling() {
   setInterval(fetchRadarUniverso, PRICE_POLL_MS);
   setInterval(fetchAlertStages, PRICE_POLL_MS);
   setInterval(fetchFlujoSectorial, PRICE_POLL_MS);
+  setInterval(fetchCatalystEvents, PANEL_STATUS_POLL_MS);
 }
 
 /* 📸 Guardar Estado del Día -- aprobado el 2026-08-02, último elemento

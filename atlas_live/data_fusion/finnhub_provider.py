@@ -31,7 +31,7 @@ Símbolo inexistente: Finnhub responde HTTP 200 con todos los campos en 0
 """
 
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 import requests
@@ -41,6 +41,14 @@ from atlas.data.providers.base import DataProvider, ProviderError, QuoteNotFound
 
 QUOTE_URL = "https://finnhub.io/api/v1/quote"
 CANDLE_URL = "https://finnhub.io/api/v1/stock/candle"
+# Motor de Catalizadores (2026-08-23, plan aprobado -- ver
+# ethereal-mixing-anchor.md, sección "Motor de Catalizadores/Noticias"):
+# la MISMA API key de arriba (FINNHUB_API_KEY) ya desbloquea estos 2
+# endpoints reales de Finnhub, nunca llamados hasta ahora -- confirmado
+# por auditoría de código, cero llamadas a estas rutas en todo el repo
+# antes de este cambio. No es un proveedor nuevo, no es una key nueva.
+NEWS_URL = "https://finnhub.io/api/v1/company-news"
+EARNINGS_CALENDAR_URL = "https://finnhub.io/api/v1/calendar/earnings"
 SOURCE_NAME = "finnhub"
 REQUEST_TIMEOUT_SECONDS = 10
 
@@ -151,3 +159,55 @@ class FinnhubProvider(DataProvider):
             "Volume": data["v"],
         }, index=pd.to_datetime(data["t"], unit="s", utc=True))
         return df
+
+    def get_company_news(self, symbol: str, from_date: str, to_date: str) -> List[Dict[str, Any]]:
+        """Noticias reales por símbolo vía /company-news (2026-08-23, Motor
+        de Catalizadores). Devuelve la lista CRUDA de Finnhub, sin
+        normalizar -- cada item trae al menos `headline`, `summary`,
+        `source`, `url`, `datetime` (epoch, segundos), `id`, `category`,
+        `related`. La normalización a `CatalystEvent` vive en
+        `atlas_live/catalyst/catalyst_collector.py`, no acá -- misma
+        separación que `universe_quotes.py` mantiene entre el fetch crudo
+        de Tradier y la construcción de `Quote`.
+
+        Símbolo sin noticias en el rango: Finnhub responde HTTP 200 con
+        `[]` -- se devuelve tal cual, nunca una excepción (a diferencia de
+        `get_quote`, acá una lista vacía SÍ es un resultado real y
+        esperado, no un símbolo inexistente)."""
+        try:
+            response = requests.get(
+                NEWS_URL,
+                params={"symbol": symbol, "from": from_date, "to": to_date, "token": self._api_key},
+                timeout=REQUEST_TIMEOUT_SECONDS,
+            )
+        except requests.RequestException as exc:
+            raise ProviderError(f"Fallo de red al consultar noticias de '{symbol}' en Finnhub: {exc}") from exc
+
+        if response.status_code != 200:
+            raise ProviderError(f"Finnhub devolvió HTTP {response.status_code} para noticias de '{symbol}': {response.text}")
+
+        data = response.json()
+        return data if isinstance(data, list) else []
+
+    def get_earnings_calendar(self, from_date: str, to_date: str, symbol: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Calendario de resultados vía /calendar/earnings (2026-08-23,
+        Motor de Catalizadores). `symbol=None` trae el calendario
+        COMPLETO en el rango de fechas (sin pedir símbolo por símbolo --
+        es la base de la cobertura de Tier 2 del catalyst_worker, ver el
+        plan) -- devuelve la lista cruda de `earningsCalendar`, cada item
+        con `symbol`, `date`, `hour` ("bmo"/"amc"/"dmh"), `epsEstimate`,
+        `revenueEstimate`. Rango sin resultados: `[]`, nunca excepción."""
+        params: Dict[str, Any] = {"from": from_date, "to": to_date, "token": self._api_key}
+        if symbol:
+            params["symbol"] = symbol
+        try:
+            response = requests.get(EARNINGS_CALENDAR_URL, params=params, timeout=REQUEST_TIMEOUT_SECONDS)
+        except requests.RequestException as exc:
+            raise ProviderError(f"Fallo de red al consultar calendario de earnings en Finnhub: {exc}") from exc
+
+        if response.status_code != 200:
+            raise ProviderError(f"Finnhub devolvió HTTP {response.status_code} para calendario de earnings: {response.text}")
+
+        data = response.json()
+        calendario = data.get("earningsCalendar")
+        return calendario if isinstance(calendario, list) else []

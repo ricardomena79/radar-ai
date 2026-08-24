@@ -80,6 +80,15 @@ study_worker.start_study_worker()
 from atlas_live.radar import radar_worker
 radar_worker.start_universe_radar()
 
+# Motor de Catalizadores/Noticias (2026-08-23, plan aprobado -- ver
+# ethereal-mixing-anchor.md): hilo de fondo COMPLETAMENTE APARTE del radar
+# técnico de arriba -- nunca llamado desde run_sweep_once(), nunca bloquea
+# ni depende de él. Degradación segura: sin FINNHUB_API_KEY el hilo igual
+# arranca pero cada ciclo se salta sin romper nada. Se habilita/deshabilita
+# por ATLAS_CATALYST_WORKER_ENABLED (default: encendido).
+from atlas_live.catalyst import catalyst_worker
+catalyst_worker.start_catalyst_worker()
+
 
 @app.route("/")
 def index():
@@ -719,6 +728,57 @@ def api_radar_explosion_bands():
     return jsonify(radar_registry.explosion_bands_tradier(date_param))
 
 
+@app.route("/api/catalyst-events")
+def api_catalyst_events():
+    """Motor de Catalizadores/Noticias (2026-08-23, plan aprobado) --
+    solo lectura, público, mismo patrón sin token que `/api/radar-oportunidades`.
+    Capa completamente aparte del radar técnico: nunca escribe en
+    `candidate_gates.py`, el score en vivo ni `decision_engine.py`, y una
+    falla del proveedor de noticias (Finnhub) nunca puede tumbar este
+    endpoint ni el resto de Atlas -- `provider_health` degrada a
+    SIN_CONFIGURAR/OFFLINE en vez de lanzar una excepción.
+
+    `catalizadores`: eventos con `event_date` en una ventana de ±14 días
+    (typicamente earnings-calendar, Tier 2 -- lo único con fecha propia),
+    con precio/cambio EN VIVO cruzados desde `radar_worker.get_last_quotes()`
+    (ya en memoria, cero llamadas nuevas) y su `catalyst_score`/
+    `mrna_similarity_score` congelados de hoy si existen.
+    `noticias_recientes`: feed de las últimas noticias reales procesadas
+    (Tier 1/3), más reciente primero."""
+    from datetime import datetime, timezone
+
+    from atlas_live.catalyst import catalyst_registry as creg
+    from atlas_live.memory import market_hours as _mh
+
+    market_date = _mh.market_date()
+    last_quotes = radar_worker.get_last_quotes()
+
+    catalizadores = creg.list_upcoming_events(days_ahead=14)
+    for c in catalizadores:
+        q = last_quotes.get(c["ticker"])
+        c["price_actual"] = q.last_price if q else None
+        c["change_pct_actual"] = q.change_percent if q else None
+        c["lifecycle_state"] = creg.latest_lifecycle_state(c["id"])
+        snap = creg.get_score_snapshot(c["ticker"], market_date)
+        c["catalyst_score"] = snap["catalyst_score"] if snap else None
+        c["mrna_similarity_score"] = snap["mrna_similarity_score"] if snap else None
+
+    noticias_recientes = creg.list_recent_events(limit=100)
+    for n in noticias_recientes:
+        q = last_quotes.get(n["ticker"])
+        n["price_actual"] = q.last_price if q else None
+        n["change_pct_actual"] = q.change_percent if q else None
+        n["lifecycle_state"] = creg.latest_lifecycle_state(n["id"])
+
+    return jsonify({
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "market_date": market_date,
+        "provider_health": creg.provider_health_summary(),
+        "catalizadores": catalizadores,
+        "noticias_recientes": noticias_recientes,
+    })
+
+
 @app.route("/api/candidate-full-history")
 def api_candidate_full_history():
     """Historia completa de UNA candidata (2026-08-18, aprendizaje
@@ -844,6 +904,32 @@ def api_admin_build_historical_reference_status():
     from scripts import build_historical_reference as bhr
 
     return jsonify(bhr.build_status())
+
+
+@app.route("/api/admin/catalyst-worker-status")
+def api_admin_catalyst_worker_status():
+    """Diagnóstico del Motor de Catalizadores (2026-08-23) -- salud del
+    proveedor (`provider_health_summary()`) + cobertura real por tier
+    (cursor actual de Tier 3, últimos horarios de corrida). Protegido con
+    ATLAS_ADMIN_TOKEN, mismo patrón que el resto de /api/admin/*."""
+    if not _admin_token_ok():
+        return jsonify({"error": "no autorizado"}), 403
+
+    from atlas_live.catalyst import catalyst_registry as creg
+    from atlas_live.catalyst import catalyst_worker as cw
+
+    return jsonify({
+        "provider_health": creg.provider_health_summary(),
+        "worker_enabled": cw.CATALYST_WORKER_ENABLED,
+        "thread_alive": cw._thread.is_alive() if cw._thread else False,
+        "tier1_last_run_epoch": cw._tier1_last_run or None,
+        "tier2_last_run_epoch": cw._tier2_last_run or None,
+        "tier3_last_run_epoch": cw._tier3_last_run or None,
+        "tier3_cursor": cw._tier3_cursor,
+        "tier1_interval_seconds": cw.TIER1_INTERVAL_SECONDS,
+        "tier2_interval_seconds": cw.TIER2_INTERVAL_SECONDS,
+        "tier3_interval_seconds": cw.TIER3_INTERVAL_SECONDS,
+    })
 
 
 @app.route("/api/admin/backfill-close-return", methods=["POST"])
