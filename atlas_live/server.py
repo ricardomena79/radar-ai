@@ -439,6 +439,25 @@ def api_radar_informe_dia():
         # un acumulado total.
         "precision_de_magnitud_por_dia": radar_registry.magnitud_precision_by_day(),
         "precision_de_magnitud_por_dia_racional": radar_registry.magnitud_precision_by_day_racional(),
+        # Rigor estadístico (2026-08-24, pedido explícito del usuario: "evitar
+        # que una muestra pequeña produzca una falsa impresión de precisión")
+        # -- ventanas móviles sobre evaluables REALES (no predicciones
+        # totales), reutilizando `magnitud_precision_rolling()`. Los campos
+        # `validation_state`/`wilson_ci`/`meta_confirmada` ya vienen incluidos
+        # dentro de `precision_de_magnitud_acumulada`/`_racional_acumulada`
+        # de arriba (extendidos en la misma función), sin endpoint aparte.
+        "precision_de_magnitud_ventanas": {
+            "ultimas_50": radar_registry.magnitud_precision_rolling(50),
+            "ultimas_100": radar_registry.magnitud_precision_rolling(100),
+            "ultimas_250": radar_registry.magnitud_precision_rolling(250),
+            "ultimas_500": radar_registry.magnitud_precision_rolling(500),
+        },
+        "precision_de_magnitud_ventanas_racional": {
+            "ultimas_50": radar_registry.magnitud_precision_rolling(50, solo_racional=True),
+            "ultimas_100": radar_registry.magnitud_precision_rolling(100, solo_racional=True),
+            "ultimas_250": radar_registry.magnitud_precision_rolling(250, solo_racional=True),
+            "ultimas_500": radar_registry.magnitud_precision_rolling(500, solo_racional=True),
+        },
     })
 
 

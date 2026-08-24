@@ -1549,35 +1549,47 @@ function renderPrecisionMagnitud() {
     </table></div>`;
   };
 
-  // Meta de confianza del usuario (2026-08-23, pedido explícito: "quiero
-  // saber cuando llegue a 80 de acierto... este porcentaje debe ser bien
-  // criterioso. no puede ser una simple suma de acierto. quiero ver la
-  // realidad") -- usa el MISMO % acumulado real de arriba, sin inventar
-  // ningún cálculo nuevo ni suavizar días malos. `muestra_suficiente`
-  // (piso de 30, mismo umbral que ya usa el resto de Atlas) avisa
-  // explícitamente cuando el % todavía no alcanza para confiar en él,
-  // para que un n chico no se lea como si ya fuera una meta cumplida.
+  // Rigor estadístico (2026-08-24, pedido explícito del usuario: "evitar
+  // que una muestra pequeña produzca una falsa impresión de precisión" +
+  // meta de 80% del 2026-08-23) -- `validation_state`/`wilson_ci`/
+  // `meta_confirmada` YA vienen calculados del backend
+  // (`candidate_registry.py`), acá solo se presentan -- ningún umbral
+  // nuevo ni cálculo propio en el frontend (se retiró la constante
+  // duplicada `MUESTRA_MINIMA_MAGNITUD` que vivía acá).
   const METAS_CONFIANZA_PCT = 80;
-  const MUESTRA_MINIMA_MAGNITUD = 30;
-  const progresoMetaHtml = (acum, etiqueta) => {
+  const VALIDATION_STATE_STYLE = {
+    MUESTRA_INSUFICIENTE: { label: "🔴 MUESTRA INSUFICIENTE", color: "var(--red)" },
+    EN_VALIDACION: { label: "🟡 EN VALIDACIÓN", color: "var(--amber)" },
+    VALIDACION_ROBUSTA: { label: "🟢 VALIDACIÓN ROBUSTA", color: "var(--green)" },
+  };
+  const ventanaTexto = (v) => {
+    if (!v) return "—";
+    if (!v.datos_suficientes) return `${fmtN(v.n_evaluables)} datos disponibles`;
+    return fmtNum(v.precision_pct) + "%";
+  };
+  const progresoMetaHtml = (acum, etiqueta, ventanas) => {
     if (!acum || acum.n_evaluables == null) {
       return `<div class="empty-state">No disponible.</div>`;
     }
     const pct = acum.precision_pct;
     const anchoBarra = pct != null ? Math.min(100, Math.max(0, 100 * pct / METAS_CONFIANZA_PCT)) : 0;
-    const colorBarra = acum.muestra_suficiente === false ? "var(--text-faint)" : (pct >= METAS_CONFIANZA_PCT ? "var(--green)" : "var(--accent)");
-    const avisoMuestra = acum.muestra_suficiente === false
-      ? `<div class="detail-note" style="margin-top:4px;color:var(--amber)">⚠ Muestra chica (n=${fmtN(acum.n_evaluables)}, hacen falta al menos ${MUESTRA_MINIMA_MAGNITUD} evaluables) -- este % todavía no alcanza para confiar en él, puede cambiar mucho con cada caso nuevo.</div>`
-      : "";
+    const vs = VALIDATION_STATE_STYLE[acum.validation_state] || { label: acum.validation_state || "—", color: "var(--text-dim)" };
+    const colorBarra = acum.meta_confirmada ? "var(--green)" : (acum.validation_state === "MUESTRA_INSUFICIENTE" ? "var(--text-faint)" : "var(--accent)");
+    const ic = acum.wilson_ci ? ` <span class="dim" style="font-size:11px">(IC 95%: ${fmtNum(acum.wilson_ci[0])}%–${fmtNum(acum.wilson_ci[1])}%)</span>` : "";
     return `<div style="margin:6px 0 4px">
-      <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text-dim);margin-bottom:4px">
-        <span>${etiqueta}: ${pct != null ? fmtNum(pct) + "%" : "No disponible"} (${fmtN(acum.n_aciertos)}/${fmtN(acum.n_evaluables)})</span>
-        <span>Meta: ${METAS_CONFIANZA_PCT}%</span>
+      <div style="font-size:12px;color:var(--text-dim);margin-bottom:4px">
+        <span>${etiqueta}: <strong style="color:var(--text)">${pct != null ? fmtNum(pct) + "%" : "No disponible"}</strong>${ic} -- ${fmtN(acum.n_aciertos)} / ${fmtN(acum.n_evaluables)} evaluables</span>
       </div>
       <div style="background:var(--panel-2);border:1px solid var(--border);border-radius:4px;height:10px;overflow:hidden">
         <div style="width:${anchoBarra}%;height:100%;background:${colorBarra}"></div>
       </div>
-      ${avisoMuestra}
+      <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:12px;margin-top:6px;color:var(--text-dim)">
+        <span style="color:${vs.color};font-weight:700">${vs.label}</span>
+        <span>Últimas 50: ${ventanaTexto(ventanas && ventanas.ultimas_50)}</span>
+        <span>Últimas 100: ${ventanaTexto(ventanas && ventanas.ultimas_100)}</span>
+        <span>Meta: ${METAS_CONFIANZA_PCT}%</span>
+        <span>Meta confirmada: <strong style="color:${acum.meta_confirmada ? "var(--green)" : "var(--text-dim)"}">${acum.meta_confirmada ? "SÍ" : "NO"}</strong></span>
+      </div>
     </div>`;
   };
 
@@ -1625,9 +1637,11 @@ function renderPrecisionMagnitud() {
   };
   const evolucion = _radarInforme && _radarInforme.precision_de_magnitud_por_dia;
   const evolucionRac = _radarInforme && _radarInforme.precision_de_magnitud_por_dia_racional;
+  const ventanas = _radarInforme && _radarInforme.precision_de_magnitud_ventanas;
+  const ventanasRac = _radarInforme && _radarInforme.precision_de_magnitud_ventanas_racional;
 
   el.innerHTML = `<div class="lh-grid" style="margin-bottom:10px">${cards}</div>
-    ${progresoMetaHtml(acum, "Precisión de magnitud histórica")}
+    ${progresoMetaHtml(acum, "🎯 Precisión de magnitud histórica", ventanas)}
     <h3 style="font-size:14px;margin-top:18px">📅 Evolución día por día <span class="dim" style="font-size:12px">(¿sube o baja? -- más reciente primero)</span></h3>
     ${tablaEvolucionHtml(evolucion)}
     <h3 style="margin-top:22px;font-size:14px">📋 Detalle de hoy</h3>
@@ -1637,7 +1651,7 @@ function renderPrecisionMagnitud() {
     ${tablaAciertosHtml(acum && acum.candidatas)}
     <h3 style="margin-top:22px;font-size:14px">🎯 Solo Racional <span class="dim" style="font-size:12px">(mismo criterio, filtrado a lo que realmente podés comprar)</span></h3>
     <div class="lh-grid" style="margin:10px 0">${cardsRacional}</div>
-    ${progresoMetaHtml(acumRac, "Precisión de magnitud histórica (Racional)")}
+    ${progresoMetaHtml(acumRac, "🎯 Precisión de magnitud histórica (Racional)", ventanasRac)}
     <h3 style="margin-top:18px;font-size:14px">📅 Evolución día por día (Racional)</h3>
     ${tablaEvolucionHtml(evolucionRac)}
     <h3 style="margin-top:14px;font-size:14px">📋 Detalle de hoy (Racional)</h3>

@@ -41,6 +41,25 @@ DB_PATH = db_path("radar_candidates.db", default=Path(__file__).parent)
 # experiments.MIN_PRIOR_ROWS_FOR_CUTS), nunca un número nuevo inventado acá.
 MUESTRA_MINIMA_CONFIABLE_MAGNITUD = 30
 
+# Rigor estadístico de Precisión de Magnitud (2026-08-24, pedido explícito
+# del usuario: "evitar que una muestra pequeña produzca una falsa impresión
+# de precisión"). Escala de 3 niveles DISTINTA del piso de arriba (30) --
+# más estricta, pensada específicamente para el badge de validación
+# visible en la Cabina, no para decidir si un % individual es "confiable"
+# en otros reportes. Configurable acá, nunca un número hardcodeado suelto
+# en el frontend.
+VALIDACION_MUESTRA_INSUFICIENTE_MAX = 99   # n < 100 -> 🔴 MUESTRA INSUFICIENTE
+VALIDACION_EN_VALIDACION_MAX = 499         # 100 <= n <= 499 -> 🟡 EN VALIDACIÓN
+                                            # n >= 500 -> 🟢 VALIDACIÓN ROBUSTA
+
+# Meta de confianza del 80% (2026-08-23/24, pedido explícito del usuario:
+# "este porcentaje debe ser bien criterioso... quiero saber su progreso
+# real") -- la meta NO se confirma solo por cruzar el %, también exige el
+# mismo piso de muestra robusta de arriba (500) -- una precisión de 80%
+# con n=150 todavía no alcanza para decir "meta cumplida".
+META_CONFIANZA_PCT = 80.0
+META_MUESTRA_MINIMA = 500
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS candidate_detection (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1271,6 +1290,58 @@ def magnitud_predictions_for_date(market_date: str) -> List[Dict[str, Any]]:
         return [_row(r) for r in rows]
 
 
+def precision_validation_state(n_evaluables: int) -> str:
+    """Una de `"MUESTRA_INSUFICIENTE"` / `"EN_VALIDACION"` /
+    `"VALIDACION_ROBUSTA"` -- pura, sin DB. Umbrales en
+    `VALIDACION_MUESTRA_INSUFICIENTE_MAX`/`VALIDACION_EN_VALIDACION_MAX`."""
+    if n_evaluables <= VALIDACION_MUESTRA_INSUFICIENTE_MAX:
+        return "MUESTRA_INSUFICIENTE"
+    if n_evaluables <= VALIDACION_EN_VALIDACION_MAX:
+        return "EN_VALIDACION"
+    return "VALIDACION_ROBUSTA"
+
+
+def wilson_confidence_interval(
+    n_aciertos: int, n_evaluables: int, confidence: float = 0.95,
+) -> Optional[Tuple[float, float]]:
+    """Intervalo de confianza binomial de Wilson (2026-08-24, pedido
+    explícito del usuario: "que una precisión basada en pocas
+    observaciones no se presente como estadísticamente sólida" -- ej.
+    4/5=80% debe mostrar un intervalo ancho, 1/146=0,68% uno angosto).
+    Fórmula cerrada estándar, sin librerías nuevas. Devuelve
+    `(limite_inferior_pct, limite_superior_pct)`, o `None` si
+    `n_evaluables == 0` (no hay nada que estimar)."""
+    if n_evaluables <= 0:
+        return None
+    # z=1.96 para 95% de confianza -- z=1.645 para 90%, z=2.576 para 99%.
+    z_por_confianza = {0.90: 1.645, 0.95: 1.96, 0.99: 2.576}
+    z = z_por_confianza.get(confidence, 1.96)
+    p = n_aciertos / n_evaluables
+    n = n_evaluables
+    denominador = 1 + z * z / n
+    centro = (p + z * z / (2 * n)) / denominador
+    margen = (z * ((p * (1 - p) / n + z * z / (4 * n * n)) ** 0.5)) / denominador
+    lower = max(0.0, centro - margen) * 100
+    upper = min(1.0, centro + margen) * 100
+    return (round(lower, 1), round(upper, 1))
+
+
+def meta_confirmada(n_evaluables: int, precision_pct: Optional[float]) -> bool:
+    """Punto 5 del pedido del usuario: la meta del 80% solo se confirma
+    cuando la precisión LLEGA a la meta Y la muestra ya es robusta
+    (`META_MUESTRA_MINIMA`) -- nunca solo por cruzar el %. Los otros dos
+    requisitos que pidió ("predicciones realmente evaluadas", "sin
+    duplicados de la misma señal") ya están garantizados estructuralmente
+    por cómo se construye `n_evaluables`/`n_aciertos` en
+    `magnitud_precision_report()` (ver auditoría del plan) -- no son un
+    chequeo adicional acá."""
+    return (
+        precision_pct is not None
+        and precision_pct >= META_CONFIANZA_PCT
+        and n_evaluables >= META_MUESTRA_MINIMA
+    )
+
+
 def magnitud_precision_report(market_date: Optional[str] = None, solo_racional: bool = False) -> Dict[str, Any]:
     """Cruza cada predicción congelada con el resultado real ya cerrado
     (`candidate_outcome.is_final=1`, `confiable_para_aprendizaje=1`) --
@@ -1350,12 +1421,13 @@ def magnitud_precision_report(market_date: Optional[str] = None, solo_racional: 
                 "resultado_real_pct": resultado_real_pct, "acierto": acierto,
             })
 
+    precision_pct = round(100 * n_aciertos / n_evaluables, 1) if n_evaluables else None
     return {
         "market_date": market_date,
         "n_predicciones": len(preds),
         "n_evaluables": n_evaluables,
         "n_aciertos": n_aciertos,
-        "precision_pct": round(100 * n_aciertos / n_evaluables, 1) if n_evaluables else None,
+        "precision_pct": precision_pct,
         # Muestra confiable (2026-08-23, pedido explícito del usuario: "no
         # puede ser una simple suma de acierto... quiero ver la realidad")
         # -- MISMO piso ya usado en todo Atlas para decir "esto todavía no
@@ -1363,6 +1435,11 @@ def magnitud_precision_report(market_date: Optional[str] = None, solo_racional: 
         # experiments.MIN_PRIOR_ROWS_FOR_CUTS), no un número nuevo inventado
         # acá. Un 80% con n=3 no significa lo mismo que un 80% con n=300.
         "muestra_suficiente": n_evaluables >= MUESTRA_MINIMA_CONFIABLE_MAGNITUD,
+        # Rigor estadístico (2026-08-24, pedido explícito del usuario) --
+        # 3 campos nuevos, la fórmula/campos de arriba no cambiaron.
+        "validation_state": precision_validation_state(n_evaluables),
+        "wilson_ci": wilson_confidence_interval(n_aciertos, n_evaluables),
+        "meta_confirmada": meta_confirmada(n_evaluables, precision_pct),
         "candidatas": candidatas,
     }
 
@@ -1371,6 +1448,37 @@ def magnitud_precision_report_racional(market_date: Optional[str] = None) -> Dic
     """Versión Racional de `magnitud_precision_report()` -- mismo criterio
     de acierto, filtrado a `atlas.data.universe.is_available(ticker)`."""
     return magnitud_precision_report(market_date, solo_racional=True)
+
+
+def magnitud_precision_rolling(n_ventana: int, solo_racional: bool = False) -> Dict[str, Any]:
+    """Precisión sobre los últimos `n_ventana` casos YA CERRADOS (no
+    predicciones totales -- "últimas 50" son 50 evaluables reales, nunca
+    50 intentos con algunos todavía abiertos). Reutiliza EXACTAMENTE el
+    mismo `candidatas` que ya arma `magnitud_precision_report()` (mismo
+    filtro de calidad, mismo criterio de acierto, ordenado
+    `market_date, frozen_at`) -- toma la cola de esa lista, no reimplementa
+    ningún criterio nuevo. Si hay menos evaluables reales que `n_ventana`,
+    `datos_suficientes=False` y `precision_pct=None` -- nunca se inventa
+    un porcentaje sobre una ventana incompleta (pedido explícito del
+    usuario, punto 8: "mostrar 'N datos disponibles' y NO inventar
+    porcentaje")."""
+    reporte = magnitud_precision_report(market_date=None, solo_racional=solo_racional)
+    candidatas = reporte["candidatas"]
+    ventana = candidatas[-n_ventana:] if n_ventana > 0 else []
+    n = len(ventana)
+    datos_suficientes = n >= n_ventana > 0
+    if not datos_suficientes:
+        return {
+            "n_ventana": n_ventana, "n_evaluables": n, "datos_suficientes": False,
+            "n_aciertos": None, "precision_pct": None, "wilson_ci": None,
+        }
+    n_aciertos = sum(1 for c in ventana if c["acierto"])
+    precision_pct = round(100 * n_aciertos / n, 1)
+    return {
+        "n_ventana": n_ventana, "n_evaluables": n, "datos_suficientes": True,
+        "n_aciertos": n_aciertos, "precision_pct": precision_pct,
+        "wilson_ci": wilson_confidence_interval(n_aciertos, n),
+    }
 
 
 def magnitud_precision_by_day(solo_racional: bool = False) -> List[Dict[str, Any]]:

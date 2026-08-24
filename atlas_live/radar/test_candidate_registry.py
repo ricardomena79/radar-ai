@@ -1004,7 +1004,94 @@ def test_magnitud_precision_report_sin_predicciones_no_rompe():
         assert reporte == {
             "market_date": "2026-08-19", "n_predicciones": 0, "n_evaluables": 0,
             "n_aciertos": 0, "precision_pct": None, "muestra_suficiente": False, "candidatas": [],
+            "validation_state": "MUESTRA_INSUFICIENTE", "wilson_ci": None, "meta_confirmada": False,
         }
+    finally:
+        _restore()
+
+
+def test_precision_validation_state_umbrales():
+    assert reg.precision_validation_state(0) == "MUESTRA_INSUFICIENTE"
+    assert reg.precision_validation_state(99) == "MUESTRA_INSUFICIENTE"
+    assert reg.precision_validation_state(100) == "EN_VALIDACION"
+    assert reg.precision_validation_state(499) == "EN_VALIDACION"
+    assert reg.precision_validation_state(500) == "VALIDACION_ROBUSTA"
+    assert reg.precision_validation_state(5000) == "VALIDACION_ROBUSTA"
+
+
+def test_wilson_confidence_interval_muestra_chica_da_intervalo_ancho():
+    """4/5 = 80% bruto, pero con n=5 el intervalo de Wilson debe ser
+    ancho -- exactamente el caso que el usuario pidió como ejemplo."""
+    lower, upper = reg.wilson_confidence_interval(4, 5)
+    assert lower < 50.0  # el límite inferior está lejos del 80% bruto
+    assert upper - lower > 40.0  # intervalo ancho, poca confianza
+
+
+def test_wilson_confidence_interval_muestra_grande_da_intervalo_angosto():
+    """1/146 = 0,68% -- con n=146 el intervalo debe ser angosto y bajo,
+    nunca cerca del rango que tendría una muestra chica."""
+    lower, upper = reg.wilson_confidence_interval(1, 146)
+    assert upper < 5.0
+    assert upper - lower < 5.0
+
+
+def test_wilson_confidence_interval_sin_evaluables_da_none():
+    assert reg.wilson_confidence_interval(0, 0) is None
+
+
+def test_meta_confirmada_exige_precision_y_muestra_robusta():
+    # Precisión alta, muestra chica -> NO confirmada.
+    assert reg.meta_confirmada(n_evaluables=50, precision_pct=90.0) is False
+    # Muestra robusta, precisión debajo de la meta -> NO confirmada.
+    assert reg.meta_confirmada(n_evaluables=600, precision_pct=70.0) is False
+    # Ambos -> confirmada.
+    assert reg.meta_confirmada(n_evaluables=600, precision_pct=82.0) is True
+    # precision_pct=None (sin evaluables) -> NO confirmada, nunca explota.
+    assert reg.meta_confirmada(n_evaluables=0, precision_pct=None) is False
+
+
+def test_magnitud_precision_rolling_datos_insuficientes_no_inventa_porcentaje():
+    _fresh()
+    try:
+        reg.record_magnitud_prediction("AAA", "2026-08-19", "2026-08-19T10:00:00Z", 10.0)
+        _record_outcome_simple("AAA", "2026-08-19", 15.0)
+        reg.record_magnitud_prediction("BBB", "2026-08-20", "2026-08-20T10:00:00Z", 10.0)
+        _record_outcome_simple("BBB", "2026-08-20", 5.0)
+
+        ventana = reg.magnitud_precision_rolling(50)
+        assert ventana["n_evaluables"] == 2
+        assert ventana["datos_suficientes"] is False
+        assert ventana["precision_pct"] is None
+        assert ventana["n_aciertos"] is None
+    finally:
+        _restore()
+
+
+def test_magnitud_precision_rolling_toma_exactamente_los_ultimos_n():
+    _fresh()
+    try:
+        # 5 evaluables reales, orden cronológico: fallo, fallo, acierto, acierto, acierto.
+        casos = [
+            ("T1", "2026-08-15", 10.0, 1.0),   # fallo
+            ("T2", "2026-08-16", 10.0, 2.0),   # fallo
+            ("T3", "2026-08-17", 10.0, 20.0),  # acierto
+            ("T4", "2026-08-18", 10.0, 20.0),  # acierto
+            ("T5", "2026-08-19", 10.0, 20.0),  # acierto
+        ]
+        for ticker, fecha, predicho, resultado in casos:
+            reg.record_magnitud_prediction(ticker, fecha, f"{fecha}T10:00:00Z", predicho)
+            _record_outcome_simple(ticker, fecha, resultado)
+
+        ventana_3 = reg.magnitud_precision_rolling(3)
+        assert ventana_3["n_evaluables"] == 3
+        assert ventana_3["datos_suficientes"] is True
+        assert ventana_3["n_aciertos"] == 3  # T3/T4/T5, los últimos 3 -- todos aciertos
+        assert ventana_3["precision_pct"] == 100.0
+
+        ventana_5 = reg.magnitud_precision_rolling(5)
+        assert ventana_5["n_evaluables"] == 5
+        assert ventana_5["n_aciertos"] == 3
+        assert ventana_5["precision_pct"] == 60.0
     finally:
         _restore()
 
