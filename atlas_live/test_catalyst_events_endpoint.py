@@ -53,20 +53,21 @@ def test_catalyst_events_vacio_devuelve_200_nunca_error():
         resp = _client().get("/api/catalyst-events")
         assert resp.status_code == 200
         data = resp.get_json()
-        assert data["catalizadores"] == []
+        assert data["top_catalyst_opportunities"] == []
+        assert data["calendario_completo"] == []
         assert data["noticias_recientes"] == []
         assert data["provider_health"]["status"] == "SIN_CONFIGURAR"
     finally:
         _restore_db()
 
 
-def test_catalyst_events_incluye_noticias_y_catalizadores_reales():
+def test_catalyst_events_incluye_noticias_y_calendario_completo():
     _fresh_db()
     try:
         creg.upsert_catalyst_event(
             "ZYME", "FDA_PDUFA", "ZYME PDUFA date approaches", "finnhub_earnings_calendar",
             importance="alta", direction="NEUTRAL", confidence=1.0, source_id="1",
-            event_date="2026-09-01",
+            event_date="2026-09-01", racional_available=True,
         )
         creg.upsert_catalyst_event(
             "AAPL", "EARNINGS", "AAPL reports strong earnings", "finnhub_company_news",
@@ -75,9 +76,50 @@ def test_catalyst_events_incluye_noticias_y_catalizadores_reales():
         resp = _client().get("/api/catalyst-events")
         assert resp.status_code == 200
         data = resp.get_json()
-        assert len(data["catalizadores"]) == 1
-        assert data["catalizadores"][0]["ticker"] == "ZYME"
+        assert len(data["calendario_completo"]) == 1  # solo el que tiene event_date
+        assert data["calendario_completo"][0]["ticker"] == "ZYME"
         assert len(data["noticias_recientes"]) == 2
+    finally:
+        _restore_db()
+
+
+def _fake_quote(**kwargs):
+    from types import SimpleNamespace
+    base = dict(
+        last_price=38.09, change_percent=0.85, volume=349940, average_volume=125000,
+        relative_volume=2.8, open=39.0, previous_close=37.7,
+    )
+    base.update(kwargs)
+    return SimpleNamespace(**base)
+
+
+def test_catalyst_events_ranking_incluye_senal_real_excluye_ruido(monkeypatch):
+    """Reproduce el criterio de éxito del pedido: un catalizador con RVOL
+    real entra al ranking; un earnings sin ninguna señal (RVOL normal, sin
+    gap, evento lejos) queda SOLO en el calendario completo."""
+    _fresh_db()
+    try:
+        creg.upsert_catalyst_event(
+            "NSSC", "EARNINGS", "NSSC earnings", "finnhub_earnings_calendar",
+            importance="media", direction="NEUTRAL", confidence=1.0, source_id="1",
+            event_date="2026-08-25", racional_available=True,
+        )
+        creg.upsert_catalyst_event(
+            "ADMT", "EARNINGS", "ADMT earnings", "finnhub_earnings_calendar",
+            importance="media", direction="NEUTRAL", confidence=1.0, source_id="2",
+            event_date="2026-09-05", racional_available=True,
+        )
+        monkeypatch.setattr(
+            server.radar_worker, "get_last_quotes",
+            lambda: {"NSSC": _fake_quote(relative_volume=2.8), "ADMT": _fake_quote(relative_volume=0.8, open=None)},
+        )
+        resp = _client().get("/api/catalyst-events")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert len(data["calendario_completo"]) == 2  # ambos, sin filtrar
+        top_tickers = [c["ticker"] for c in data["top_catalyst_opportunities"]]
+        assert "NSSC" in top_tickers
+        assert "ADMT" not in top_tickers  # sin RVOL/gap/detección técnica, evento lejos
     finally:
         _restore_db()
 

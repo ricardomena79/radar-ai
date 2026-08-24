@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS catalyst_event (
     first_seen_at TEXT NOT NULL,
     last_seen_at TEXT NOT NULL,
     created_at TEXT NOT NULL,
+    racional_available INTEGER,
     UNIQUE(ticker, source, source_id)
 );
 CREATE INDEX IF NOT EXISTS idx_catalyst_ticker ON catalyst_event(ticker);
@@ -93,6 +94,17 @@ CREATE TABLE IF NOT EXISTS catalyst_poll_state (
 _schema_ready_for: Optional[str] = None
 
 
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, decl: str) -> None:
+    """Migración aditiva y segura para bases ya desplegadas -- mismo
+    patrón que `candidate_registry.py::_ensure_column`. `CREATE TABLE IF
+    NOT EXISTS` no agrega columnas a una tabla existente, y
+    `catalyst_events.db` ya está en producción (2026-08-24, 175+
+    catalizadores reales) antes de `racional_available`."""
+    cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+
+
 def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH, timeout=15)
     conn.row_factory = sqlite3.Row
@@ -101,6 +113,8 @@ def _connect() -> sqlite3.Connection:
     global _schema_ready_for
     if _schema_ready_for != str(DB_PATH):
         conn.executescript(_SCHEMA)
+        _ensure_column(conn, "catalyst_event", "racional_available", "INTEGER")
+        conn.commit()
         _schema_ready_for = str(DB_PATH)
     return conn
 
@@ -121,6 +135,7 @@ def upsert_catalyst_event(
     summary: Optional[str] = None, source_id: Optional[str] = None,
     url: Optional[str] = None, published_at: Optional[str] = None,
     event_date: Optional[str] = None, event_time: Optional[str] = None,
+    racional_available: Optional[bool] = None,
 ) -> int:
     """Upsert por (ticker, source, source_id) -- re-sondear la misma
     noticia solo actualiza `last_seen_at`/importancia/dirección, nunca
@@ -136,17 +151,18 @@ def upsert_catalyst_event(
             """INSERT INTO catalyst_event
                (ticker, catalyst_type, headline, summary, source, source_id, url,
                 published_at, event_date, event_time, importance, direction,
-                confidence, first_seen_at, last_seen_at, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                confidence, first_seen_at, last_seen_at, created_at, racional_available)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(ticker, source, source_id) DO UPDATE SET
                  headline=excluded.headline, summary=excluded.summary, url=excluded.url,
                  published_at=excluded.published_at, event_date=excluded.event_date,
                  event_time=excluded.event_time, importance=excluded.importance,
                  direction=excluded.direction, confidence=excluded.confidence,
-                 last_seen_at=excluded.last_seen_at""",
+                 last_seen_at=excluded.last_seen_at, racional_available=excluded.racional_available""",
             (ticker, catalyst_type, headline, summary, source, source_id, url,
              published_at, event_date, event_time, importance, direction,
-             confidence, now, now, now),
+             confidence, now, now, now,
+             None if racional_available is None else int(racional_available)),
         )
         conn.commit()
         if cur.lastrowid:

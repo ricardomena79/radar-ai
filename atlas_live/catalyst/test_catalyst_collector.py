@@ -131,6 +131,32 @@ def test_process_earnings_calendar_item_sin_symbol_o_date_devuelve_none():
         _restore()
 
 
+def test_process_news_item_calcula_racional_available_real(monkeypatch):
+    _fresh()
+    try:
+        monkeypatch.setattr("atlas.data.universe.is_available", lambda t: t == "ZYME")
+        now = datetime(2026, 8, 23, 14, 0, tzinfo=timezone.utc)
+        item = {"id": 1, "headline": "ZYME Reports Earnings", "datetime": int(now.timestamp())}
+        coll.process_news_item("ZYME", item, now)
+        eventos = reg.get_events_for_ticker("ZYME")
+        assert eventos[0]["racional_available"] == 1
+    finally:
+        _restore()
+
+
+def test_process_earnings_calendar_item_calcula_racional_available_real(monkeypatch):
+    _fresh()
+    try:
+        monkeypatch.setattr("atlas.data.universe.is_available", lambda t: t == "ZYME")
+        now = datetime(2026, 8, 21, tzinfo=timezone.utc)
+        coll.process_earnings_calendar_item({"symbol": "ZYME", "date": "2026-08-25", "hour": "bmo"}, now)
+        coll.process_earnings_calendar_item({"symbol": "OTCJUNK", "date": "2026-08-25", "hour": "bmo"}, now)
+        assert reg.get_events_for_ticker("ZYME")[0]["racional_available"] == 1
+        assert reg.get_events_for_ticker("OTCJUNK")[0]["racional_available"] == 0
+    finally:
+        _restore()
+
+
 if __name__ == "__main__":
     import traceback
 

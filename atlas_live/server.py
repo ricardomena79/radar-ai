@@ -730,7 +730,8 @@ def api_radar_explosion_bands():
 
 @app.route("/api/catalyst-events")
 def api_catalyst_events():
-    """Motor de Catalizadores/Noticias (2026-08-23, plan aprobado) --
+    """Motor de Catalizadores/Noticias (2026-08-23, Fase 1; Segunda Fase
+    2026-08-24 -- de "calendario de 175 earnings" a radar accionable) --
     solo lectura, público, mismo patrón sin token que `/api/radar-oportunidades`.
     Capa completamente aparte del radar técnico: nunca escribe en
     `candidate_gates.py`, el score en vivo ni `decision_engine.py`, y una
@@ -738,30 +739,55 @@ def api_catalyst_events():
     endpoint ni el resto de Atlas -- `provider_health` degrada a
     SIN_CONFIGURAR/OFFLINE en vez de lanzar una excepción.
 
-    `catalizadores`: eventos con `event_date` en una ventana de ±14 días
-    (typicamente earnings-calendar, Tier 2 -- lo único con fecha propia),
-    con precio/cambio EN VIVO cruzados desde `radar_worker.get_last_quotes()`
-    (ya en memoria, cero llamadas nuevas) y su `catalyst_score`/
-    `mrna_similarity_score` congelados de hoy si existen.
+    Cada catalizador con `event_date` (ventana ±14 días) se enriquece vía
+    `catalyst_market_join.enrich_catalyst_row()`: precio/cambio/volumen/RVOL/gap
+    EN VIVO desde `radar_worker.get_last_quotes()` (ya en memoria, cero
+    llamadas nuevas), datos técnicos si el ticker es TAMBIÉN candidata del
+    radar hoy (`candidate_registry.live_opportunities()`), `catalyst_score`/
+    `catalyst_opportunity_score`/`mrna_similarity_score` calculados EN VIVO
+    (nunca el snapshot congelado, que sigue siendo solo para noticias), y
+    Event Status/Trading Status separados.
+
+    `top_catalyst_opportunities` (máx. 10): solo los que cruzan el piso de
+    relevancia (`is_relevant_for_ranking` -- Racional + evidencia real de
+    movimiento o detección técnica hoy), ordenados por
+    `catalyst_opportunity_score` descendente -- el panel principal.
+    `calendario_completo`: TODOS los catalizadores con fecha, sin filtrar,
+    igual de enriquecidos -- vista secundaria (punto 1 del pedido:
+    "el calendario completo puede mantenerse debajo").
     `noticias_recientes`: feed de las últimas noticias reales procesadas
-    (Tier 1/3), más reciente primero."""
+    (Tier 1/3), más reciente primero -- sin cambios de esta fase."""
     from datetime import datetime, timezone
 
+    from atlas_live.catalyst import catalyst_market_join as mj
     from atlas_live.catalyst import catalyst_registry as creg
     from atlas_live.memory import market_hours as _mh
+    from atlas_live.radar import candidate_registry as radar_registry
 
     market_date = _mh.market_date()
+    now = datetime.now(timezone.utc)
     last_quotes = radar_worker.get_last_quotes()
+    radar_rows_by_ticker = {r["ticker"]: r for r in radar_registry.live_opportunities(market_date)}
 
-    catalizadores = creg.list_upcoming_events(days_ahead=14)
-    for c in catalizadores:
-        q = last_quotes.get(c["ticker"])
-        c["price_actual"] = q.last_price if q else None
-        c["change_pct_actual"] = q.change_percent if q else None
-        c["lifecycle_state"] = creg.latest_lifecycle_state(c["id"])
-        snap = creg.get_score_snapshot(c["ticker"], market_date)
-        c["catalyst_score"] = snap["catalyst_score"] if snap else None
-        c["mrna_similarity_score"] = snap["mrna_similarity_score"] if snap else None
+    catalizadores_crudos = creg.list_upcoming_events(days_ahead=14)
+    calendario_completo = []
+    for c in catalizadores_crudos:
+        # Sin fallback forzado a "OCURRIDO" (bug real encontrado en
+        # verificación de UI, 2026-08-24): un catalizador sin transición
+        # de ciclo de vida registrada todavía (`None`) NO debe mostrarse
+        # como "ya ocurrido" -- event_status()/catalyst_score() ya
+        # degradan correctamente con `lifecycle_state=None`, cayendo a
+        # la clasificación por `dias_al_evento`/al default neutral.
+        lifecycle_state = creg.latest_lifecycle_state(c["id"])
+        enriquecido = mj.enrich_catalyst_row(
+            c, lifecycle_state, last_quotes, radar_rows_by_ticker.get(c["ticker"]), now,
+        )
+        calendario_completo.append(enriquecido)
+
+    top_catalyst_opportunities = sorted(
+        (c for c in calendario_completo if mj.is_relevant_for_ranking(c)),
+        key=lambda c: c["catalyst_opportunity_score"], reverse=True,
+    )[:10]
 
     noticias_recientes = creg.list_recent_events(limit=100)
     for n in noticias_recientes:
@@ -771,10 +797,11 @@ def api_catalyst_events():
         n["lifecycle_state"] = creg.latest_lifecycle_state(n["id"])
 
     return jsonify({
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": now.isoformat(),
         "market_date": market_date,
         "provider_health": creg.provider_health_summary(),
-        "catalizadores": catalizadores,
+        "top_catalyst_opportunities": top_catalyst_opportunities,
+        "calendario_completo": calendario_completo,
         "noticias_recientes": noticias_recientes,
     })
 

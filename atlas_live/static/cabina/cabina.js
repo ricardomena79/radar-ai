@@ -1963,13 +1963,53 @@ function renderFlujoSectorial() {
     </tr>`).join("")}</tbody>`;
 }
 
-const CATALYST_LIFECYCLE_STYLE = {
-  FUTURO: { label: "🔵 Futuro", color: "var(--text-dim)" },
-  INMINENTE: { label: "🟢 Inminente", color: "var(--green)", bold: true },
-  EN_ANTICIPACION: { label: "🟢 En anticipación", color: "var(--green)" },
-  OCURRIDO: { label: "🟡 Ocurrido", color: "var(--amber)" },
-  EXTENDIDA: { label: "🔴 Extendida -- no perseguir", color: "var(--red)", bold: true },
+// Event Status (2026-08-24, Segunda Fase -- "CUÁNDO es el evento", separado
+// de Trading Status "hay evidencia real para actuar HOY").
+const EVENT_STATUS_STYLE = {
+  HOY: { label: "🔥 Hoy", color: "var(--red)", bold: true },
+  MANANA: { label: "🟢 Mañana", color: "var(--green)", bold: true },
+  DOS_A_TRES_DIAS: { label: "🟡 2-3 días", color: "var(--amber)" },
+  CUATRO_A_SIETE_DIAS: { label: "🔵 4-7 días", color: "var(--accent)" },
+  FUTURO: { label: "⚪ Futuro", color: "var(--text-dim)" },
+  OCURRIDO: { label: "🔴 Ocurrido", color: "var(--red)" },
+  EXTENDIDA: { label: "🟠 Extendida", color: "var(--orange)", bold: true },
 };
+
+// Trading Status -- OPORTUNIDAD_PRIORITARIA/VIGILAR/PREPARACION/NO_TOCAR
+// vienen de priority_classifier.py (detección técnica real hoy);
+// PREPARAR/CALENDARIO son exclusivos de catalyst_status.py (sin
+// detección técnica, vocabulario deliberadamente distinto).
+const TRADING_STATUS_STYLE = {
+  OPORTUNIDAD_PRIORITARIA: { label: "🟢 Oportunidad Prioritaria", color: "var(--green)", bold: true },
+  PREPARAR: { label: "🟢 Preparar", color: "var(--green)" },
+  VIGILAR: { label: "🟡 Vigilar", color: "var(--amber)" },
+  PREPARACION: { label: "🔵 Preparación", color: "var(--accent)" },
+  CALENDARIO: { label: "⚪ Calendario", color: "var(--text-dim)" },
+  NO_TOCAR: { label: "🔴 No tocar", color: "var(--red)" },
+};
+
+function _catalystRowHtml(c) {
+  const ev = EVENT_STATUS_STYLE[c.event_status] || { label: c.event_status || "—", color: "var(--text-dim)" };
+  const tr = TRADING_STATUS_STYLE[c.trading_status] || { label: c.trading_status || "—", color: "var(--text-dim)" };
+  const market = c.market || {};
+  const mrnaTexto = c.mrna_similarity_status === "EN_EVALUACION"
+    ? '<span class="dim">EN EVALUACIÓN</span>'
+    : (c.mrna_similarity_score != null ? fmtNum(c.mrna_similarity_score, 0) : "—");
+  return `<tr title="${(c.trading_status_motivo || "").replace(/"/g, "&quot;")}">
+    <td>${c.ticker}</td>
+    <td style="text-align:right">${market.price != null ? "$" + fmtNum(market.price) : '<span class="dim">SIN DATOS</span>'}</td>
+    <td style="text-align:right">${market.change_pct != null ? fmtPct(market.change_pct) : "—"}</td>
+    <td style="text-align:right">${market.relative_volume != null ? fmtNum(market.relative_volume) + "x" : "—"}</td>
+    <td class="dim">${c.catalyst_type || "—"}</td>
+    <td>${c.event_date || "—"} ${c.event_time && c.event_time !== "TBD" ? `(${c.event_time})` : ""}</td>
+    <td><span style="color:${ev.color};font-weight:${ev.bold ? 700 : 600}">${ev.label}</span></td>
+    <td><span style="color:${tr.color};font-weight:${tr.bold ? 700 : 600}">${tr.label}</span></td>
+    <td style="text-align:right">${c.catalyst_opportunity_score != null ? fmtNum(c.catalyst_opportunity_score, 0) : "—"}</td>
+    <td style="text-align:right">${mrnaTexto}</td>
+  </tr>`;
+}
+
+const _CATALYST_TABLE_HEAD = `<thead><tr><th>Ticker</th><th style="text-align:right">Precio</th><th style="text-align:right">Cambio</th><th style="text-align:right">RVOL</th><th>Tipo</th><th>Fecha</th><th>Evento</th><th>Trading</th><th style="text-align:right">Opportunity Score</th><th style="text-align:right">MRNA Similarity</th></tr></thead>`;
 
 async function fetchCatalystEvents() {
   try {
@@ -1985,12 +2025,15 @@ async function fetchCatalystEvents() {
 
 function renderCatalystEvents() {
   const saludEl = document.getElementById("catalizadores-salud");
+  const topTableEl = document.getElementById("catalizadores-top-table");
   const catTableEl = document.getElementById("catalizadores-table");
+  const conteoEl = document.getElementById("catalizadores-calendario-conteo");
   const newsTableEl = document.getElementById("catalizadores-noticias-table");
-  if (!saludEl || !catTableEl || !newsTableEl) return;
+  if (!saludEl || !topTableEl || !catTableEl || !newsTableEl) return;
 
   if (!_catalystEvents) {
     saludEl.innerHTML = `<span style="color:var(--text-dim)">No disponible.</span>`;
+    topTableEl.innerHTML = "";
     catTableEl.innerHTML = "";
     newsTableEl.innerHTML = "";
     return;
@@ -2003,26 +2046,19 @@ function renderCatalystEvents() {
     + (salud.reason ? ` <span class="dim">— ${salud.reason}</span>` : "")
     + (_catalystEvents.generated_at ? ` <span class="dim">· Actualizado: ${fmtTimeSec(_catalystEvents.generated_at)} ET</span>` : "");
 
-  const catalizadores = _catalystEvents.catalizadores || [];
-  if (!catalizadores.length) {
+  const top = _catalystEvents.top_catalyst_opportunities || [];
+  if (!top.length) {
+    topTableEl.innerHTML = `<tbody><tr><td class="empty-state">Sin catalizadores con evidencia real de movimiento hoy -- ver el calendario completo abajo.</td></tr></tbody>`;
+  } else {
+    topTableEl.innerHTML = `${_CATALYST_TABLE_HEAD}<tbody>${top.map(_catalystRowHtml).join("")}</tbody>`;
+  }
+
+  const calendario = _catalystEvents.calendario_completo || [];
+  if (conteoEl) conteoEl.textContent = `${calendario.length} catalizador(es) con fecha en total -- ${top.length} en el ranking principal.`;
+  if (!calendario.length) {
     catTableEl.innerHTML = `<tbody><tr><td class="empty-state">Sin catalizadores con fecha en los próximos/últimos 14 días.</td></tr></tbody>`;
   } else {
-    catTableEl.innerHTML = `
-      <thead><tr><th>Ticker</th><th style="text-align:right">Precio</th><th style="text-align:right">Cambio</th><th>Tipo</th><th>Fecha</th><th>Hora</th><th>Estado</th><th style="text-align:right">Catalyst Score</th><th style="text-align:right">MRNA Similarity</th></tr></thead>
-      <tbody>${catalizadores.map(c => {
-        const lc = CATALYST_LIFECYCLE_STYLE[c.lifecycle_state] || { label: c.lifecycle_state || "—", color: "var(--text-dim)" };
-        return `<tr>
-          <td>${c.ticker}</td>
-          <td style="text-align:right">${c.price_actual != null ? "$" + fmtNum(c.price_actual) : "—"}</td>
-          <td style="text-align:right">${c.change_pct_actual != null ? fmtPct(c.change_pct_actual) : "—"}</td>
-          <td class="dim">${c.catalyst_type || "—"}</td>
-          <td>${c.event_date || "—"}</td>
-          <td class="dim">${c.event_time || "—"}</td>
-          <td><span style="color:${lc.color};font-weight:${lc.bold ? 700 : 600}">${lc.label}</span></td>
-          <td style="text-align:right">${c.catalyst_score != null ? fmtNum(c.catalyst_score, 0) : "—"}</td>
-          <td style="text-align:right">${c.mrna_similarity_score != null ? fmtNum(c.mrna_similarity_score, 0) : "—"}</td>
-        </tr>`;
-      }).join("")}</tbody>`;
+    catTableEl.innerHTML = `${_CATALYST_TABLE_HEAD}<tbody>${calendario.map(_catalystRowHtml).join("")}</tbody>`;
   }
 
   const noticias = _catalystEvents.noticias_recientes || [];

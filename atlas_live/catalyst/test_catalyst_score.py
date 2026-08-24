@@ -108,6 +108,70 @@ def test_mrna_similarity_nunca_sale_del_rango_0_100():
     assert 0.0 <= score <= 100.0
 
 
+# ---------------------------------------------------------------------------
+# CATALYST_OPPORTUNITY_SCORE (Segunda Fase, 2026-08-24)
+# ---------------------------------------------------------------------------
+
+def test_opportunity_score_caso_completo_tipo_nssc_da_alto():
+    """RVOL fuerte, gap fuerte, evento mañana, catalyst_score/technical
+    altos -- debe dar un score de oportunidad alto (caso "NSSC")."""
+    score = cs.catalyst_opportunity_score(
+        catalyst_score=85.0, technical_confirmation=80.0, catalyst_type="EARNINGS",
+        relative_volume=2.8, gap_pct=3.4, dias_al_evento=1, mrna_similarity=70.0,
+        retroceso_desde_maximo_pct=5.0,
+    )
+    assert score >= 70.0
+
+
+def test_opportunity_score_degradacion_parcial_nunca_da_none():
+    """Falta retroceso_desde_maximo_pct (ticker sin detección técnica hoy)
+    -- debe seguir devolviendo un score numérico renormalizado, nunca
+    lanzar ni devolver None."""
+    score = cs.catalyst_opportunity_score(
+        catalyst_score=70.0, technical_confirmation=0.0, catalyst_type="EARNINGS",
+        relative_volume=None, gap_pct=None, dias_al_evento=None, mrna_similarity=None,
+        retroceso_desde_maximo_pct=None,
+    )
+    assert isinstance(score, float)
+    assert 0.0 <= score <= 100.0
+
+
+def test_opportunity_score_sin_ningun_dato_de_mercado_sigue_calculable():
+    """Caso extremo: solo catalyst_score/technical_confirmation
+    disponibles (piso mínimo que SIEMPRE existe) -- debe dar un score
+    bajo-pero-real, nunca None ni excepción."""
+    score = cs.catalyst_opportunity_score(
+        catalyst_score=40.0, technical_confirmation=0.0, catalyst_type="OTHER_MATERIAL",
+    )
+    assert score == 40.0 * cs.W_OPP_CATALYST_SCORE / (cs.W_OPP_CATALYST_SCORE + cs.W_OPP_TECHNICAL_CONFIRMATION)
+
+
+def test_opportunity_score_extension_alta_penaliza():
+    base_kwargs = dict(catalyst_score=80.0, technical_confirmation=80.0, catalyst_type="EARNINGS")
+    score_bajo_retroceso = cs.catalyst_opportunity_score(**base_kwargs, retroceso_desde_maximo_pct=3.0)
+    score_alto_retroceso = cs.catalyst_opportunity_score(**base_kwargs, retroceso_desde_maximo_pct=30.0)
+    assert score_alto_retroceso < score_bajo_retroceso
+
+
+def test_opportunity_score_financing_dilution_penalizado():
+    score_normal = cs.catalyst_opportunity_score(
+        catalyst_score=80.0, technical_confirmation=80.0, catalyst_type="EARNINGS",
+    )
+    score_dilucion = cs.catalyst_opportunity_score(
+        catalyst_score=80.0, technical_confirmation=80.0, catalyst_type="FINANCING_DILUTION",
+    )
+    assert score_dilucion < score_normal
+
+
+def test_opportunity_score_nunca_sale_del_rango_0_100():
+    score = cs.catalyst_opportunity_score(
+        catalyst_score=100.0, technical_confirmation=100.0, catalyst_type="FINANCING_DILUTION",
+        relative_volume=999.0, gap_pct=999.0, dias_al_evento=-50, mrna_similarity=100.0,
+        retroceso_desde_maximo_pct=999.0,
+    )
+    assert 0.0 <= score <= 100.0
+
+
 if __name__ == "__main__":
     import traceback
 

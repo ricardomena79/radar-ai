@@ -28,6 +28,17 @@ _SCORE_IRRELEVANT_LIFECYCLE = {"EXTENDIDA"}
 _HOUR_LABEL = {"bmo": "BMO", "amc": "AMC", "dmh": "TBD"}
 
 
+def _racional_available(ticker: str) -> Optional[bool]:
+    """Mismo patrón exacto que `candidate_registry.live_opportunities()`
+    -- se recalcula en vivo, nunca se cachea desde otra fila, `None` si
+    `atlas.data.universe` no está disponible por algún motivo."""
+    try:
+        from atlas.data.universe import is_available
+        return is_available(ticker)
+    except Exception:
+        return None
+
+
 def _parse_epoch(epoch: Optional[int]) -> Optional[datetime]:
     if not epoch:
         return None
@@ -110,6 +121,7 @@ def process_news_item(
         direction=clasificado.direction, confidence=clasificado.confidence,
         summary=summary, source_id=(str(item["id"]) if item.get("id") is not None else None),
         url=item.get("url"), published_at=(published_at.isoformat() if published_at else None),
+        racional_available=_racional_available(ticker),
     )
     reg.record_lifecycle_transition(
         catalyst_id, ticker, now.isoformat(), lifecycle,
@@ -153,6 +165,7 @@ def process_earnings_calendar_item(item: Dict[str, Any], now: datetime) -> Optio
         ticker=ticker, catalyst_type="EARNINGS", headline=headline,
         source="finnhub_earnings_calendar", importance=importance, direction="NEUTRAL",
         confidence=1.0, source_id=f"{ticker}:{event_date}", event_date=event_date, event_time=event_time,
+        racional_available=_racional_available(ticker),
     )
     reg.record_lifecycle_transition(catalyst_id, ticker, now.isoformat(), lifecycle)
     return {
