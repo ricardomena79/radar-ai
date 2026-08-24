@@ -929,6 +929,9 @@ def api_admin_catalyst_worker_status():
         "tier1_interval_seconds": cw.TIER1_INTERVAL_SECONDS,
         "tier2_interval_seconds": cw.TIER2_INTERVAL_SECONDS,
         "tier3_interval_seconds": cw.TIER3_INTERVAL_SECONDS,
+        "inter_call_delay_seconds": cw.INTER_CALL_DELAY_SECONDS,
+        "inter_tier_delay_seconds": cw.INTER_TIER_DELAY_SECONDS,
+        "cooldown": cw.cooldown_status(),
     })
 
 

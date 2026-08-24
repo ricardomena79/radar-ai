@@ -23,6 +23,8 @@ def _fresh():
     candreg.DB_PATH = Path(tempfile.gettempdir()) / f"atlas_test_worker_candidate_{_uuid.uuid4().hex}.db"
     candreg._schema_ready_for = None
     worker._tier3_cursor = 0
+    worker._cooldown_until = 0.0
+    worker._cooldown_reason = None
 
 
 def _restore():
@@ -31,21 +33,26 @@ def _restore():
 
 
 class _FakeProvider:
-    def __init__(self, news_by_symbol=None, calendar=None, raise_for=()):
+    def __init__(self, news_by_symbol=None, calendar=None, raise_for=(), error_message=None,
+                 calendar_error_message=None):
         self.news_by_symbol = news_by_symbol or {}
         self.calendar = calendar or []
         self.raise_for = set(raise_for)
+        self.error_message = error_message  # None -> mensaje genérico (no 401/429)
+        self.calendar_error_message = calendar_error_message
         self.news_calls = []
         self.calendar_calls = 0
 
     def get_company_news(self, symbol, from_date, to_date):
         self.news_calls.append(symbol)
         if symbol in self.raise_for:
-            raise ProviderError(f"fallo simulado para {symbol}")
+            raise ProviderError(self.error_message or f"fallo simulado para {symbol}")
         return self.news_by_symbol.get(symbol, [])
 
     def get_earnings_calendar(self, from_date, to_date, symbol=None):
         self.calendar_calls += 1
+        if self.calendar_error_message:
+            raise ProviderError(self.calendar_error_message)
         return self.calendar
 
 
@@ -159,6 +166,145 @@ def test_tier3_avanza_el_cursor_round_robin_entre_llamadas():
         assert lote1 == simbolos[0:20]
         assert lote2 == simbolos[20:40]
         assert lote3 == simbolos[40:45] + simbolos[0:15]  # da la vuelta (round-robin real)
+    finally:
+        _restore()
+
+
+# ---------------------------------------------------------------------------
+# Cooldown/backoff real ante 401/429 (2026-08-24, hallazgo de verificación
+# en vivo: la key configurada quedó devolviendo HTTP 401 en TODOS los
+# endpoints tras una corrida sin ningún corte -- esto prueba que un 401/429
+# real corta el lote AHORA, en vez de seguir probando el resto del universo
+# contra una key bloqueada.)
+# ---------------------------------------------------------------------------
+
+def test_tier1_401_corta_el_lote_y_no_prueba_el_resto():
+    _fresh()
+    try:
+        market_date = "2026-08-23"
+        now = datetime(2026, 8, 23, 15, 0, tzinfo=timezone.utc)
+        for ticker in ("AAA", "BBB", "CCC"):
+            candreg.record_detection(
+                ticker, market_date, "regular", now.isoformat(), "sweep-1",
+                price_at_detection=10.0, change_pct_at_detection=5.0,
+                volume_at_detection=1000, average_volume_at_detection=200,
+                relative_volume_at_detection=5.0, dollar_volume_at_detection=10000.0,
+                gates_fired=[],
+            )
+        provider = _FakeProvider(
+            raise_for={"AAA"}, error_message='Finnhub devolvió HTTP 401 para noticias de \'AAA\': {"error":"Invalid API key"}',
+        )
+        resultado = worker.run_tier1_once(provider, market_date, now, inter_call_delay_seconds=0.0)
+        assert resultado["cooldown_triggered"] is True
+        assert "401" in resultado["cooldown_reason"]
+        # AAA es la primera candidata (orden de detected_at) -- BBB/CCC NUNCA deben haberse llamado.
+        assert provider.news_calls == ["AAA"]
+    finally:
+        _restore()
+
+
+def test_tier1_error_generico_no_activa_cooldown_sigue_con_el_resto():
+    _fresh()
+    try:
+        market_date = "2026-08-23"
+        now = datetime(2026, 8, 23, 15, 0, tzinfo=timezone.utc)
+        for ticker in ("AAA", "BBB"):
+            candreg.record_detection(
+                ticker, market_date, "regular", now.isoformat(), "sweep-1",
+                price_at_detection=10.0, change_pct_at_detection=5.0,
+                volume_at_detection=1000, average_volume_at_detection=200,
+                relative_volume_at_detection=5.0, dollar_volume_at_detection=10000.0,
+                gates_fired=[],
+            )
+        provider = _FakeProvider(raise_for={"AAA"})  # mensaje genérico, no 401/429
+        resultado = worker.run_tier1_once(provider, market_date, now, inter_call_delay_seconds=0.0)
+        assert resultado["cooldown_triggered"] is False
+        assert provider.news_calls == ["AAA", "BBB"]  # siguió con el resto, como antes
+    finally:
+        _restore()
+
+
+def test_tier2_429_señala_cooldown():
+    _fresh()
+    try:
+        now = datetime(2026, 8, 21, tzinfo=timezone.utc)
+        provider = _FakeProvider(calendar_error_message="Finnhub devolvió HTTP 429 para calendario de earnings: rate limited")
+        resultado = worker.run_tier2_once(provider, now)
+        assert resultado["cooldown_triggered"] is True
+        assert "429" in resultado["cooldown_reason"]
+    finally:
+        _restore()
+
+
+def test_tier3_401_corta_el_lote_y_no_prueba_el_resto():
+    _fresh()
+    try:
+        now = datetime(2026, 8, 23, tzinfo=timezone.utc)
+        simbolos = ["AAA", "BBB", "CCC", "DDD"]
+        provider = _FakeProvider(
+            raise_for={"BBB"}, error_message='Finnhub devolvió HTTP 401 para noticias de \'BBB\': {"error":"Invalid API key"}',
+        )
+        resultado = worker.run_tier3_once(provider, now, symbols=simbolos, batch_size=20, inter_call_delay_seconds=0.0)
+        assert resultado["cooldown_triggered"] is True
+        assert provider.news_calls == ["AAA", "BBB"]  # CCC/DDD nunca se llamaron
+    finally:
+        _restore()
+
+
+def test_in_cooldown_y_enter_cooldown_puros():
+    _fresh()
+    try:
+        assert worker.in_cooldown() is False
+        worker._enter_cooldown("prueba")
+        assert worker.in_cooldown() is True
+        estado = worker.cooldown_status()
+        assert estado["in_cooldown"] is True
+        assert estado["reason"] == "prueba"
+        assert estado["cooldown_until_epoch"] is not None
+    finally:
+        _restore()
+
+
+def test_run_cycle_no_llama_al_proveedor_si_esta_en_cooldown(monkeypatch):
+    _fresh()
+    try:
+        worker._enter_cooldown("cooldown activo de una prueba anterior")
+
+        llamado = {"n": 0}
+
+        def _boom():
+            llamado["n"] += 1
+            raise AssertionError("build_catalyst_provider() NUNCA debe llamarse en cooldown")
+
+        monkeypatch.setattr(worker.prov, "build_catalyst_provider", _boom)
+        worker._run_cycle()  # no debe lanzar -- tiene que salir ANTES de tocar el proveedor
+        assert llamado["n"] == 0
+    finally:
+        _restore()
+
+
+def test_run_cycle_401_en_tier1_detiene_tier2_y_tier3_del_mismo_ciclo(monkeypatch):
+    _fresh()
+    try:
+        market_date = "2026-08-23"
+        candreg.record_detection(
+            "AAA", market_date, "regular", datetime(2026, 8, 23, 15, 0, tzinfo=timezone.utc).isoformat(),
+            "sweep-1", price_at_detection=10.0, change_pct_at_detection=5.0,
+            volume_at_detection=1000, average_volume_at_detection=200,
+            relative_volume_at_detection=5.0, dollar_volume_at_detection=10000.0, gates_fired=[],
+        )
+        provider = _FakeProvider(
+            raise_for={"AAA"}, error_message='Finnhub devolvió HTTP 401 para noticias de \'AAA\': {"error":"Invalid API key"}',
+        )
+        monkeypatch.setattr(worker.prov, "build_catalyst_provider", lambda: provider)
+        monkeypatch.setattr(worker.market_hours, "market_date", lambda now=None: market_date)
+        monkeypatch.setattr(worker.radar_worker, "get_last_quotes", lambda: {})
+        monkeypatch.setattr(worker, "INTER_TIER_DELAY_SECONDS", 0.0)
+
+        worker._run_cycle()
+
+        assert worker.in_cooldown() is True
+        assert provider.calendar_calls == 0  # Tier 2 nunca se disparó en este ciclo
     finally:
         _restore()
 
