@@ -960,13 +960,50 @@ def test_magnitud_precision_report_sin_close_return_no_cuenta_como_evaluable():
         _restore()
 
 
+def test_magnitud_precision_report_muestra_suficiente_segun_n_evaluables():
+    """2026-08-23, pedido explícito del usuario: "no puede ser una simple
+    suma de acierto... quiero ver la realidad" -- un 80% con n chico no
+    significa lo mismo que un 80% con muestra real. Mismo piso (30) que
+    usa el resto de Atlas."""
+    _fresh()
+    try:
+        for i in range(29):
+            t = f"T{i}"
+            reg.record_magnitud_prediction(t, "2026-08-21", f"2026-08-21T10:{i:02d}:00Z", 10.0)
+            _record_outcome_simple(t, "2026-08-21", 15.0)
+        reporte = reg.magnitud_precision_report("2026-08-21")
+        assert reporte["n_evaluables"] == 29
+        assert reporte["muestra_suficiente"] is False
+
+        reg.record_magnitud_prediction("T29", "2026-08-21", "2026-08-21T10:29:00Z", 10.0)
+        _record_outcome_simple("T29", "2026-08-21", 15.0)
+        reporte2 = reg.magnitud_precision_report("2026-08-21")
+        assert reporte2["n_evaluables"] == 30
+        assert reporte2["muestra_suficiente"] is True
+    finally:
+        _restore()
+
+
+def test_magnitud_precision_by_day_incluye_muestra_suficiente():
+    _fresh()
+    try:
+        reg.record_magnitud_prediction("MRNA", "2026-08-19", "2026-08-19T10:00:00Z", 10.0)
+        _record_outcome_simple("MRNA", "2026-08-19", 15.0)
+        evolucion = reg.magnitud_precision_by_day()
+        dia = evolucion[0]
+        assert dia["n_evaluables"] == 1
+        assert dia["muestra_suficiente"] is False  # 1 < 30
+    finally:
+        _restore()
+
+
 def test_magnitud_precision_report_sin_predicciones_no_rompe():
     _fresh()
     try:
         reporte = reg.magnitud_precision_report("2026-08-19")
         assert reporte == {
             "market_date": "2026-08-19", "n_predicciones": 0, "n_evaluables": 0,
-            "n_aciertos": 0, "precision_pct": None, "candidatas": [],
+            "n_aciertos": 0, "precision_pct": None, "muestra_suficiente": False, "candidatas": [],
         }
     finally:
         _restore()

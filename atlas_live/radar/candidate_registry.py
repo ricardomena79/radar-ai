@@ -34,6 +34,13 @@ from atlas.config.config import db_path
 
 DB_PATH = db_path("radar_candidates.db", default=Path(__file__).parent)
 
+# Piso de muestra para considerar confiable un % de Precisión de Magnitud
+# (2026-08-23, pedido explícito del usuario: "no puede ser una simple suma
+# de acierto... quiero ver la realidad") -- MISMO umbral ya usado en todo
+# Atlas para esto (signal_tracker.py, explosion_history.py,
+# experiments.MIN_PRIOR_ROWS_FOR_CUTS), nunca un número nuevo inventado acá.
+MUESTRA_MINIMA_CONFIABLE_MAGNITUD = 30
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS candidate_detection (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1349,6 +1356,13 @@ def magnitud_precision_report(market_date: Optional[str] = None, solo_racional: 
         "n_evaluables": n_evaluables,
         "n_aciertos": n_aciertos,
         "precision_pct": round(100 * n_aciertos / n_evaluables, 1) if n_evaluables else None,
+        # Muestra confiable (2026-08-23, pedido explícito del usuario: "no
+        # puede ser una simple suma de acierto... quiero ver la realidad")
+        # -- MISMO piso ya usado en todo Atlas para decir "esto todavía no
+        # alcanza para confiar" (signal_tracker.py, explosion_history.py,
+        # experiments.MIN_PRIOR_ROWS_FOR_CUTS), no un número nuevo inventado
+        # acá. Un 80% con n=3 no significa lo mismo que un 80% con n=300.
+        "muestra_suficiente": n_evaluables >= MUESTRA_MINIMA_CONFIABLE_MAGNITUD,
         "candidatas": candidatas,
     }
 
@@ -1420,6 +1434,7 @@ def magnitud_precision_by_day(solo_racional: bool = False) -> List[Dict[str, Any
             "n_evaluables": n_evaluables,
             "n_aciertos": n_aciertos,
             "precision_pct": round(100 * n_aciertos / n_evaluables, 1) if n_evaluables else None,
+            "muestra_suficiente": n_evaluables >= MUESTRA_MINIMA_CONFIABLE_MAGNITUD,
         })
     return out
 

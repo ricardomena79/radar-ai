@@ -1549,6 +1549,38 @@ function renderPrecisionMagnitud() {
     </table></div>`;
   };
 
+  // Meta de confianza del usuario (2026-08-23, pedido explícito: "quiero
+  // saber cuando llegue a 80 de acierto... este porcentaje debe ser bien
+  // criterioso. no puede ser una simple suma de acierto. quiero ver la
+  // realidad") -- usa el MISMO % acumulado real de arriba, sin inventar
+  // ningún cálculo nuevo ni suavizar días malos. `muestra_suficiente`
+  // (piso de 30, mismo umbral que ya usa el resto de Atlas) avisa
+  // explícitamente cuando el % todavía no alcanza para confiar en él,
+  // para que un n chico no se lea como si ya fuera una meta cumplida.
+  const METAS_CONFIANZA_PCT = 80;
+  const MUESTRA_MINIMA_MAGNITUD = 30;
+  const progresoMetaHtml = (acum, etiqueta) => {
+    if (!acum || acum.n_evaluables == null) {
+      return `<div class="empty-state">No disponible.</div>`;
+    }
+    const pct = acum.precision_pct;
+    const anchoBarra = pct != null ? Math.min(100, Math.max(0, 100 * pct / METAS_CONFIANZA_PCT)) : 0;
+    const colorBarra = acum.muestra_suficiente === false ? "var(--text-faint)" : (pct >= METAS_CONFIANZA_PCT ? "var(--green)" : "var(--accent)");
+    const avisoMuestra = acum.muestra_suficiente === false
+      ? `<div class="detail-note" style="margin-top:4px;color:var(--amber)">⚠ Muestra chica (n=${fmtN(acum.n_evaluables)}, hacen falta al menos ${MUESTRA_MINIMA_MAGNITUD} evaluables) -- este % todavía no alcanza para confiar en él, puede cambiar mucho con cada caso nuevo.</div>`
+      : "";
+    return `<div style="margin:6px 0 4px">
+      <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text-dim);margin-bottom:4px">
+        <span>${etiqueta}: ${pct != null ? fmtNum(pct) + "%" : "No disponible"} (${fmtN(acum.n_aciertos)}/${fmtN(acum.n_evaluables)})</span>
+        <span>Meta: ${METAS_CONFIANZA_PCT}%</span>
+      </div>
+      <div style="background:var(--panel-2);border:1px solid var(--border);border-radius:4px;height:10px;overflow:hidden">
+        <div style="width:${anchoBarra}%;height:100%;background:${colorBarra}"></div>
+      </div>
+      ${avisoMuestra}
+    </div>`;
+  };
+
   // Desglose Racional (2026-08-23, pedido explícito del usuario: "esa
   // info la quiero en atlas") -- mismo criterio de acierto, filtrado al
   // universo operable real (atlas.data.universe), para juzgar el % de
@@ -1595,7 +1627,8 @@ function renderPrecisionMagnitud() {
   const evolucionRac = _radarInforme && _radarInforme.precision_de_magnitud_por_dia_racional;
 
   el.innerHTML = `<div class="lh-grid" style="margin-bottom:10px">${cards}</div>
-    <h3 style="font-size:14px">📅 Evolución día por día <span class="dim" style="font-size:12px">(¿sube o baja? -- más reciente primero)</span></h3>
+    ${progresoMetaHtml(acum, "Precisión de magnitud histórica")}
+    <h3 style="font-size:14px;margin-top:18px">📅 Evolución día por día <span class="dim" style="font-size:12px">(¿sube o baja? -- más reciente primero)</span></h3>
     ${tablaEvolucionHtml(evolucion)}
     <h3 style="margin-top:22px;font-size:14px">📋 Detalle de hoy</h3>
     ${tablaOAviso(hoy.candidatas, "Sin predicciones de magnitud cerradas todavía hoy.")}
@@ -1604,7 +1637,8 @@ function renderPrecisionMagnitud() {
     ${tablaAciertosHtml(acum && acum.candidatas)}
     <h3 style="margin-top:22px;font-size:14px">🎯 Solo Racional <span class="dim" style="font-size:12px">(mismo criterio, filtrado a lo que realmente podés comprar)</span></h3>
     <div class="lh-grid" style="margin:10px 0">${cardsRacional}</div>
-    <h3 style="margin-top:14px;font-size:14px">📅 Evolución día por día (Racional)</h3>
+    ${progresoMetaHtml(acumRac, "Precisión de magnitud histórica (Racional)")}
+    <h3 style="margin-top:18px;font-size:14px">📅 Evolución día por día (Racional)</h3>
     ${tablaEvolucionHtml(evolucionRac)}
     <h3 style="margin-top:14px;font-size:14px">📋 Detalle de hoy (Racional)</h3>
     ${tablaOAviso(hoyRac && hoyRac.candidatas, "Sin predicciones Racional cerradas todavía hoy.")}
