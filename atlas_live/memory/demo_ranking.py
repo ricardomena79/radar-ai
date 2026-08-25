@@ -104,6 +104,15 @@ class RankedCandidate:
     price_afterhours: Optional[float]
     price_overnight: Optional[float]  # cuarta sesión (Overnight/BOATS) -- siempre None hasta que exista un proveedor que la entregue
     price_as_of: Optional[str]
+    # Separación señal/ejecutable (2026-08-24, Fase 1E) -- mismo criterio
+    # de pass-through que los campos de arriba: `price` sigue siendo
+    # precio de SEÑAL sin cambios, `executable_price`/`bid_only_reason`
+    # son la única fuente de verdad sobre si hay contraparte de compra
+    # real (`None` para proveedores que no son Tradier, o cuando
+    # `price_basis` es `tradier_bid_only`/`tradier_regular_close_stale`).
+    price_basis: Optional[str]
+    executable_price: Optional[float]
+    bid_only_reason: Optional[str]
     probability_pct: Optional[float]
     confidence: str
     semaforo: str
@@ -197,6 +206,9 @@ def build_ranked_candidate(
         price_afterhours=metrics.get("price_afterhours"),
         price_overnight=metrics.get("price_overnight"),
         price_as_of=metrics.get("price_as_of"),
+        price_basis=metrics.get("price_basis"),
+        executable_price=metrics.get("executable_price"),
+        bid_only_reason=metrics.get("bid_only_reason"),
         probability_pct=probability_pct,
         confidence=confidence,
         semaforo=semaforo,

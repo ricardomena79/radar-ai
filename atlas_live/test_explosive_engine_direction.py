@@ -74,3 +74,64 @@ def test_direction_tambien_se_expone_para_candidatos_no_eligibles():
     assert result.eligible is False
     assert result.failed_stage == "price"
     assert result.metrics["direction"] == "BAJISTA"
+
+
+# ---------------------------------------------------------------------------
+# Fase 1E (2026-08-24) -- cierre de la presentación BID_ONLY en Explosivas/
+# Momentum/Oportunidad del Día: `executable_price`/`bid_only_reason` deben
+# propagarse a `metrics` con el MISMO pass-through puro que `price_basis`
+# (ya existente) -- sin tocar ningún gate/umbral de este archivo.
+# ---------------------------------------------------------------------------
+
+def test_fase1e_executable_price_y_bid_only_reason_se_exponen_en_metrics():
+    """Caso NSSC reconstruido: BID_ONLY -- `metrics["price"]` sigue siendo
+    la señal ($39.00, sin cambios), `executable_price` queda `None`,
+    `bid_only_reason` documenta por qué."""
+    quote = Quote(
+        symbol="NSSC", name="NSSC", last_price=39.00, change_percent=2.39,
+        volume=458, average_volume=372451, open=39.0, high=39.5, low=38.5,
+        previous_close=38.09, price_basis="tradier_bid_only",
+        bid_only_reason="ask_vencido", executable_price=None,
+    )
+    result = ee.evaluate(quote, _momentum(), None)
+    assert result.metrics["price"] == 39.00  # señal, sin cambios
+    assert result.metrics["price_basis"] == "tradier_bid_only"
+    assert result.metrics["executable_price"] is None
+    assert result.metrics["bid_only_reason"] == "ask_vencido"
+
+
+def test_fase1e_bidaskmid_executable_price_conserva_comportamiento_actual():
+    """Caso MSTU-shaped: `tradier_bid_ask_mid` -- `executable_price` debe
+    coincidir con `price`, exactamente igual que antes de Fase 1E."""
+    quote = Quote(
+        symbol="MSTU", name="MSTU", last_price=27.31, change_percent=0.037,
+        volume=6150, average_volume=50000, open=27.3, high=27.4, low=27.2,
+        previous_close=27.30, price_basis="tradier_bid_ask_mid", executable_price=27.31,
+    )
+    result = ee.evaluate(quote, _momentum(), None)
+    assert result.metrics["price_basis"] == "tradier_bid_ask_mid"
+    assert result.metrics["executable_price"] == result.metrics["price"] == 27.31
+    assert result.metrics["bid_only_reason"] is None
+
+
+def test_fase1e_tradier_last_normal_sin_cambios():
+    """`tradier_last` (sesión normal): `executable_price` espeja `price`."""
+    quote = Quote(
+        symbol="XYZ", name="XYZ", last_price=10.0, change_percent=1.5,
+        volume=2_000_000, average_volume=500_000, open=10.5, high=11.0, low=9.5,
+        previous_close=9.8, price_basis="tradier_last", executable_price=10.0,
+    )
+    result = ee.evaluate(quote, _momentum(), None)
+    assert result.metrics["executable_price"] == result.metrics["price"] == 10.0
+
+
+def test_fase1e_otro_proveedor_sin_price_basis_no_rompe():
+    """Un Quote de un proveedor que no sea Tradier (sin `price_basis`
+    explícito) debe seguir funcionando -- `executable_price` espeja
+    `last_price` por el default de `Quote.__post_init__`, `price_basis`/
+    `bid_only_reason` quedan `None`/default, nunca rompe."""
+    quote = _eligible_quote(6.0)  # Quote genérico, sin price_basis explícito
+    result = ee.evaluate(quote, _momentum(), None)
+    assert result.metrics["price_basis"] is None
+    assert result.metrics["executable_price"] == result.metrics["price"]
+    assert result.metrics["bid_only_reason"] is None

@@ -152,9 +152,23 @@ function priceTypeLabel(priceType) {
 /* Línea compacta para usar junto a cualquier precio en tablas -- el badge
  * visual del estado de mercado (punto 1, no depende de leer texto) más
  * los tres datos obligatorios (fuente, tipo, hora), en el mínimo espacio. */
+// Fase 1E (2026-08-24, cierre de la presentación BID_ONLY en Explosivas/
+// Momentum/No Tocar -- las 3 tablas que usan esta línea compartida): igual
+// criterio que ya tienen "Oportunidades Detectadas"/"Catalizadores" --
+// `price`/`change_pct` siguen siendo precio de SEÑAL sin cambios;
+// `executable_price` es la única fuente de verdad sobre si hay contraparte
+// de compra real. `tradier_bid_ask_mid`/`tradier_last`/otros proveedores
+// quedan exactamente igual que antes (executable_price == price siempre).
+function bidOnlyWarningHtml(c) {
+  if (!c || c.price == null || c.executable_price != null) return "";
+  const motivo = c.price_basis === "tradier_bid_only"
+    ? `Fuente: solo bid -- ask descartado (${c.bid_only_reason || "sin razón"})` : "Precio vencido, sin contraparte de compra verificable";
+  return ` <span style="color:var(--amber,#e0a800);font-weight:700;white-space:nowrap" title="${motivo.replace(/"/g, "&quot;")} -- PRECIO DE SEÑAL, NO EJECUTABLE">⚠ SEÑAL, NO EJECUTABLE</span>`;
+}
+
 function priceContextLine(c) {
   if (!c || !c.price_type) return '<span class="dim">sin contexto de precio</span>';
-  return `<span class="price-context">${marketStateBadgeHtml(c.market_state)} ${priceSourceLabel(c.price_source)} · ${priceTypeLabel(c.price_type)} · ${fmtTime(c.price_as_of)} ET</span>`;
+  return `<span class="price-context">${marketStateBadgeHtml(c.market_state)} ${priceSourceLabel(c.price_source)} · ${priceTypeLabel(c.price_type)} · ${fmtTime(c.price_as_of)} ET</span>${bidOnlyWarningHtml(c)}`;
 }
 
 /* Desglose completo para Hero/Plan B -- muestra TODOS los precios que
@@ -1888,17 +1902,27 @@ function renderAlertStages() {
       const sector = o.sector ? `${o.sector}${o.dinero_entra_sector ? " 💰" : ""}` : "—";
       const motivoTooltip = (o.motivo_estado_final || "").replace(/"/g, "&quot;");
       // Trazabilidad del precio de premarket (2026-08-18): de dónde salió
-      // exactamente price_actual -- último trade de Tradier, o punto medio
-      // bid/ask cuando ese trade estaba vencido (ver Quote.price_basis).
+      // exactamente price_actual -- último trade de Tradier, punto medio
+      // bid/ask, solo bid, o cierre vencido (ver Quote.price_basis).
       const basisLabel = o.price_basis === "tradier_bid_ask_mid" ? "punto medio bid/ask (last vencido)"
-        : o.price_basis === "tradier_last" ? "último trade (Tradier)" : null;
+        : o.price_basis === "tradier_last" ? "último trade (Tradier)"
+        : o.price_basis === "tradier_bid_only" ? `solo bid -- ask descartado (${o.bid_only_reason || "sin razón"})`
+        : o.price_basis === "tradier_regular_close_stale" ? "cierre regular anterior (vencido)" : null;
+      // Fase 1D (2026-08-24, auditoría de seguridad): `price_actual` es
+      // precio de SEÑAL -- `executable_price` es la única fuente de verdad
+      // sobre si hay contraparte de compra real a ese precio. NUNCA ocultar
+      // el dato, solo advertir explícitamente cuando no es comprable.
+      const noEjecutable = o.price_actual != null && o.executable_price == null;
       const priceTooltipParts = [];
       if (basisLabel) priceTooltipParts.push(`Fuente: ${basisLabel}`);
+      if (noEjecutable) priceTooltipParts.push("PRECIO DE SEÑAL -- sin contraparte de compra verificable, NO ejecutable");
       if (o.bid != null && o.ask != null) {
         priceTooltipParts.push(`Bid ${fmtNum(o.bid)} / Ask ${fmtNum(o.ask)}`);
         if (o.spread_pct != null) priceTooltipParts.push(`Spread ${fmtNum(o.spread_pct)}%`);
       }
       const priceTooltip = priceTooltipParts.join(" — ").replace(/"/g, "&quot;");
+      const priceWarningHtml = noEjecutable
+        ? '<div style="color:var(--amber,#e0a800);font-size:10px;font-weight:700;white-space:nowrap">⚠ SEÑAL, NO EJECUTABLE</div>' : "";
       // Retroceso desde máximo intradía (2026-08-18): explica por qué una
       // candidata que sigue positiva en el día puede estar en NO_PERSEGUIR
       // -- caso real YYAI (pico $1,57, cayendo, pero +13% vs cierre de ayer).
@@ -1921,7 +1945,7 @@ function renderAlertStages() {
         <td title="${etapaTooltip}"><span style="color:${st.color};font-weight:${st.bold ? 700 : 600}">${st.label}</span></td>
         <td>${dir ? `<span style="color:${dir.color}">${dir.label}</span>` : "—"}</td>
         <td class="dim" title="${o.dinero_entra_sector ? "Sector con flujo de dinero activo" : ""}">${sector}</td>
-        <td style="text-align:right" title="${priceTooltip}">${o.price_actual != null ? "$" + fmtNum(o.price_actual) : "—"}</td>
+        <td style="text-align:right" title="${priceTooltip}">${o.price_actual != null ? "$" + fmtNum(o.price_actual) : "—"}${priceWarningHtml}</td>
         <td class="dim" title="${o.price_actual_as_of ? fmtTimeSec(o.price_actual_as_of) + " ET" : ""}">${o.price_age_seconds != null ? fmtAge(o.price_age_seconds) : "—"}</td>
         <td style="text-align:right">${o.price_at_detection != null ? "$" + fmtNum(o.price_at_detection) : "—"}</td>
         <td>${o.detected_at ? fmtTimeSec(o.detected_at) + " ET" : "—"}</td>
@@ -2009,9 +2033,20 @@ function _catalystRowHtml(c) {
   const mrnaTexto = c.mrna_similarity_status === "EN_EVALUACION"
     ? '<span class="dim">EN EVALUACIÓN</span>'
     : (c.mrna_similarity_score != null ? fmtNum(c.mrna_similarity_score, 0) : "—");
+  // Fase 1D (2026-08-24, auditoría de seguridad -- separación señal/
+  // ejecutable): `market.price` es precio de SEÑAL, `market.executable_price`
+  // es la única fuente de verdad sobre si hay contraparte de compra real.
+  // Nunca ocultar el precio -- solo advertir explícitamente cuando no es
+  // comprable (ver mismo criterio en el panel "Oportunidades Detectadas").
+  const priceNoEjecutable = market.price != null && market.executable_price == null;
+  const priceTitle = market.price_basis === "tradier_bid_only"
+    ? `Fuente: solo bid -- ask descartado (${market.bid_only_reason || "sin razón"}) -- PRECIO DE SEÑAL, NO EJECUTABLE`
+    : (priceNoEjecutable ? "PRECIO DE SEÑAL, NO EJECUTABLE" : "");
+  const priceWarningHtml = priceNoEjecutable
+    ? '<div style="color:var(--amber,#e0a800);font-size:10px;font-weight:700;white-space:nowrap">⚠ SEÑAL, NO EJECUTABLE</div>' : "";
   return `<tr title="${(c.trading_status_motivo || "").replace(/"/g, "&quot;")}">
     <td>${c.ticker}</td>
-    <td style="text-align:right">${market.price != null ? "$" + fmtNum(market.price) : '<span class="dim">SIN DATOS</span>'}</td>
+    <td style="text-align:right" title="${priceTitle.replace(/"/g, "&quot;")}">${market.price != null ? "$" + fmtNum(market.price) : '<span class="dim">SIN DATOS</span>'}${priceWarningHtml}</td>
     <td style="text-align:right">${market.change_pct != null ? fmtPct(market.change_pct) : "—"}</td>
     <td style="text-align:right">${market.relative_volume != null ? fmtNum(market.relative_volume) + "x" : "—"}</td>
     <td class="dim">${c.catalyst_type || "—"}</td>
@@ -2433,7 +2468,7 @@ function renderOportunidad() {
         <span class="detail-symbol">${o.symbol}</span>
         ${semaforoHtml(o.semaforo)}
         ${badgeHtml(o.market_cap_bucket === "micro" ? "MICROCAP" : (o.market_cap_bucket || "?").toUpperCase(), o.semaforo)}
-        <span class="dim">${fmtMoney(o.price)}</span>
+        <span class="dim">${fmtMoney(o.price)}</span>${bidOnlyWarningHtml(o)}
       </div>
       ${priceBreakdownHtml(o)}
 

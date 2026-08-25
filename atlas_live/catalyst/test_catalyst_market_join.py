@@ -28,6 +28,107 @@ def test_join_sin_quote_da_sin_datos_nunca_inventa():
     assert r["market"]["market_data_status"] == "SIN_DATOS"
     assert r["market"]["price"] is None
     assert r["market"]["gap_pct"] is None
+    assert r["market"]["price_basis"] is None
+    assert r["market"]["price_is_stale"] is None
+    assert r["market"]["bid_only_reason"] is None
+
+
+def test_join_expone_price_basis_timestamp_y_stale_cuando_el_quote_los_trae():
+    """Fase 1 (2026-08-24) -- corrección de datos premarket: caso real
+    NSSC, precio congelado. Sin estos 3 campos, un precio stale era
+    indistinguible de uno vivo desde la API."""
+    ts = datetime(2026, 8, 24, 8, 7, 26, tzinfo=timezone.utc)
+    q = _quote(price_basis="tradier_regular_close_stale", price_is_stale=True, timestamp=ts, change_percent=None)
+    r = mj.join_market_data("NSSC", {"NSSC": q})
+    assert r["market"]["price_basis"] == "tradier_regular_close_stale"
+    assert r["market"]["price_is_stale"] is True
+    assert r["market"]["price_timestamp"] == ts.isoformat()
+    assert r["market"]["change_pct"] is None
+
+
+def test_join_expone_bid_only_reason_cuando_el_quote_lo_trae():
+    """Fase 1C (2026-08-24) -- fallback BID_ONLY: caso real NSSC, bid
+    rescatado con un ask roto. `bid_only_reason` debe quedar expuesto tal
+    cual para trazabilidad (por qué se descartó el ask)."""
+    ts = datetime(2026, 8, 24, 9, 17, 58, tzinfo=timezone.utc)
+    q = _quote(
+        price_basis="tradier_bid_only", price_is_stale=False, timestamp=ts,
+        bid_only_reason="ask_vencido", change_percent=2.39,
+    )
+    r = mj.join_market_data("NSSC", {"NSSC": q})
+    assert r["market"]["price_basis"] == "tradier_bid_only"
+    assert r["market"]["bid_only_reason"] == "ask_vencido"
+    assert r["market"]["price_is_stale"] is False
+
+
+def test_join_expone_executable_price_nssc_bidonly_da_none():
+    """Fase 1D (2026-08-24) -- caso J del pedido: NSSC debe representarse
+    con `price=39.00`/`change_pct≈2.39`/`price_basis="tradier_bid_only"`/
+    `executable_price=None` -- separación señal/ejecutable expuesta en el
+    endpoint de catalizadores."""
+    q = _quote(
+        last_price=39.00, change_percent=2.39, price_basis="tradier_bid_only",
+        price_is_stale=False, bid_only_reason="ask_vencido", executable_price=None,
+    )
+    r = mj.join_market_data("NSSC", {"NSSC": q})
+    assert r["market"]["price"] == 39.00
+    assert round(r["market"]["change_pct"], 2) == 2.39
+    assert r["market"]["price_basis"] == "tradier_bid_only"
+    assert r["market"]["executable_price"] is None
+
+
+def test_join_expone_executable_price_bidaskmid_conserva_valor():
+    """`executable_price` para `tradier_bid_ask_mid` debe coincidir con
+    `price` -- sin cambios respecto al comportamiento actual."""
+    q = _quote(price_basis="tradier_bid_ask_mid", executable_price=27.31, last_price=27.31)
+    r = mj.join_market_data("MSTU", {"MSTU": q})
+    assert r["market"]["executable_price"] == r["market"]["price"] == 27.31
+
+
+def test_join_sin_quote_executable_price_none_no_inventado():
+    r = mj.join_market_data("NOEXISTE", {})
+    assert r["market"]["executable_price"] is None
+
+
+def test_fase1d_F_executable_price_no_afecta_catalyst_opportunity_score():
+    """Caso F del pedido -- el scoring de catalizadores (`catalyst_score.py`)
+    nunca consume `executable_price`/`price`/`change_pct` directamente
+    (solo `relative_volume`/`gap_pct`/etc, ver auditoría de Fase 1D) -- dos
+    llamadas idénticas salvo por `executable_price` deben dar el MISMO
+    `catalyst_opportunity_score`."""
+    now = datetime(2026, 8, 24, tzinfo=timezone.utc)
+    radar_row = {
+        "gates_fired": [{"gate": "acceleration"}], "direction": "ALCISTA",
+        "retroceso_desde_maximo_pct": 4.0, "timing_deteccion_hoy": "al_comienzo", "stage": "INICIO",
+        "relative_volume_at_detection": 2.8, "change_pct_at_detection": 5.0,
+        "relative_volume_hoy": 3.5, "change_pct_confiable": True,
+    }
+    row = _catalyst_row(ticker="NSSC")
+
+    r_ejecutable = mj.enrich_catalyst_row(
+        row, lifecycle_state="INMINENTE",
+        last_quotes={"NSSC": _quote(relative_volume=2.8, open=39.0, previous_close=37.7, executable_price=39.0)},
+        radar_row=radar_row, now=now,
+    )
+    r_no_ejecutable = mj.enrich_catalyst_row(
+        row, lifecycle_state="INMINENTE",
+        last_quotes={"NSSC": _quote(relative_volume=2.8, open=39.0, previous_close=37.7, executable_price=None)},
+        radar_row=radar_row, now=now,
+    )
+    assert r_ejecutable["catalyst_opportunity_score"] == r_no_ejecutable["catalyst_opportunity_score"]
+    assert r_ejecutable["catalyst_score"] == r_no_ejecutable["catalyst_score"]
+
+
+def test_join_price_basis_ausente_en_quote_no_inventado_default_none():
+    """Un Quote de un proveedor que no sea Tradier (sin estos atributos)
+    no debe romper -- `getattr` con default `None`, ya probado arriba en
+    los tests existentes que usan `_quote()` sin estos campos."""
+    q = _quote()  # SimpleNamespace sin price_basis/price_is_stale/timestamp
+    r = mj.join_market_data("NSSC", {"NSSC": q})
+    assert r["market"]["price_basis"] is None
+    assert r["market"]["price_is_stale"] is None
+    assert r["market"]["price_timestamp"] is None
+    assert r["market"]["bid_only_reason"] is None
 
 
 def test_join_gap_pct_none_si_falta_open_o_previous_close():

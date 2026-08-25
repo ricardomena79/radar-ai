@@ -212,6 +212,15 @@ def evaluate(
         # resueltos desde `TradierProvider._to_quote()` (o `None`/valores
         # por defecto para proveedores que no son Tradier).
         "price_basis": getattr(quote, "price_basis", None),
+        # `executable_price`/`bid_only_reason` (2026-08-24, Fase 1E --
+        # cierre de la presentación BID_ONLY en Explosivas/Momentum/
+        # Oportunidad del Día): mismo pass-through puro que `price_basis`
+        # de arriba, no participa en ningún gate de este archivo. `price`
+        # de arriba sigue siendo precio de SEÑAL sin cambios -- estos 2
+        # campos son la única fuente de verdad sobre si ese precio tiene
+        # contraparte de compra real (`None` cuando no la tiene).
+        "executable_price": getattr(quote, "executable_price", None),
+        "bid_only_reason": getattr(quote, "bid_only_reason", None),
         "bid": getattr(quote, "bid", None),
         "ask": getattr(quote, "ask", None),
         # Dirección (2026-08-18, pedido explícito del usuario -- mismo eje

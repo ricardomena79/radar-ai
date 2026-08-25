@@ -33,6 +33,10 @@ from atlas_live.radar.alert_stage import VOLUME_ELEVATED_THRESHOLD
 from atlas_live.radar.phase_classifier import MOVEMENT_FLOOR_PCT
 
 
+def _iso(dt: Any) -> Optional[str]:
+    return dt.isoformat() if dt is not None else None
+
+
 def _gap_pct(quote: Any) -> Optional[float]:
     open_price = getattr(quote, "open", None)
     previous_close = getattr(quote, "previous_close", None)
@@ -53,8 +57,29 @@ def join_market_data(
             "market_data_status": "SIN_DATOS",
             "price": None, "change_pct": None, "volume": None,
             "average_volume": None, "relative_volume": None, "gap_pct": None,
+            "price_basis": None, "price_timestamp": None, "price_is_stale": None,
+            "bid_only_reason": None, "executable_price": None,
         }
     else:
+        # `price_basis`/`price_timestamp`/`price_is_stale`/`bid_only_reason`
+        # (2026-08-24, Fase 1/1C -- corrección de datos premarket): exponen
+        # CÓMO se resolvió el precio (LIVE_TRADE="tradier_last"/
+        # BID_ASK_MID="tradier_bid_ask_mid"/BID_ONLY="tradier_bid_only"/
+        # STALE_REGULAR_CLOSE="tradier_regular_close_stale") -- sin esto,
+        # un precio congelado (caso real NSSC) era indistinguible de uno
+        # vivo desde la API. `bid_only_reason` documenta por qué se
+        # descartó el ask cuando `price_basis=="tradier_bid_only"`
+        # (`"ask_ausente"`/`"ask_invalido"`/`"ask_vencido"`/`"ask_roto"`).
+        # `executable_price` (Fase 1D, 2026-08-24 -- auditoría de
+        # seguridad): `price`/`change_pct` de arriba son precio de SEÑAL
+        # (sirven para detectar movimiento, mismo criterio de siempre) --
+        # `executable_price` es la única fuente de verdad sobre si ese
+        # precio tiene una contraparte de compra real. `None` cuando
+        # `price_basis` es `"tradier_bid_only"`/`"tradier_regular_close_stale"`
+        # -- la UI (Cabina) debe usar ESTE campo, nunca `price`, para
+        # decidir si mostrar el precio como "comprable".
+        # `getattr` con default porque otros proveedores (no-Tradier)
+        # nunca completan estos campos.
         market = {
             "market_data_status": "OK",
             "price": quote.last_price,
@@ -63,6 +88,11 @@ def join_market_data(
             "average_volume": quote.average_volume,
             "relative_volume": quote.relative_volume,
             "gap_pct": _gap_pct(quote),
+            "price_basis": getattr(quote, "price_basis", None),
+            "price_timestamp": _iso(getattr(quote, "timestamp", None)),
+            "price_is_stale": getattr(quote, "price_is_stale", None),
+            "bid_only_reason": getattr(quote, "bid_only_reason", None),
+            "executable_price": getattr(quote, "executable_price", None),
         }
 
     if radar_row is not None:

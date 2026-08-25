@@ -590,6 +590,14 @@ def api_radar_oportunidades():
         q_bid_ts = getattr(q, "bid_timestamp", None) if q else None
         q_ask_ts = getattr(q, "ask_timestamp", None) if q else None
         o["price_basis"] = getattr(q, "price_basis", None) if q else None
+        # `executable_price` (2026-08-24, Fase 1D -- separación señal/
+        # ejecutable): `price_actual` de arriba es precio de SEÑAL --
+        # `executable_price` es `None` cuando ese precio NO tiene una
+        # contraparte de compra verificable (BID_ONLY/STALE_REGULAR_CLOSE).
+        # La Cabina debe usar este campo, nunca `price_actual`, para decidir
+        # si mostrar el precio como "comprable".
+        o["executable_price"] = getattr(q, "executable_price", None) if q else None
+        o["bid_only_reason"] = getattr(q, "bid_only_reason", None) if q else None
         o["bid"] = q_bid
         o["ask"] = q_ask
         o["bid_timestamp"] = q_bid_ts.isoformat() if q_bid_ts else None
