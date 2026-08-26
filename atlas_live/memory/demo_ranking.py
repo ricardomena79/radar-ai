@@ -129,6 +129,12 @@ class RankedCandidate:
     # es False -- para que "No tocar" pueda explicar el rechazo real, no
     # solo el del Memory Engine.
     radar_excluded_reason: Optional[str]
+    # Atlas Decision Core (2026-08-26, U3-B) -- pass-through de la decisión
+    # canónica ya calculada en `scan_worker._score_symbol()` (nunca se
+    # recalcula acá). `eligible_radar`/`semaforo` de arriba quedan como
+    # FEATURE/EVIDENCE de entrada al core, nunca como una segunda decisión
+    # -- ver `atlas_live/core/atlas_decision_core.py`.
+    atlas_decision: Optional[Dict[str, Any]] = None
 
 
 def build_ranked_candidate(
@@ -221,6 +227,7 @@ def build_ranked_candidate(
         tie_break_note=tie_break_note,
         sort_key=score.nivel1_wilson_lower_bound,
         radar_excluded_reason=row["explosive"].get("excluded_reason"),
+        atlas_decision=row.get("atlas_decision"),
     )
 
 

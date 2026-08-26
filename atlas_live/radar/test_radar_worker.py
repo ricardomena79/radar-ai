@@ -179,6 +179,56 @@ def test_sweep_usa_universo_completo_equity_mas_etfs_apalancados():
         _restore()
 
 
+# ---------------------------------------------------------------------------
+# Fase 3/5 (2026-08-25) -- Caso E: una falla en la generación de conocimiento
+# NO debe tumbar el radar. `_maybe_generate_experience_knowledge()` está
+# testeado de forma aislada acá (no requiere simular todo el EOD real).
+# ---------------------------------------------------------------------------
+
+def test_E_falla_en_generacion_de_conocimiento_no_tumba_el_radar():
+    _fresh()
+    try:
+        from atlas_live.learning import live_experience_pipeline as lep
+
+        orig_run = lep.run_experience_learning_cycle
+
+        def _boom(as_of_date, **kwargs):
+            raise RuntimeError("fallo simulado -- SQLite inaccesible")
+
+        lep.run_experience_learning_cycle = _boom
+        try:
+            # No debe lanzar NINGUNA excepción -- ese es exactamente el punto.
+            w._maybe_generate_experience_knowledge("2026-08-24")
+        finally:
+            lep.run_experience_learning_cycle = orig_run
+
+        meta = reg.get_meta()
+        assert "RuntimeError" in (meta.get("conocimiento_ultimo_error") or "")
+        # El marcador de "ya se generó" NUNCA se puso -- la falla no se
+        # disfraza de éxito.
+        assert meta.get("conocimiento_generado_para") != "2026-08-24"
+    finally:
+        _restore()
+
+
+def test_E_no_se_re_ejecuta_el_mismo_dia_si_ya_se_genero():
+    _fresh()
+    try:
+        reg.set_meta(conocimiento_generado_para="2026-08-24")
+        from atlas_live.learning import live_experience_pipeline as lep
+
+        orig_run = lep.run_experience_learning_cycle
+        llamadas = []
+        lep.run_experience_learning_cycle = lambda as_of_date, **k: llamadas.append(as_of_date)
+        try:
+            w._maybe_generate_experience_knowledge("2026-08-24")
+        finally:
+            lep.run_experience_learning_cycle = orig_run
+        assert llamadas == []  # nunca se volvió a llamar -- ya estaba marcado para esa fecha
+    finally:
+        _restore()
+
+
 if __name__ == "__main__":
     import traceback
 

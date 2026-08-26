@@ -91,6 +91,27 @@ function decisionBadge(displayDecision) {
   return `<span class="decision-badge decision-${displayDecision.code}">${displayDecision.emoji} ${displayDecision.label}</span>`;
 }
 
+// Decisión Atlas (2026-08-26, U3-B -- Atlas Decision Core): la decisión
+// canónica de `atlas_decision_core.decide()`, mostrada EN PARALELO al
+// badge de Decision Engine de arriba, mientras ambas capas conviven para
+// validación visual -- pedido explícito: no reemplaza todavía nada de
+// este dashboard legacy, es solo información diagnóstica adicional.
+const ATLAS_DECISION_LABEL = {
+  OPORTUNIDAD_PRIORITARIA: "🟢 Oportunidad prioritaria",
+  VIGILAR: "🟡 Vigilar",
+  PREPARACION: "🔵 Preparación",
+  NO_TOCAR: "🔴 No tocar",
+};
+
+function atlasDecisionBadge(atlasDecision) {
+  if (!atlasDecision || !atlasDecision.decision) return "";
+  const label = ATLAS_DECISION_LABEL[atlasDecision.decision] || atlasDecision.decision;
+  const shadow = atlasDecision.shadow_differs
+    ? ` <span class="opp-name" title="Lo que propondría la recalibración -- solo shadow, nunca activo">(shadow: ${atlasDecision.decision_shadow})</span>`
+    : "";
+  return `<span class="decision-badge" title="${(atlasDecision.reason || "").replace(/"/g, "&quot;")}">${label}</span>${shadow}`;
+}
+
 function riskBadge(riskLevel) {
   if (!riskLevel) return "";
   return `<span class="risk-badge risk-${riskLevel}">Riesgo ${riskLevel}</span>`;
@@ -169,6 +190,7 @@ function renderCardList(containerId, rows, emptyMessage) {
       </div>
       <div class="opp-right">
         ${decisionBadge(row.display_decision)}
+        ${atlasDecisionBadge(row.atlas_decision)}
         ${riskBadge(row.risk_level)}
         <div class="opp-confidence">
           <div class="value">${fmt(row.confidence, 0)}%</div>
@@ -356,6 +378,7 @@ async function openDetail(symbol) {
     body.innerHTML = `
       <div class="detail-summary">
         ${decisionBadge(d.display_decision)}
+        ${atlasDecisionBadge(d.atlas_decision)}
         <div class="metric">
           <div class="label">Confianza de Atlas</div>
           <div class="value">${fmt(d.decision.confidence, 0)}%</div>

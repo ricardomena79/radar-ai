@@ -161,6 +161,37 @@ def run_sweep_once() -> Optional[float]:
         _lock.release()
 
 
+def _maybe_generate_experience_knowledge(market_date: str) -> None:
+    """EXPERIENCIA → CONOCIMIENTO (2026-08-25, Fase 3/5 del circuito de
+    aprendizaje, autorizado explícitamente). Se llama SOLO después de que
+    `run_eod_evaluation()` ya terminó con éxito para `market_date` (así
+    `candidate_outcome.is_final=1` de HOY queda lo más fresco posible
+    antes de generar conocimiento) -- una sola vez por `market_date`,
+    marcador propio (`conocimiento_generado_para`) independiente del de
+    EOD, mismo patrón exacto ya usado para `eod_ejecutado_para`.
+
+    Aislado con su propio try/except, additional a la protección interna
+    de `run_experience_learning_cycle()` -- una falla acá (import roto,
+    excepción inesperada) NUNCA debe impedir que `maybe_run_eod_evaluation()`
+    devuelva `True` ni tumbar el hilo del radar. NO conecta nada a ninguna
+    decisión -- solo genera y persiste conocimiento (Fase 1 + Fase 2, sin
+    modificarlas)."""
+    meta = reg.get_meta()
+    if meta.get("conocimiento_generado_para") == market_date:
+        return
+    try:
+        from atlas_live.learning import live_experience_pipeline as lep
+
+        resumen = lep.run_experience_learning_cycle(market_date)
+        reg.set_meta(
+            conocimiento_generado_para=market_date,
+            conocimiento_ultima_ejecucion_at=resumen["ejecutado_at"],
+            conocimiento_resumen=resumen,
+        )
+    except Exception as exc:
+        reg.set_meta(conocimiento_ultimo_error=f"{type(exc).__name__}: {exc}")
+
+
 def maybe_run_eod_evaluation() -> bool:
     """Si el mercado regular ya cerró y todavía no se corrió la evaluación
     de HOY, la corre. Idempotente vía `candidate_registry` (una sola vez
@@ -205,6 +236,7 @@ def maybe_run_eod_evaluation() -> bool:
                 "n_posibles_no_detectadas": len(report.posibles_no_detectadas),
             },
         )
+        _maybe_generate_experience_knowledge(market_date)
         return True
     except Exception as exc:
         reg.set_meta(ultimo_error_eod=f"{type(exc).__name__}: {exc}")
@@ -243,6 +275,16 @@ def request_stop() -> None:
 
 def get_last_quotes() -> Dict[str, object]:
     return dict(_last_quotes)
+
+
+def get_symbol_sweep_history(symbol: str):
+    """Historial de barridos de HOY para un símbolo (`SweepHistory`, ya
+    poblado por `candidate_tracker.process_sweep()` para TODO el universo,
+    no solo candidatas -- confirmado por auditoría 2026-08-25). Solo
+    lectura -- para señales de observabilidad (PM-RVOL) que necesitan el
+    volumen acumulado de barridos anteriores sin llamar a ningún
+    proveedor. El más reciente queda último en la lista devuelta."""
+    return _history.get(symbol)
 
 
 RACIONAL_MOVERS_THRESHOLDS = (20, 30, 40, 50, 100)

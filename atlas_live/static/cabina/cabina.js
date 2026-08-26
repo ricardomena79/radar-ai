@@ -22,6 +22,31 @@ function semaforoHtml(nivel) {
   return `<span class="semaforo" title="${nivel}">${SEMAFORO_EMOJI[nivel] || "⚪"}</span>`;
 }
 
+// Decisión Atlas (2026-08-26, U3-B -- Atlas Decision Core): campo
+// canónico de `atlas_decision_core.decide()`, mostrado EN PARALELO a
+// eligible_radar/semáforo (Radar Explosivo/Memory Engine) mientras ambas
+// capas conviven para validación visual -- pedido explícito: NO reemplaza
+// todavía el filtro de ningún panel, es solo información diagnóstica
+// adicional. `decision_shadow` (si difiere) se muestra entre paréntesis --
+// SOLO informativo, el aprendizaje sigue en Shadow Mode
+// (`apply_recalibration=False`), nunca cambia qué se muestra. Sin dato
+// -> "s/d" honesto, nunca inventado.
+const ATLAS_DECISION_BADGE_CLASS = {
+  OPORTUNIDAD_PRIORITARIA: "badge-verde",
+  VIGILAR: "badge-amarillo",
+  PREPARACION: "badge-neutro",
+  NO_TOCAR: "badge-rojo",
+};
+
+function atlasDecisionBadge(atlasDecision) {
+  if (!atlasDecision || !atlasDecision.decision) return '<span class="dim">s/d</span>';
+  const cls = ATLAS_DECISION_BADGE_CLASS[atlasDecision.decision] || "badge-neutro";
+  const shadow = atlasDecision.shadow_differs
+    ? ` <span class="dim" title="Lo que propondría la recalibración -- SOLO shadow, nunca activo">(shadow: ${atlasDecision.decision_shadow})</span>`
+    : "";
+  return `<span class="badge ${cls}" title="${(atlasDecision.reason || "").replace(/"/g, "&quot;")}">${atlasDecision.decision}</span>${shadow}`;
+}
+
 function badgeHtml(text, nivel) {
   return `<span class="badge ${SEMAFORO_BADGE[nivel] || "badge-neutro"}">${text}</span>`;
 }
@@ -1900,7 +1925,12 @@ function renderAlertStages() {
         ? (100 * (o.price_actual / o.price_at_detection - 1)) : null;
       const evidencia = (o.gates_fired && o.gates_fired[0]) ? o.gates_fired[0].reason : "—";
       const sector = o.sector ? `${o.sector}${o.dinero_entra_sector ? " 💰" : ""}` : "—";
-      const motivoTooltip = (o.motivo_estado_final || "").replace(/"/g, "&quot;");
+      // Decisión Atlas (U3-B): `estado_final` YA sale de atlas_decision_core.decide()
+      // -- sin duplicidad que mostrar acá. `decision_shadow` (Fase 5/5,
+      // Shadow Mode) se agrega al tooltip SOLO como información -- nunca
+      // cambia `estado_final`/el orden/el filtro de esta tabla.
+      const shadowNote = o.shadow_differs ? ` | Shadow (aprendizaje, informativo): ${o.decision_shadow}` : "";
+      const motivoTooltip = ((o.motivo_estado_final || "") + shadowNote).replace(/"/g, "&quot;");
       // Trazabilidad del precio de premarket (2026-08-18): de dónde salió
       // exactamente price_actual -- último trade de Tradier, punto medio
       // bid/ask, solo bid, o cierre vencido (ver Quote.price_basis).
@@ -2243,6 +2273,7 @@ function renderHero() {
       <span class="hero-semaforo">${semaforoHtml(o.semaforo)}</span>
       ${badgeHtml(o.market_cap_bucket === "micro" ? "MICROCAP" : (o.market_cap_bucket || "?").toUpperCase(), o.semaforo)}
       <span class="hero-price" id="hero-price-value">${fmtMoney(o.price)}</span>
+      ${atlasDecisionBadge(o.atlas_decision)}
     </div>
     <div class="hero-price-context">${priceContextLine(o)}</div>
     <div class="hot-fresh fresh-none" id="hot-fresh-hero"><span class="hot-fresh-dot">⚪</span><span class="hot-fresh-label">Refrescando precio en vivo…</span></div>
@@ -2481,6 +2512,10 @@ function renderOportunidad() {
           <div class="detail-metric-label">8. Confianza de Atlas</div>
           <div class="detail-metric-value">${o.confidence}</div>
         </div>
+        <div class="detail-metric">
+          <div class="detail-metric-label">Decisión Atlas (Decision Core, U3-B -- informativo)</div>
+          <div class="detail-metric-value">${atlasDecisionBadge(o.atlas_decision)}</div>
+        </div>
         ${entryWindowMetricsHtml("detail-metric-label", "detail-metric-value", "detail-metric")}
       </div>
 
@@ -2569,6 +2604,7 @@ function renderMicrocaps() {
     { label: "Confianza", render: r => r.confidence, sortValue: r => r.confidence },
     { label: "Evidencia", render: r => `<span class="dim">${r.evidence_condition || "--"}</span>` },
     { label: "Semáforo", render: r => semaforoHtml(r.semaforo), sortValue: r => r.semaforo },
+    { label: "Decisión Atlas", render: r => atlasDecisionBadge(r.atlas_decision), sortValue: r => (r.atlas_decision && r.atlas_decision.decision) || "" },
   ]);
 }
 
@@ -2581,6 +2617,7 @@ function renderMomentum() {
     { label: "Confianza", render: r => r.confidence, sortValue: r => r.confidence },
     { label: "Evidencia", render: r => `<span class="dim">${r.evidence_condition || "--"}</span>` },
     { label: "Semáforo", render: r => semaforoHtml(r.semaforo), sortValue: r => r.semaforo },
+    { label: "Decisión Atlas", render: r => atlasDecisionBadge(r.atlas_decision), sortValue: r => (r.atlas_decision && r.atlas_decision.decision) || "" },
   ]);
 }
 

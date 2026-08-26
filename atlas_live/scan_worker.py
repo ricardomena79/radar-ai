@@ -39,6 +39,8 @@ from atlas.engine.money_flow_engine import MoneyFlowEngine
 from atlas.knowledge import NORMAL, KnowledgeEngine
 
 from atlas_live import explosive_diagnostics, explosive_engine
+from atlas_live.core import atlas_decision_core as adc
+from atlas_live.core import decision_composition as dcomp
 from atlas_live.data_fusion.registry import get_default_provider
 from atlas_live.data_fusion.tradier_first_provider import TradierFirstProvider
 from atlas_live.explosive_engine import ExplosiveResult
@@ -613,7 +615,9 @@ STATE = _State()
 
 
 def _score_symbol(asset: Asset, collector: DataCollector, money_flow_engine: MoneyFlowEngine,
-                   recorder: DecisionRecorder, context, explosive_cfg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+                   recorder: DecisionRecorder, context, explosive_cfg: Dict[str, Any],
+                   tradier_today_by_ticker: Optional[Dict[str, Any]] = None,
+                   market_date: str = "") -> Optional[Dict[str, Any]]:
     try:
         quote = collector.get_quote(asset.symbol)
         atlas_score = calculate_atlas_score(asset.symbol, collector)
@@ -649,7 +653,7 @@ def _score_symbol(asset: Asset, collector: DataCollector, money_flow_engine: Mon
         explosive_result, display_decision = _apply_stale_fallback_guard(quote, explosive_result, display_decision)
         explosive_result, display_decision = _apply_non_tradier_source_guard(quote, explosive_result, display_decision)
 
-        return {
+        row: Dict[str, Any] = {
             "symbol": asset.symbol,
             "name": asset.name,
             "asset_type": asset.type,
@@ -675,6 +679,34 @@ def _score_symbol(asset: Asset, collector: DataCollector, money_flow_engine: Mon
                 "metrics": explosive_result.metrics,
             },
         }
+
+        # Atlas Decision Core (2026-08-26, U3-B): decisión canónica única --
+        # `decision`/`display_decision` de arriba (Decision Engine) y
+        # `explosive.eligible`/`.score` quedan como FEATURES/SCORES de
+        # entrada, nunca como una segunda decisión independiente. Si este
+        # ticker también es una candidata real de Tradier hoy, usa su
+        # `stage`/`direction` reales -- misma decisión que
+        # `/api/radar-oportunidades` mostraría para el mismo ticker. Si no,
+        # `stage=None` resuelve a NO_TOCAR por la propia lógica de
+        # `classify_final_priority()` -- ningún ticker que Tradier nunca
+        # detectó puede aparecer como oportunidad accionable.
+        tradier_row = (tradier_today_by_ticker or {}).get(asset.symbol)
+        atlas_decision = adc.decide(
+            dcomp.candidate_from_scan_row(row, market_date),
+            dcomp.features_from_scan_row(row, tradier_row),
+            dcomp.scores_from_scan_row(row),
+            dcomp.evidence_from_scan_row(row),
+        )
+        row["atlas_decision"] = {
+            "decision": atlas_decision.decision,
+            "decision_shadow": atlas_decision.decision_shadow,
+            "shadow_differs": atlas_decision.shadow_differs,
+            "reason": atlas_decision.reason,
+            "confidence": atlas_decision.confidence,
+            "methodology_version": atlas_decision.methodology_version,
+            "learned_evidence_used": atlas_decision.learned_evidence_used,
+        }
+        return row
     except Exception as exc:
         # Diagnóstico real (2026-08-18, caso "0 ciclos con datos"): antes
         # esta excepción se descartaba en silencio -- ni el tipo ni el
@@ -823,13 +855,31 @@ def _run_scan_once_locked() -> None:
         # archivo de configuración del Radar Explosivo cientos de veces.
         explosive_cfg = load_explosive_config()
 
+        # Atlas Decision Core (2026-08-26, U3-B): lookup de las candidatas
+        # reales de Tradier hoy, construido UNA sola vez por ciclo (mismo
+        # patrón que `magnitud_preds_by_ticker` en `server.py`) -- nunca una
+        # consulta a la DB por símbolo dentro del loop de abajo.
+        from atlas_live.memory import market_hours as _market_hours_scan
+        from atlas_live.radar import candidate_registry as _radar_registry_scan
+
+        market_date_scan = _market_hours_scan.market_date()
+        try:
+            tradier_today_by_ticker = {
+                o["ticker"]: o for o in _radar_registry_scan.live_opportunities(market_date_scan)
+            }
+        except Exception:
+            tradier_today_by_ticker = {}
+
         results: List[Dict[str, Any]] = []
         errors = 0
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
             futures = []
             for asset in assets:
                 futures.append(
-                    executor.submit(_score_symbol, asset, collector, money_flow_engine, recorder, market_context, explosive_cfg)
+                    executor.submit(
+                        _score_symbol, asset, collector, money_flow_engine, recorder, market_context, explosive_cfg,
+                        tradier_today_by_ticker, market_date_scan,
+                    )
                 )
                 # Pacing opcional (default 0): dosifica el envío de requests para
                 # no dispararlos todos de golpe. Útil si el proveedor rate-limitea.
@@ -1061,6 +1111,32 @@ def get_symbol_detail(symbol: str) -> Dict[str, Any]:
     atr_component = atlas_score.component("atr")
     risk_level = _risk_level(atr_component.score if atr_component else None, context.vix_price)
 
+    # Atlas Decision Core (2026-08-26, U3-B) -- mismo criterio que
+    # `_score_symbol()`: usa la candidata real de Tradier hoy si existe,
+    # si no `stage=None` resuelve a NO_TOCAR por diseño de
+    # `classify_final_priority()`. Consulta puntual (un solo símbolo, bajo
+    # demanda) -- no se cachea, mismo patrón que el resto de este endpoint.
+    from atlas_live.memory import market_hours as _market_hours_detail
+    from atlas_live.radar import candidate_registry as _radar_registry_detail
+
+    market_date_detail = _market_hours_detail.market_date()
+    try:
+        tradier_row_detail = next(
+            (o for o in _radar_registry_detail.live_opportunities(market_date_detail) if o["ticker"] == symbol),
+            None,
+        )
+    except Exception:
+        tradier_row_detail = None
+
+    _row_for_decision = {"symbol": symbol, "price": quote.last_price, "explosive": {}}
+    _scores_for_decision = adc.DecisionScores(atlas_score=atlas_score.total, momentum_score=momentum_result.momentum_score)
+    atlas_decision = adc.decide(
+        dcomp.candidate_from_scan_row(_row_for_decision, market_date_detail),
+        dcomp.features_from_scan_row(_row_for_decision, tradier_row_detail),
+        _scores_for_decision,
+        dcomp.evidence_from_scan_row(_row_for_decision),
+    )
+
     knowledge = KnowledgeEngine()
     pattern_store = PatternStore(knowledge.events)
     similar_events = []
@@ -1109,6 +1185,15 @@ def get_symbol_detail(symbol: str) -> Dict[str, Any]:
             "unavailable_conditions": decision_result.unavailable_conditions,
         },
         "display_decision": display_decision,
+        "atlas_decision": {
+            "decision": atlas_decision.decision,
+            "decision_shadow": atlas_decision.decision_shadow,
+            "shadow_differs": atlas_decision.shadow_differs,
+            "reason": atlas_decision.reason,
+            "confidence": atlas_decision.confidence,
+            "methodology_version": atlas_decision.methodology_version,
+            "learned_evidence_used": atlas_decision.learned_evidence_used,
+        },
         "stale_session_fallback": getattr(quote, "stale_session_fallback", False),
         "price_source": getattr(quote, "source", None),
         "price_as_of": quote.timestamp.isoformat() if quote.timestamp else None,

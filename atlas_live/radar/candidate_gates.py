@@ -222,3 +222,147 @@ def any_gate_fired(results: List[GateResult]) -> bool:
 
 def fired_gates(results: List[GateResult]) -> List[GateResult]:
     return [g for g in results if g.fired]
+
+
+# =============================================================================
+# Señales de volumen premarket (2026-08-25, PM-RVOL Fase 1 -- capa de
+# OBSERVABILIDAD, autorizada explícitamente por el usuario, NO gates
+# todavía). Deliberadamente NUNCA se llaman "RVOL": `relative_volume`
+# (`Quote.relative_volume = volume / average_volume`, promedio de la
+# SESIÓN REGULAR completa) es matemáticamente inviable en los primeros
+# minutos de premarket -- confirmado con evidencia real (caso NSSC,
+# 2026-08-24: RVOL≈0,001x incluso en un día "normal", por el denominador
+# de sesión completa, no por falta de actividad real). Estas dos señales
+# NO reemplazan ni tocan `relative_volume`/`MIN_RVOL`/`gate_relative_volume`
+# -- viven aparte, se exponen aparte, y por ahora NO participan de
+# `ALL_GATES` ni de ninguna detección: el objetivo de esta fase es
+# observar qué detectan en sesiones reales antes de decidir si algún día
+# se conectan a un gate.
+#
+# Ambas usan EXCLUSIVAMENTE datos que Atlas ya obtiene en cada barrido
+# (`radar_worker.get_last_quotes()` / `SweepHistory`) -- cero llamadas
+# nuevas a Tradier ni a ningún otro proveedor.
+# =============================================================================
+
+PM_VALIDATION_STATES = (
+    "VALID",
+    "INSUFFICIENT_UNIVERSE",
+    "INSUFFICIENT_HISTORY",
+    "INSUFFICIENT_VOLUME",
+    "NOT_PREMARKET",
+    "NO_DATA",
+)
+
+# Piso de símbolos válidos del universo antes de confiar en un percentil
+# (2026-08-25) -- redondo y conservador: con ~5.500 símbolos escaneados por
+# barrido, alcanzarlo es casi inmediato salvo un barrido roto/parcial.
+# Calibración provisional, sin evidencia estadística propia todavía --
+# revisar con datos reales acumulados, mismo criterio que el resto de los
+# umbrales de este archivo.
+MIN_UNIVERSE_SIZE_FOR_PM_PERCENTILE = _env_int("ATLAS_PM_MIN_UNIVERSE_SIZE", 100)
+
+# Ventana (en barridos) para comparar volumen acumulado reciente vs.
+# anterior -- CONSTANTE PROPIA, deliberadamente separada de
+# `ACCEL_LOOKBACK_SWEEPS` (que mide aceleración de PRECIO) para poder
+# calibrar volumen sin afectar precio. Mismo orden de magnitud por
+# consistencia, no por necesidad matemática. Provisional.
+PM_VOLUME_ACCEL_WINDOW_SWEEPS = _env_int("ATLAS_PM_VOLUME_ACCEL_WINDOW", 4)
+
+# Piso mínimo de acciones negociadas en la ventana ANTERIOR antes de
+# confiar en un cociente de aceleración -- evita el ruido literal "2 -> 4
+# acciones = x2" (pedido explícito del usuario). Provisional, sin
+# calibración estadística propia todavía.
+MIN_SHARES_PRIOR_WINDOW = _env_float("ATLAS_PM_MIN_SHARES_PRIOR_WINDOW", 500.0)
+
+
+@dataclass(frozen=True)
+class PremarketVolumeSignal:
+    """Resultado de una señal de volumen premarket -- NUNCA un número
+    inventado cuando falta evidencia: `value=None` siempre viene acompañado
+    de un `validation_state` explícito que dice POR QUÉ."""
+
+    value: Optional[float]
+    validation_state: str
+
+
+def premarket_volume_percentile(
+    symbol_dollar_volume: Optional[float],
+    universe_dollar_volumes: List[float],
+    session: str,
+) -> PremarketVolumeSignal:
+    """Percentil del dollar_volume acumulado del símbolo CONTRA EL UNIVERSO
+    COMPLETO escaneado en ESE MISMO barrido -- nunca contra el propio
+    pasado del símbolo (que en los primeros minutos de premarket puede no
+    existir todavía) ni contra un promedio de sesión regular.
+
+    `universe_dollar_volumes` debe ser la lista de dollar_volume de TODOS
+    los símbolos del barrido más reciente (`radar_worker.get_last_quotes()`,
+    ya en memoria -- ver `atlas_live/server.py` para cómo se arma). Puede
+    incluir o no al propio símbolo, matemáticamente no cambia el criterio
+    (fracción de la población <= el valor del símbolo).
+
+    Excluye del universo cualquier valor `None`/negativo -- nunca se
+    inventa un dollar_volume para un símbolo sin dato. Si el universo
+    válido no alcanza `MIN_UNIVERSE_SIZE_FOR_PM_PERCENTILE`, devuelve
+    `None` explícito (`INSUFFICIENT_UNIVERSE`) -- nunca un percentil sobre
+    una muestra chica."""
+    if session != "premarket":
+        return PremarketVolumeSignal(None, "NOT_PREMARKET")
+    if symbol_dollar_volume is None or symbol_dollar_volume < 0:
+        return PremarketVolumeSignal(None, "NO_DATA")
+
+    validos = [v for v in universe_dollar_volumes if v is not None and v >= 0]
+    if len(validos) < MIN_UNIVERSE_SIZE_FOR_PM_PERCENTILE:
+        return PremarketVolumeSignal(None, "INSUFFICIENT_UNIVERSE")
+
+    n_menor_o_igual = sum(1 for v in validos if v <= symbol_dollar_volume)
+    percentil = round(100.0 * n_menor_o_igual / len(validos), 2)
+    return PremarketVolumeSignal(percentil, "VALID")
+
+
+def premarket_volume_acceleration(
+    current: SweepSnapshot, history: List[SweepSnapshot], session: str,
+) -> PremarketVolumeSignal:
+    """Velocidad de acumulación de volumen DENTRO DEL PROPIO DÍA -- acciones
+    negociadas en los últimos `PM_VOLUME_ACCEL_WINDOW_SWEEPS` barridos
+    (K) contra las K anteriores, usando SOLO `SweepSnapshot.volume`
+    (acumulado real) -- NUNCA `average_volume` ni `relative_volume`.
+    Filtrado a la MISMA sesión (`_same_session()`, ya usado por las
+    puertas comparativas existentes -- reutilizado, no duplicado).
+
+    `current` es el barrido más reciente (todavía no empujado a
+    `history`, mismo contrato que las puertas existentes); `history` es
+    todo lo anterior. Devuelve `None` explícito (nunca 0, nunca un
+    cociente inventado) si: falta historial suficiente
+    (`INSUFFICIENT_HISTORY`), el volumen retrocede entre barridos --dato
+    inconsistente del proveedor-- (`NO_DATA`), o el volumen de la ventana
+    anterior no alcanza `MIN_SHARES_PRIOR_WINDOW` (`INSUFFICIENT_VOLUME`,
+    evita el ruido tipo "2 -> 4 acciones = x2")."""
+    if session != "premarket":
+        return PremarketVolumeSignal(None, "NOT_PREMARKET")
+    if current.volume is None:
+        return PremarketVolumeSignal(None, "NO_DATA")
+
+    same_session_history = _same_session(history, session)
+    k = PM_VOLUME_ACCEL_WINDOW_SWEEPS
+    if len(same_session_history) < 2 * k:
+        return PremarketVolumeSignal(None, "INSUFFICIENT_HISTORY")
+
+    ref_reciente = same_session_history[-k]
+    ref_previo = same_session_history[-2 * k]
+    if ref_reciente.volume is None or ref_previo.volume is None:
+        return PremarketVolumeSignal(None, "NO_DATA")
+
+    # El volumen acumulado nunca debería retroceder dentro del mismo día --
+    # si lo hace, es un dato inconsistente del proveedor: nunca se inventa
+    # una "aceleración" (positiva o negativa) con él.
+    if current.volume < ref_reciente.volume or ref_reciente.volume < ref_previo.volume:
+        return PremarketVolumeSignal(None, "NO_DATA")
+
+    vol_reciente = current.volume - ref_reciente.volume
+    vol_previo = ref_reciente.volume - ref_previo.volume
+    if vol_previo < MIN_SHARES_PRIOR_WINDOW:
+        return PremarketVolumeSignal(None, "INSUFFICIENT_VOLUME")
+
+    ratio = round(vol_reciente / vol_previo, 4)
+    return PremarketVolumeSignal(ratio, "VALID")

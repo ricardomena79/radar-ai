@@ -276,6 +276,20 @@ def process_sweep(
     n_obs = 0
     dispersion: Dict[str, int] = {}
 
+    # PM-RVOL Fase 2 (2026-08-25, trazabilidad/aprendizaje, NUNCA
+    # detección): dollar_volume de TODO el universo de ESTE barrido,
+    # calculado UNA sola vez -- mismo `quotes` que ya recorre el loop de
+    # abajo, garantiza que el percentil que se congele en
+    # `candidate_detection` sea siempre del MISMO barrido en que ocurrió
+    # la detección, nunca de un momento posterior.
+    pm_universe_dollar_volumes = [
+        q2.last_price * q2.volume
+        for q2 in quotes.values()
+        if getattr(q2, "last_price", None) is not None and getattr(q2, "volume", None) is not None
+        and q2.last_price >= 0 and q2.volume >= 0
+    ]
+    pm_universe_size = len(pm_universe_dollar_volumes)
+
     for symbol, quote in quotes.items():
         prior_history = history.get(symbol)
         current = _quote_to_snapshot(sweep_id, observed_at, quote, session)
@@ -291,12 +305,33 @@ def process_sweep(
             if quote.bid is not None and quote.ask is not None:
                 mid = (quote.bid + quote.ask) / 2
                 spread_pct_at_detection = round((quote.ask - quote.bid) / mid * 100, 4) if mid else None
+
+            # PM-RVOL Fase 2 -- señales calculadas con `current`/`prior_history`,
+            # los MISMOS objetos que `evaluate_all_gates()` ya usó arriba en
+            # este barrido (nunca recalculadas después, nunca desde otra
+            # fuente) -- puramente diagnóstico, `record_detection()` las
+            # congela junto con todo lo demás gracias a su `INSERT OR
+            # IGNORE` ya existente (nunca se pisan en detecciones repetidas).
+            pm_dollar_volume = (
+                quote.last_price * quote.volume
+                if getattr(quote, "last_price", None) is not None and getattr(quote, "volume", None) is not None
+                else None
+            )
+            pm_percentile = gates.premarket_volume_percentile(pm_dollar_volume, pm_universe_dollar_volumes, session)
+            pm_acceleration = gates.premarket_volume_acceleration(current, prior_history, session)
+
             es_nueva = reg.record_detection(
                 symbol, market_date, session, observed_at, sweep_id,
                 current.price, current.change_pct, current.volume, current.average_volume,
                 current.relative_volume, current.dollar_volume, gates_fired_payload,
                 price_basis_at_detection=quote.price_basis, bid_at_detection=quote.bid,
                 ask_at_detection=quote.ask, spread_pct_at_detection=spread_pct_at_detection,
+                pm_percentile_at_detection=pm_percentile.value,
+                pm_percentile_state_at_detection=pm_percentile.validation_state,
+                pm_acceleration_at_detection=pm_acceleration.value,
+                pm_acceleration_state_at_detection=pm_acceleration.validation_state,
+                pm_universe_size_at_detection=pm_universe_size,
+                pm_volume_at_detection=quote.volume, pm_dollar_volume_at_detection=pm_dollar_volume,
             )
             if es_nueva:
                 nuevas.append(symbol)

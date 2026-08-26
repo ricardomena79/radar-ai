@@ -80,3 +80,15 @@ experiments_abc_resultado.json
 # escribe en ATLAS_DATA_DIR vía /api/admin/data-dir-diagnostics/marker,
 # nunca es código fuente ni dato de Atlas.
 atlas_live/persistence_marker.json
+
+# Circuito de aprendizaje propio (Fases 1-4/5, 2026-08-25) -- base de
+# runtime de live_experience_knowledge, mismo patrón que radar/signals/
+# market_study/catalyst arriba (vive en el Volume, no en el repo).
+atlas_live/learning/*.db
+atlas_live/learning/*.db-wal
+atlas_live/learning/*.db-shm
+
+# Detector Unificado en modo Shadow (U3-C2, 2026-08-26) -- ya cubierto por
+# el patrón atlas_live/radar/*.db de arriba (shadow_unified_detector.db
+# vive en atlas_live/radar/), sin entrada nueva necesaria -- documentado
+# acá para que quede explícito.

@@ -312,6 +312,28 @@ def _connect() -> sqlite3.Connection:
         # de Atlas, sin cambios.
         _ensure_column(conn, "candidate_outcome", "close_price_after_detection", "REAL")
         _ensure_column(conn, "candidate_outcome", "close_return_after_detection_pct", "REAL")
+        # PM-RVOL Fase 2 (2026-08-25, pedido explícito del usuario) --
+        # trazabilidad/aprendizaje, NUNCA detección: congela las 2 señales
+        # de volumen premarket (`atlas_live/radar/candidate_gates.py::
+        # premarket_volume_percentile()`/`premarket_volume_acceleration()`)
+        # tal como estaban en el momento EXACTO de la primera detección --
+        # mismo criterio "estado A, inmutable" que `price_basis_at_detection`
+        # de arriba. Ninguna de estas 7 columnas la lee ningún gate, el
+        # scoring, el ranking ni `decision_engine.py` -- son diagnóstico
+        # puro, para poder correlacionar después contra `candidate_outcome`.
+        # `_at_detection` REAL/TEXT quedan `NULL` cuando la señal no tuvo
+        # evidencia suficiente (nunca se convierte en 0) -- el campo
+        # `_state_at_detection` documenta siempre por qué.
+        _ensure_column(conn, "candidate_detection", "premarket_volume_percentile_at_detection", "REAL")
+        _ensure_column(conn, "candidate_detection", "premarket_volume_percentile_state_at_detection", "TEXT")
+        _ensure_column(conn, "candidate_detection", "premarket_volume_acceleration_at_detection", "REAL")
+        _ensure_column(conn, "candidate_detection", "premarket_volume_acceleration_state_at_detection", "TEXT")
+        # Campos de reproducibilidad (pedido explícito): permiten reconstruir
+        # después CON QUÉ universo/volumen se calculó el percentil/aceleración
+        # de ese momento, sin tener que confiar solo en el número final.
+        _ensure_column(conn, "candidate_detection", "pm_universe_size_at_detection", "INTEGER")
+        _ensure_column(conn, "candidate_detection", "pm_volume_at_detection", "INTEGER")
+        _ensure_column(conn, "candidate_detection", "pm_dollar_volume_at_detection", "REAL")
         _schema_ready_for = str(DB_PATH)
     return conn
 
@@ -342,6 +364,10 @@ def record_detection(
     gates_fired: List[Dict[str, Any]], source: str = "tradier",
     price_basis_at_detection: Optional[str] = None, bid_at_detection: Optional[float] = None,
     ask_at_detection: Optional[float] = None, spread_pct_at_detection: Optional[float] = None,
+    pm_percentile_at_detection: Optional[float] = None, pm_percentile_state_at_detection: Optional[str] = None,
+    pm_acceleration_at_detection: Optional[float] = None, pm_acceleration_state_at_detection: Optional[str] = None,
+    pm_universe_size_at_detection: Optional[int] = None, pm_volume_at_detection: Optional[int] = None,
+    pm_dollar_volume_at_detection: Optional[float] = None,
 ) -> bool:
     """Registra la primera detección. Devuelve True si fue nueva (INSERT
     real), False si ya existía (idempotente, nunca se pisa).
@@ -351,20 +377,36 @@ def record_detection(
     trazabilidad EXACTA del precio en el instante de la detección --
     "estado A" (lo que Atlas vio), inmutable, nunca se pisa por
     reclasificaciones posteriores (esas viven en `alert_stage_log`,
-    "estado B", tabla completamente separada -- ver `candidate_full_history`)."""
+    "estado B", tabla completamente separada -- ver `candidate_full_history`).
+
+    `pm_percentile_at_detection`/`pm_acceleration_at_detection` (+ sus
+    `_state_at_detection`, 2026-08-25, PM-RVOL Fase 2): mismo criterio --
+    las 2 señales de `candidate_gates.premarket_volume_*()` congeladas TAL
+    CUAL estaban en este barrido, nunca recalculadas después. `None` real
+    cuando la señal no tuvo evidencia (el `_state` explica por qué) --
+    `INSERT` escribe `NULL` sin necesidad de lógica especial. Los 3
+    `pm_*_at_detection` restantes son puramente de reproducibilidad -- con
+    qué universo/volumen se calculó, para poder auditar el número después
+    sin tener que confiar ciegamente en él."""
     with _connect() as conn:
         cur = conn.execute(
             """INSERT OR IGNORE INTO candidate_detection
                (ticker, market_date, session, detected_at, sweep_id, price_at_detection,
                 change_pct_at_detection, volume_at_detection, average_volume_at_detection,
                 relative_volume_at_detection, dollar_volume_at_detection, gates_fired, source, created_at,
-                price_basis_at_detection, bid_at_detection, ask_at_detection, spread_pct_at_detection)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                price_basis_at_detection, bid_at_detection, ask_at_detection, spread_pct_at_detection,
+                premarket_volume_percentile_at_detection, premarket_volume_percentile_state_at_detection,
+                premarket_volume_acceleration_at_detection, premarket_volume_acceleration_state_at_detection,
+                pm_universe_size_at_detection, pm_volume_at_detection, pm_dollar_volume_at_detection)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (ticker, market_date, session, detected_at, sweep_id, price_at_detection,
              change_pct_at_detection, volume_at_detection, average_volume_at_detection,
              relative_volume_at_detection, dollar_volume_at_detection,
              json.dumps(gates_fired, ensure_ascii=False), source, _now(),
-             price_basis_at_detection, bid_at_detection, ask_at_detection, spread_pct_at_detection),
+             price_basis_at_detection, bid_at_detection, ask_at_detection, spread_pct_at_detection,
+             pm_percentile_at_detection, pm_percentile_state_at_detection,
+             pm_acceleration_at_detection, pm_acceleration_state_at_detection,
+             pm_universe_size_at_detection, pm_volume_at_detection, pm_dollar_volume_at_detection),
         )
         conn.commit()
         return cur.rowcount > 0

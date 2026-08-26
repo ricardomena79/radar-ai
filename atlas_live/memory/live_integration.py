@@ -172,6 +172,11 @@ def serialize_ranked_candidate(c: demo_ranking.RankedCandidate) -> Dict[str, Any
             "nivel3_percentil_dentro_de_banda": c.ranking_score.nivel3_percentil_dentro_de_banda,
             "nivel4_score_radar": c.ranking_score.nivel4_score_radar,
         },
+        # Atlas Decision Core (2026-08-26, U3-B) -- decisión canónica única,
+        # pass-through de `scan_worker.py`. `eligible_radar`/`semaforo` de
+        # arriba siguen presentes como evidencia/feature, nunca como una
+        # segunda decisión.
+        "atlas_decision": c.atlas_decision,
     }
 
 

@@ -89,6 +89,16 @@ radar_worker.start_universe_radar()
 from atlas_live.catalyst import catalyst_worker
 catalyst_worker.start_catalyst_worker()
 
+# Detector Unificado -- MODO SHADOW (2026-08-26, U3-C2, autorizado
+# explícitamente). Completamente aislado: propia SweepHistory, propia
+# persistencia (`shadow_unified_detector.db`), nunca escribe en
+# `candidate_detection`, nunca alimenta ninguna decisión/score/ranking/UI.
+# Cualquier excepción interna se descarta silenciosamente (ver
+# `unified_detector._loop()`) -- no puede afectar el resto de Atlas aunque
+# falle por completo.
+from atlas_live.radar import unified_detector
+unified_detector.start_shadow_detector()
+
 
 @app.route("/")
 def index():
@@ -535,14 +545,51 @@ def api_radar_oportunidades():
     `bid_timestamp`, `ask_timestamp`, `spread_abs`, `spread_pct` como
     trazabilidad visible de CÓMO se resolvió, sin cambiar la cadena de
     confiabilidad de arriba (que sigue leyendo `q.timestamp`/`q.last_price`
-    tal cual, ahora ya corregidos en el origen)."""
+    tal cual, ahora ya corregidos en el origen).
+
+    PM-RVOL Fase 1 (2026-08-25, capa de OBSERVABILIDAD, autorizada
+    explícitamente): `premarket_volume_percentile`/`premarket_volume_acceleration`
+    (+ sus `_state`) -- dos señales de volumen premarket que NUNCA se
+    llaman "RVOL" (`relative_volume` de arriba, basado en `average_volume`
+    de sesión regular completa, queda intacto y sin relación con esto).
+    Puramente informativas: no participan en ninguna puerta, en
+    `estado_final`, en el ranking ni en el aprendizaje -- ver
+    `candidate_gates.premarket_volume_percentile()`/`premarket_volume_acceleration()`
+    para la fórmula y los estados de validación explícitos.
+
+    `learned_evidence` (2026-08-25, Fase 4/5 -- CONOCIMIENTO → EVIDENCIA,
+    autorizado explícitamente, NUNCA EVIDENCIA → DECISIÓN): evidencia
+    histórica de la PROPIA experiencia de Atlas (`live_experience_knowledge.db`,
+    Fases 1-3) para la condición `(direction, timing_deteccion)` de cada
+    candidata -- `available`/`validation_state`/`sample_size`/
+    `historical_success_pct_20`/`baseline_pct_20`/`lift_20`/Wilson CI/
+    `computed_as_of`/`methodology_version`. Se calcula y agrega DESPUÉS de
+    que `estado_final` ya quedó fijado -- ver `atlas_live/learning/learned_evidence.py`.
+
+    `atlas_decision`/`decision_shadow`/`shadow_differs` (2026-08-26, U3-B --
+    Atlas Decision Core, autorizado explícitamente): `estado_final` sale
+    ahora de `atlas_decision_core.decide()` -- que internamente llama a
+    `priority_classifier.classify_final_priority()` SIN modificarla, mismo
+    resultado exacto que antes. Se llama DOS VECES, igual que ya se hacía
+    con `learned_evidence` arriba: la primera, SIN `learned_evidence` (fija
+    `estado_final`/`motivo_estado_final`, arquitectónicamente imposible que
+    el aprendizaje la haya visto); la segunda, CON `learned_evidence` ya
+    calculado, solo para exponer `decision_shadow`/`shadow_differs` -- lo
+    que la política de recalibración habría propuesto. `apply_recalibration`
+    permanece `False` (Fase 5/5, Shadow Mode) -- `decision_shadow` nunca
+    cambia `estado_final`, ver `atlas_live/core/atlas_decision_core.py`."""
     from datetime import datetime, timezone
 
+    from atlas_live.core import atlas_decision_core as adc
+    from atlas_live.core import decision_composition as dcomp
     from atlas_live.learning import historical_scoring as hsc
+    from atlas_live.learning import learned_evidence as le
     from atlas_live.memory import market_hours as _mh
+    from atlas_live.radar import candidate_gates as gates
     from atlas_live.radar import candidate_registry as radar_registry
     from atlas_live.radar import phase_classifier as pcls
     from atlas_live.radar import priority_classifier as pc
+    from atlas_live.radar import sweep_history
     from atlas_live.reference.daily_reference import classify_direction
 
     market_date = _mh.market_date()
@@ -551,6 +598,20 @@ def api_radar_oportunidades():
     oportunidades = [o for o in oportunidades if o.get("racional_available") is True]
     total_disponibles_racional = len(oportunidades)
     last_quotes = radar_worker.get_last_quotes()
+
+    # PM-RVOL Fase 1 (2026-08-25) -- capa de OBSERVABILIDAD, nunca gates:
+    # dos señales de volumen premarket que NO son "RVOL" (nunca usan
+    # `average_volume`), calculadas acá una sola vez por request sobre
+    # datos que ya están en memoria (cero llamadas nuevas a proveedores).
+    # `relative_volume`/`MIN_RVOL`/`gate_relative_volume`/scoring/ranking
+    # quedan intactos -- estos campos son puramente informativos.
+    pm_session = _mh.get_session()
+    pm_universe_dollar_volumes = [
+        q2.last_price * q2.volume
+        for q2 in last_quotes.values()
+        if getattr(q2, "last_price", None) is not None and getattr(q2, "volume", None) is not None
+        and q2.last_price >= 0 and q2.volume >= 0
+    ]
 
     sector_snapshot = scan_worker.STATE.sector_flow_snapshot or {}
     symbol_sector_map = sector_snapshot.get("symbol_sector_map", {})
@@ -576,6 +637,34 @@ def api_radar_oportunidades():
     for o in oportunidades:
         q = last_quotes.get(o["ticker"])
         o["price_actual"] = q.last_price if q else None
+
+        # PM-RVOL Fase 1 -- señales de volumen premarket, observacionales.
+        q_dollar_volume = (
+            q.last_price * q.volume
+            if q is not None and getattr(q, "last_price", None) is not None and getattr(q, "volume", None) is not None
+            else None
+        )
+        pm_percentile = gates.premarket_volume_percentile(q_dollar_volume, pm_universe_dollar_volumes, pm_session)
+        pm_full_history = radar_worker.get_symbol_sweep_history(o["ticker"])
+        if pm_full_history:
+            pm_current, pm_history = pm_full_history[-1], pm_full_history[:-1]
+        else:
+            # Sin historial todavía (símbolo nuevo/primer barrido) -- se
+            # construye un snapshot mínimo desde el quote en vivo para que
+            # la función SIEMPRE decida el estado (nunca se hardcodea
+            # INSUFFICIENT_HISTORY acá: si la sesión ya no es premarket,
+            # debe ganar NOT_PREMARKET, no un estado de historial).
+            pm_current = sweep_history.SweepSnapshot(
+                sweep_id="", observed_at="", price=None, change_pct=None,
+                volume=getattr(q, "volume", None), average_volume=None,
+                relative_volume=None, dollar_volume=None, session=pm_session,
+            )
+            pm_history = []
+        pm_accel = gates.premarket_volume_acceleration(pm_current, pm_history, pm_session)
+        o["premarket_volume_percentile"] = pm_percentile.value
+        o["premarket_volume_percentile_state"] = pm_percentile.validation_state
+        o["premarket_volume_acceleration"] = pm_accel.value
+        o["premarket_volume_acceleration_state"] = pm_accel.validation_state
         o["change_pct_actual"] = q.change_percent if q else None
         o["price_actual_source"] = "tradier" if q else None
 
@@ -709,17 +798,37 @@ def api_radar_oportunidades():
         # después contra el resultado real sin que "se mueva").
         o["prediccion_magnitud_congelada"] = magnitud_preds_by_ticker.get(o["ticker"])
 
-        estado_final, motivo_estado_final = pc.classify_final_priority(
-            stage=o["stage"],
-            direction=o.get("direction"),
-            change_pct_confiable=o.get("change_pct_confiable"),
-            tiene_precio_actual=o["price_actual"] is not None,
-            sector_flow_active=o["dinero_entra_sector"],
-            historical_evidence=historical,
-            estado_validacion=estado_validacion,
+        candidate_snapshot = dcomp.candidate_from_radar_row(o, market_date, estado_validacion)
+        features = dcomp.features_from_radar_row(o)
+        scores = dcomp.scores_from_radar_row(o)
+        evidence = dcomp.evidence_from_radar_row(o, historical)
+
+        # Primera llamada -- SIN learned_evidence -- fija la decisión real
+        # (arquitectónicamente imposible que el aprendizaje la haya visto,
+        # se calcula recién más abajo).
+        atlas_decision = adc.decide(candidate_snapshot, features, scores, evidence)
+        o["estado_final"] = atlas_decision.decision
+        o["motivo_estado_final"] = atlas_decision.reason
+
+        # Fase 4/5 (2026-08-25, capa CONTROLADA, autorizada explícitamente):
+        # CONOCIMIENTO → EVIDENCIA, nunca EVIDENCIA → DECISIÓN -- agregado
+        # DESPUÉS de que `estado_final`/`motivo_estado_final` ya quedaron
+        # fijados arriba, por diseño: es arquitectónicamente imposible que
+        # `learned_evidence` haya influido esa decisión, ya se calculó antes
+        # de que este campo exista. Puramente observacional -- ver
+        # `atlas_live/learning/learned_evidence.py` para el filtro anti-
+        # look-ahead (más estricto que Fase 2, `computed_as_of < market_date`).
+        o["learned_evidence"] = le.get_learned_evidence(
+            o.get("direction"), o.get("timing_deteccion_hoy"), market_date, volatility_14d_pct=vol,
         )
-        o["estado_final"] = estado_final
-        o["motivo_estado_final"] = motivo_estado_final
+
+        # Segunda llamada -- CON learned_evidence -- SOLO para exponer el
+        # shadow. `apply_recalibration` permanece False (default): esta
+        # llamada NUNCA puede cambiar `estado_final`, ya fijado arriba.
+        shadow_decision = adc.decide(candidate_snapshot, features, scores, evidence, learned_evidence=o["learned_evidence"])
+        o["decision_shadow"] = shadow_decision.decision_shadow
+        o["shadow_differs"] = shadow_decision.shadow_differs
+        o["atlas_decision_methodology_version"] = atlas_decision.methodology_version
 
     conteos: dict = {}
     conteos_estado_final: dict = {}
@@ -987,6 +1096,66 @@ def api_admin_catalyst_worker_status():
         "inter_tier_delay_seconds": cw.INTER_TIER_DELAY_SECONDS,
         "cooldown": cw.cooldown_status(),
     })
+
+
+@app.route("/api/admin/unified-detector-shadow")
+def api_admin_unified_detector_shadow():
+    """Diagnóstico de solo lectura del Detector Unificado en modo Shadow
+    (2026-08-26, U3-C2) -- NUNCA conectado a ninguna decisión/UI real,
+    protegido con ATLAS_ADMIN_TOKEN igual que el resto de /api/admin/*.
+    `market_date` opcional (query param), default HOY."""
+    if not _admin_token_ok():
+        return jsonify({"error": "no autorizado"}), 403
+
+    from atlas_live.memory import market_hours as _mh_shadow
+    from atlas_live.radar import shadow_detector_registry as sreg
+    from atlas_live.radar import unified_detector as ud
+
+    market_date = request.args.get("market_date") or _mh_shadow.market_date()
+    detecciones = sreg.list_shadow_detections(market_date)
+    return jsonify({
+        "market_date": market_date,
+        "thread_alive": ud._thread.is_alive() if ud._thread else False,
+        "symbols_tracked": ud._history.symbols_tracked(),
+        "total_detecciones": len(detecciones),
+        "detecciones": detecciones,
+        "last_successful_sweep_at": ud._last_successful_sweep_at,
+        "last_error": ud._last_error,
+        "last_error_at": ud._last_error_at,
+        "last_error_session": ud._last_error_session,
+        "error_count": ud._error_count,
+    })
+
+
+@app.route("/api/admin/generate-experience-knowledge", methods=["POST"])
+def api_admin_generate_experience_knowledge():
+    """Recálculo MANUAL del conocimiento propio de Atlas (2026-08-25, Fase
+    3/5 -- EXPERIENCIA → CONOCIMIENTO, autorizado explícitamente). El
+    disparo AUTOMÁTICO ya corre solo, una vez por día, dentro de
+    `radar_worker._maybe_generate_experience_knowledge()` (justo después
+    del EOD) -- este endpoint existe exclusivamente para poder REPARAR o
+    RECALCULAR una fecha específica a pedido, sin esperar al próximo
+    cierre de mercado. Nunca toca el marcador `conocimiento_generado_para`
+    del disparo automático -- son caminos independientes, uno no bloquea
+    ni interfiere con el otro.
+
+    Síncrono (a diferencia de `build-historical-reference`): el cálculo es
+    una consulta SQL + estadística en memoria sobre datos ya locales,
+    nunca red -- no necesita hilo de fondo.
+
+    `?as_of_date=YYYY-MM-DD` opcional (default: fecha de mercado actual).
+    Protegido con ATLAS_ADMIN_TOKEN, mismo patrón que el resto de
+    /api/admin/*. NO conecta el conocimiento generado a ninguna decisión
+    -- solo lo calcula y lo persiste, igual que el disparo automático."""
+    if not _admin_token_ok():
+        return jsonify({"error": "no autorizado"}), 403
+
+    from atlas_live.learning import live_experience_pipeline as lep
+    from atlas_live.memory import market_hours as _mh2
+
+    as_of_date = request.args.get("as_of_date") or _mh2.market_date()
+    resumen = lep.run_experience_learning_cycle(as_of_date)
+    return jsonify(resumen)
 
 
 @app.route("/api/admin/backfill-close-return", methods=["POST"])

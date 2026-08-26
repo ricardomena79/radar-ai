@@ -509,6 +509,203 @@ def test_caso_f_dato_de_sesion_anterior_fuera_de_la_ventana_de_frescura():
         _rw.get_last_quotes = orig_last_quotes
 
 
+# --- PM-RVOL Fase 1 (2026-08-25) -- capa de observabilidad, integración ---
+
+def test_pm_rvol_expone_las_4_senales_sin_tocar_estado_final(monkeypatch):
+    """Las señales PM deben aparecer en la respuesta sin cambiar en nada
+    `estado_final`/`price_actual`/`relative_volume` de siempre -- son
+    puramente informativas."""
+    import atlas_live.radar.candidate_gates as _gates
+
+    from atlas_live.memory import market_hours as mh
+
+    orig_live_opps = reg.live_opportunities
+    orig_last_quotes = _rw.get_last_quotes
+    orig_sweep_hist = _rw.get_symbol_sweep_history
+    orig_session_fn = mh.get_session
+
+    reg.live_opportunities = lambda market_date: [
+        {"ticker": "NSSC", "price_at_detection": 39.0, "stage": "INICIO",
+         "direction": "ALCISTA", "racional_available": True},
+    ]
+    q = _quote_con_basis(39.0, 2.39, "tradier_bid_only", relative_volume=0.0009)
+    q.volume = 458
+    _rw.get_last_quotes = lambda: {"NSSC": q}
+    _rw.get_symbol_sweep_history = lambda symbol: []  # sin historial -> INSUFFICIENT_HISTORY
+    mh.get_session = lambda: "premarket"
+    try:
+        r = _client().get("/api/radar-oportunidades")
+        assert r.status_code == 200
+        o = r.get_json()["oportunidades"][0]
+        assert o["premarket_volume_percentile_state"] == "INSUFFICIENT_UNIVERSE"  # universo de 1 símbolo
+        assert o["premarket_volume_percentile"] is None
+        assert o["premarket_volume_acceleration_state"] == "INSUFFICIENT_HISTORY"
+        assert o["premarket_volume_acceleration"] is None
+        # Nada de lo existente cambió por agregar estos campos.
+        assert o["price_actual"] == 39.0
+        assert o["price_basis"] == "tradier_bid_only"
+    finally:
+        reg.live_opportunities = orig_live_opps
+        _rw.get_last_quotes = orig_last_quotes
+        _rw.get_symbol_sweep_history = orig_sweep_hist
+        mh.get_session = orig_session_fn
+
+
+def test_pm_rvol_universo_amplio_da_percentil_valido(monkeypatch):
+    from atlas_live.memory import market_hours as mh
+
+    orig_live_opps = reg.live_opportunities
+    orig_last_quotes = _rw.get_last_quotes
+    orig_sweep_hist = _rw.get_symbol_sweep_history
+    orig_session_fn = mh.get_session
+
+    reg.live_opportunities = lambda market_date: [
+        {"ticker": "NSSC", "price_at_detection": 39.0, "stage": "INICIO", "racional_available": True},
+    ]
+    q_nssc = _quote_con_basis(39.0, 2.39, "tradier_bid_only")
+    q_nssc.volume = 458
+    quotes = {"NSSC": q_nssc}
+    for i in range(150):  # universo amplio -> >= MIN_UNIVERSE_SIZE_FOR_PM_PERCENTILE
+        qx = _fresh_quote(10.0, 0.0)
+        qx.volume = 100
+        quotes[f"SYM{i}"] = qx
+    _rw.get_last_quotes = lambda: quotes
+    _rw.get_symbol_sweep_history = lambda symbol: []
+    mh.get_session = lambda: "premarket"
+    try:
+        r = _client().get("/api/radar-oportunidades")
+        o = r.get_json()["oportunidades"][0]
+        assert o["premarket_volume_percentile_state"] == "VALID"
+        assert o["premarket_volume_percentile"] is not None
+    finally:
+        reg.live_opportunities = orig_live_opps
+        _rw.get_last_quotes = orig_last_quotes
+        _rw.get_symbol_sweep_history = orig_sweep_hist
+        mh.get_session = orig_session_fn
+
+
+def test_pm_rvol_fuera_de_premarket_da_not_premarket(monkeypatch):
+    from atlas_live.memory import market_hours as mh
+
+    orig_live_opps = reg.live_opportunities
+    orig_last_quotes = _rw.get_last_quotes
+    orig_sweep_hist = _rw.get_symbol_sweep_history
+    orig_session_fn = mh.get_session
+
+    reg.live_opportunities = lambda market_date: [
+        {"ticker": "ZIM", "price_at_detection": 28.14, "stage": "ALERTA_TEMPRANA", "racional_available": True},
+    ]
+    _rw.get_last_quotes = lambda: {"ZIM": _fresh_quote(28.81, 2.38)}
+    _rw.get_symbol_sweep_history = lambda symbol: []
+    mh.get_session = lambda: "regular"
+    try:
+        r = _client().get("/api/radar-oportunidades")
+        o = r.get_json()["oportunidades"][0]
+        assert o["premarket_volume_percentile_state"] == "NOT_PREMARKET"
+        assert o["premarket_volume_acceleration_state"] == "NOT_PREMARKET"
+    finally:
+        reg.live_opportunities = orig_live_opps
+        _rw.get_last_quotes = orig_last_quotes
+        _rw.get_symbol_sweep_history = orig_sweep_hist
+        mh.get_session = orig_session_fn
+
+
+def test_pm_rvol_no_altera_relative_volume_actual_ni_estado_final(monkeypatch):
+    """Regresión directa del pedido: agregar PM-RVOL no debe cambiar
+    `estado_final`/`direction`/nada de lo que el endpoint ya calculaba."""
+    from atlas_live.memory import market_hours as mh
+
+    orig_live_opps = reg.live_opportunities
+    orig_last_quotes = _rw.get_last_quotes
+    orig_sweep_hist = _rw.get_symbol_sweep_history
+    orig_session_fn = mh.get_session
+
+    reg.live_opportunities = lambda market_date: [
+        {"ticker": "SBLK", "price_at_detection": 29.0, "stage": "INICIO",
+         "direction": "ALCISTA", "racional_available": True},
+    ]
+    _rw.get_last_quotes = lambda: {"SBLK": _fresh_quote(30.02, 3.3, age_seconds=10)}
+    _rw.get_symbol_sweep_history = lambda symbol: []
+    mh.get_session = lambda: "premarket"
+    try:
+        r = _client().get("/api/radar-oportunidades")
+        o = r.get_json()["oportunidades"][0]
+        # Mismo resultado que test_caso_a_quote_fresco_puede_seguir_siendo_oportunidad_prioritaria,
+        # ahora con PM-RVOL también presente en la respuesta.
+        assert o["estado_validacion"] == "OK"
+        assert o["estado_final"] == "OPORTUNIDAD_PRIORITARIA"
+        assert "premarket_volume_percentile" in o
+        assert "premarket_volume_acceleration" in o
+    finally:
+        reg.live_opportunities = orig_live_opps
+        _rw.get_last_quotes = orig_last_quotes
+        _rw.get_symbol_sweep_history = orig_sweep_hist
+        mh.get_session = orig_session_fn
+
+
+# --- Fase 4/5 (2026-08-25) -- learned_evidence, caso L del pedido ----------
+
+def test_L_endpoint_agrega_learned_evidence_sin_alterar_lo_existente(monkeypatch):
+    """El endpoint debe seguir devolviendo EXACTAMENTE lo mismo de siempre
+    (estado_final/price_actual/etc.) más el bloque `learned_evidence`
+    nuevo -- nunca reemplaza ni cambia un campo ya existente."""
+    from atlas_live.learning import learned_evidence as le
+
+    orig_live_opps = reg.live_opportunities
+    orig_last_quotes = _rw.get_last_quotes
+    orig_get_learned_evidence = le.get_learned_evidence
+
+    reg.live_opportunities = lambda market_date: [
+        {"ticker": "SBLK", "price_at_detection": 29.0, "stage": "INICIO",
+         "direction": "ALCISTA", "timing_deteccion_hoy": "al_comienzo",
+         "racional_available": True},
+    ]
+    _rw.get_last_quotes = lambda: {"SBLK": _fresh_quote(30.02, 3.3, age_seconds=10)}
+    le.get_learned_evidence = lambda direction, timing, market_date, **k: {
+        "available": True, "validation_state": "EN_VALIDACION", "sample_size": 137,
+        "historical_success_pct_20": 41.2, "baseline_pct_20": 23.1, "lift_20": 1.78,
+        "wilson_lower_bound_20_pct": 33.3, "wilson_upper_bound_20_pct": 49.8,
+        "computed_as_of": "2026-08-24", "computed_at": "2026-08-24T20:00:00+00:00",
+        "methodology_version": "v1_direction_timing_volatility_tercile",
+    }
+    try:
+        r = _client().get("/api/radar-oportunidades")
+        assert r.status_code == 200
+        o = r.get_json()["oportunidades"][0]
+        # Todo lo existente sigue exactamente igual (mismo resultado que
+        # test_caso_a_quote_fresco_puede_seguir_siendo_oportunidad_prioritaria).
+        assert o["estado_validacion"] == "OK"
+        assert o["estado_final"] == "OPORTUNIDAD_PRIORITARIA"
+        assert o["price_actual"] == 30.02
+        # Más el bloque nuevo, sin tocar nada de lo anterior.
+        assert o["learned_evidence"]["available"] is True
+        assert o["learned_evidence"]["validation_state"] == "EN_VALIDACION"
+        assert o["learned_evidence"]["sample_size"] == 137
+    finally:
+        reg.live_opportunities = orig_live_opps
+        _rw.get_last_quotes = orig_last_quotes
+        le.get_learned_evidence = orig_get_learned_evidence
+
+
+def test_L_learned_evidence_no_disponible_no_rompe_el_endpoint(monkeypatch):
+    orig_live_opps = reg.live_opportunities
+    orig_last_quotes = _rw.get_last_quotes
+
+    reg.live_opportunities = lambda market_date: [
+        {"ticker": "ZIM", "price_at_detection": 28.14, "stage": "ALERTA_TEMPRANA", "racional_available": True},
+    ]
+    _rw.get_last_quotes = lambda: {"ZIM": _fresh_quote(28.81, 2.38)}
+    try:
+        r = _client().get("/api/radar-oportunidades")
+        assert r.status_code == 200
+        o = r.get_json()["oportunidades"][0]
+        # Sin direction/timing confiables -- CONDICION_NO_DISPONIBLE, nunca rompe.
+        assert o["learned_evidence"]["available"] is False
+    finally:
+        reg.live_opportunities = orig_live_opps
+        _rw.get_last_quotes = orig_last_quotes
+
+
 def test_caso_g_oportunidad_prioritaria_nunca_tiene_estado_validacion_vencido():
     """G: verificación end-to-end -- una señal que normalmente daría
     OPORTUNIDAD_PRIORITARIA (INICIO + ALCISTA) nunca llega a serlo si el
