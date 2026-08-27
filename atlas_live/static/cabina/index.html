@@ -45,12 +45,6 @@
     <button class="nav-item active" data-view="dashboard">🏠 Dashboard</button>
     <button class="nav-item" data-view="oportunidad">🎯 Oportunidad del día</button>
 
-    <div class="nav-group-label">OPORTUNIDADES</div>
-    <button class="nav-item nav-item--sub" data-view="microcaps">🚀 Explosivas</button>
-    <button class="nav-item nav-item--sub" data-view="momentum">📈 Momentum</button>
-    <button class="nav-item nav-item--sub" data-view="etf">🏦 ETF</button>
-    <button class="nav-item nav-item--sub" data-view="no-tocar">🔴 No tocar</button>
-
     <div class="nav-group-label">INTELIGENCIA</div>
     <button class="nav-item nav-item--sub" data-view="memory-engine">🧠 Memory Engine</button>
     <button class="nav-item nav-item--sub" data-view="prediction-journal">📒 Prediction Journal</button>
@@ -127,36 +121,6 @@
     <section class="view" id="view-oportunidad">
       <header class="view-header"><h1>🎯 Oportunidad del día</h1></header>
       <div id="oportunidad-detail"></div>
-    </section>
-
-    <!-- ---------- 3. EXPLOSIVAS ---------- -->
-    <section class="view" id="view-microcaps">
-      <header class="view-header"><h1>🚀 Microcaps Explosivas</h1>
-        <div class="header-meta">market_cap &lt; US$300M -- categoría EXPLOSION o candidato fuerte</div>
-      </header>
-      <div class="table-wrap"><table class="data-table" id="microcaps-table"></table></div>
-    </section>
-
-    <!-- ---------- 4. MOMENTUM ---------- -->
-    <section class="view" id="view-momentum">
-      <header class="view-header"><h1>📈 Momentum</h1>
-        <div class="header-meta">Movimiento de 3% a 10% -- fallback cuando no hay explosivas</div>
-      </header>
-      <div class="table-wrap"><table class="data-table" id="momentum-table"></table></div>
-    </section>
-
-    <!-- ---------- 5. ETF ---------- -->
-    <section class="view" id="view-etf">
-      <header class="view-header"><h1>🏦 ETF <span class="dim" style="font-weight:400;font-size:13px">(sin fuente conectada -- estado honesto)</span></h1></header>
-      <div class="table-wrap"><table class="data-table" id="etf-table"></table></div>
-    </section>
-
-    <!-- ---------- 6. NO TOCAR ---------- -->
-    <section class="view" id="view-no-tocar">
-      <header class="view-header"><h1>🔴 No tocar</h1>
-        <div class="header-meta">Falsas rupturas, sin evidencia confiable, o semáforo rojo</div>
-      </header>
-      <div class="table-wrap"><table class="data-table" id="no-tocar-table"></table></div>
     </section>
 
     <!-- ---------- 7. MEMORY ENGINE ---------- -->

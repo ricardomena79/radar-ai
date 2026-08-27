@@ -130,13 +130,26 @@ function reasonsList(reasons) {
   return `<ul class="reasons-list">${reasons.map(r => `<li>${r}</li>`).join("")}</ul>`;
 }
 
-function renderHero(topExplosive) {
+// Fix de contradicción NO_TOCAR/"Oportunidad Principal" (2026-08-27,
+// autorizado explícitamente): `current_top_opportunity` puede resolver
+// legítimamente en NO_TOCAR -- el registro interno para auditoría NUNCA
+// filtra por decisión. Pero NO_TOCAR nunca debe presentarse como
+// recomendación. Mismo criterio que cabina.js#_isRecommendableDecision.
+const _RECOMMENDABLE_DECISIONS = ["OPORTUNIDAD_PRIORITARIA", "VIGILAR", "PREPARACION"];
+function _isRecommendableDecision(decision) {
+  return _RECOMMENDABLE_DECISIONS.includes(decision);
+}
+
+function renderHero(topExplosive, decision) {
   const hero = document.getElementById("hero");
 
-  if (!topExplosive) {
+  if (!topExplosive || !_isRecommendableDecision(decision)) {
+    const nota = topExplosive && decision === "NO_TOCAR"
+      ? `NO HAY OPORTUNIDAD VÁLIDA AHORA<br><span style="font-size:12px">Última candidata evaluada: ${topExplosive.symbol} — NO_TOCAR</span>`
+      : "NO HAY OPORTUNIDAD VÁLIDA AHORA";
     hero.innerHTML = `
       <div class="hero-label">⭐ Oportunidad Principal</div>
-      <div class="hero-empty">Todavía no hay ninguna Oportunidad Principal seleccionada. Puede tardar unos minutos, o Atlas Decision Core no encontró ningún candidato hoy.</div>
+      <div class="hero-empty">${nota}</div>
     `;
     return;
   }
@@ -330,7 +343,7 @@ async function refreshRanking() {
     const heroRow = topOpportunity
       ? (data.ranking || []).find(r => r.symbol === topOpportunity.ticker) || null
       : null;
-    renderHero(heroRow);
+    renderHero(heroRow, topOpportunity ? topOpportunity.decision : null);
     renderExplosivoList(eligibleExplosive);
     renderRanking(data.ranking);
     renderWatchlist(data.ranking);

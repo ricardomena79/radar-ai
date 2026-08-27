@@ -64,6 +64,33 @@ function _currentRunnerUpCandidate() {
   return (_memoryRanking.candidates || []).find(c => c.symbol === ctop.runner_up_ticker) || null;
 }
 
+// Fix de contradicción NO_TOCAR/"Atlas Recomienda" (2026-08-27, autorizado
+// explícitamente): `current_top_opportunity`/`runner_up` pueden resolver
+// legítimamente en NO_TOCAR -- el registro interno para auditoría NUNCA
+// filtra por decisión (ver current_top_opportunity.py, test explícito "si
+// NO_TOCAR es la única candidata, gana trivialmente"). Pero NO_TOCAR nunca
+// debe PRESENTARSE como una recomendación. Esta función centraliza esa
+// regla de presentación -- no cambia qué se registra/audita, solo qué se
+// muestra como "Atlas Recomienda"/"Oportunidad Principal".
+const _RECOMMENDABLE_DECISIONS = ["OPORTUNIDAD_PRIORITARIA", "VIGILAR", "PREPARACION"];
+function _isRecommendableDecision(decision) {
+  return _RECOMMENDABLE_DECISIONS.includes(decision);
+}
+
+// Mensaje único de "sin oportunidad recomendable ahora" -- cubre tanto la
+// ausencia de candidato como una candidata NO_TOCAR (que sigue registrada
+// para auditoría, mostrada acá solo como nota informativa, nunca como
+// recomendación).
+function _noOpportunityHtml(candidate, decision) {
+  if (_memoryRanking.generated_at === null) {
+    return "Esperando el primer escaneo del día...";
+  }
+  if (candidate && decision === "NO_TOCAR") {
+    return `NO HAY OPORTUNIDAD VÁLIDA AHORA<br><span style="font-size:12px">Última candidata evaluada: ${candidate.symbol} — NO_TOCAR</span>`;
+  }
+  return "NO HAY OPORTUNIDAD VÁLIDA AHORA";
+}
+
 function atlasDecisionBadge(atlasDecision) {
   if (!atlasDecision || !atlasDecision.decision) return '<span class="dim">s/d</span>';
   const cls = ATLAS_DECISION_BADGE_CLASS[atlasDecision.decision] || "badge-neutro";
@@ -614,9 +641,6 @@ async function fetchMemoryRanking() {
   renderPlanB();
   renderTripleColumns();
   renderRadarCompleto();
-  renderMicrocaps();
-  renderMomentum();
-  renderNoTocar();
   renderMarketQuality();
   renderOpina();
   if (document.querySelector('.nav-item[data-view="oportunidad"]').classList.contains("active")) {
@@ -2287,11 +2311,11 @@ function renderHero() {
   // como informativo (se sigue mostrando en el badge), nunca como filtro
   // de si Hero muestra algo: esa decisión ya la tomó Atlas Decision Core.
   const o = _currentTopOpportunityCandidate();
+  const ctop = _memoryRanking.current_top_opportunity;
+  const decision = ctop ? ctop.decision : null;
   const el = document.getElementById("dashboard-hero");
-  if (!o) {
-    el.innerHTML = `<div class="hero-empty">${_memoryRanking.generated_at === null
-      ? "Esperando el primer escaneo del día..."
-      : "Sin oportunidad destacada en este momento -- Atlas Decision Core todavía no seleccionó ningún candidato."}</div>`;
+  if (!o || !_isRecommendableDecision(decision)) {
+    el.innerHTML = `<div class="hero-empty">${_noOpportunityHtml(o, decision)}</div>`;
     return;
   }
   el.innerHTML = `
@@ -2325,7 +2349,8 @@ function renderPlanB() {
   // Fase 4/5: Plan B = runner_up del selector canónico, nunca candidates[1] crudo.
   const b = _currentRunnerUpCandidate();
   const el = document.getElementById("dashboard-plan-b");
-  if (!b) {
+  const bDecision = b && b.atlas_decision ? b.atlas_decision.decision : null;
+  if (!b || !_isRecommendableDecision(bDecision)) {
     el.innerHTML = `<div class="hero-empty">Sin Plan B disponible hoy.</div>`;
     return;
   }
@@ -2463,9 +2488,11 @@ function _noTocarReal() { return _memoryRanking.candidates.filter(c => !c.eligib
 // real al conectar datos en vivo: con el universo completo, "Momentum"
 // puede tener más de 100 candidatos (la banda de evidencia más débil
 // matchea a casi cualquier símbolo con volumen relativo moderado). Mostrar
-// eso sin acotar rompe "Dashboard = solo lo necesario para decidir rápido"
-// -- las listas completas siguen disponibles sin recortar en sus propias
-// pantallas (Panel 3/4/5, renderMicrocaps/renderMomentum/renderNoTocar).
+// eso sin acotar rompe "Dashboard = solo lo necesario para decidir rápido".
+// Limpieza de menú (2026-08-27): las páginas completas de Explosivas/
+// Momentum/ETF/No tocar se retiraron de la navegación -- este resumen de
+// 3 columnas (`renderTripleColumns()`) queda como el único lugar donde
+// esas listas siguen siendo visibles, siempre acotadas a DASHBOARD_TOP_N.
 const DASHBOARD_TOP_N = 5;
 
 function renderTripleColumns() {
@@ -2514,9 +2541,11 @@ function renderOportunidad() {
   // Fase 3/5: mismo criterio que renderHero() -- detalle completo del
   // MISMO candidato canónico, nunca `candidates[0]` crudo.
   const o = _currentTopOpportunityCandidate();
+  const ctop = _memoryRanking.current_top_opportunity;
+  const decision = ctop ? ctop.decision : null;
   const el = document.getElementById("oportunidad-detail");
-  if (!o) {
-    el.innerHTML = `<div class="empty-state">${_memoryRanking.generated_at === null ? "Esperando el primer escaneo del día..." : "Sin oportunidad destacada en este momento -- Atlas Decision Core todavía no seleccionó ningún candidato."}</div>`;
+  if (!o || !_isRecommendableDecision(decision)) {
+    el.innerHTML = `<div class="empty-state">${_noOpportunityHtml(o, decision)}</div>`;
     return;
   }
   el.innerHTML = `
@@ -2618,66 +2647,6 @@ function renderGenericTable(elementId, rows, columns) {
       renderGenericTable(elementId, rows, columns);
     });
   });
-}
-
-function renderMicrocaps() {
-  renderGenericTable("microcaps-table", _explosivasReal(), [
-    { label: "Símbolo", render: r => `<span class="sym">${r.symbol}</span>`, sortValue: r => r.symbol },
-    { label: "Precio", render: r => `${fmtMoney(r.price)}<br>${priceContextLine(r)}`, sortValue: r => r.price },
-    { label: "Cambio", render: r => fmtPct(r.change_pct), sortValue: r => r.change_pct },
-    { label: "Score", render: r => fmtNum(r.score), sortValue: r => r.score },
-    { label: "Probabilidad", render: r => fmtNum(r.probability_pct) + "%", sortValue: r => r.probability_pct },
-    { label: "Confianza", render: r => r.confidence, sortValue: r => r.confidence },
-    { label: "Evidencia", render: r => `<span class="dim">${r.evidence_condition || "--"}</span>` },
-    { label: "Semáforo", render: r => semaforoHtml(r.semaforo), sortValue: r => r.semaforo },
-    { label: "Decisión Atlas", render: r => atlasDecisionBadge(r.atlas_decision), sortValue: r => (r.atlas_decision && r.atlas_decision.decision) || "" },
-  ]);
-}
-
-function renderMomentum() {
-  renderGenericTable("momentum-table", _momentumReal(), [
-    { label: "Símbolo", render: r => `<span class="sym">${r.symbol}</span>`, sortValue: r => r.symbol },
-    { label: "Precio", render: r => `${fmtMoney(r.price)}<br>${priceContextLine(r)}`, sortValue: r => r.price },
-    { label: "Cambio", render: r => fmtPct(r.change_pct), sortValue: r => r.change_pct },
-    { label: "Probabilidad", render: r => fmtNum(r.probability_pct) + "%", sortValue: r => r.probability_pct },
-    { label: "Confianza", render: r => r.confidence, sortValue: r => r.confidence },
-    { label: "Evidencia", render: r => `<span class="dim">${r.evidence_condition || "--"}</span>` },
-    { label: "Semáforo", render: r => semaforoHtml(r.semaforo), sortValue: r => r.semaforo },
-    { label: "Decisión Atlas", render: r => atlasDecisionBadge(r.atlas_decision), sortValue: r => (r.atlas_decision && r.atlas_decision.decision) || "" },
-  ]);
-}
-
-/* Panel ETF -> estado honesto (limpieza MOCK 2026-08-07). Atlas todavía no
- * publica un feed dedicado de ETF apalancados por categoría; en vez de
- * mostrar filas simuladas, se declara explícitamente que no hay fuente
- * conectada. Regla permanente: preferir un panel vacío antes que un dato
- * inventado. Cuando exista el backend real (leveraged_etf_families +
- * precios en vivo) se conecta aquí. */
-function renderEtf() {
-  const el = document.getElementById("etf-table");
-  if (!el) return;
-  el.innerHTML = `<div class="empty-state">Panel ETF sin fuente de datos conectada todavía -- Atlas no publica un feed dedicado de ETF apalancados por ahora. No se muestran ejemplos.</div>`;
-}
-
-// Motivo mostrado en "No tocar": si Radar Explosivo lo rechazó, ESE es el
-// motivo real (aunque el Memory Engine tuviera semáforo verde/amarillo --
-// regla de consenso, 2026-08-03) -- nunca se muestran los dos mezclados
-// como si fueran lo mismo.
-function _noTocarMotivo(r) {
-  if (!r.eligible_radar) {
-    return `<span class="no-tocar-radar-reason">🚫 Radar Explosivo: ${r.radar_excluded_reason || "no elegible"}</span>`;
-  }
-  return r.explanation;
-}
-
-function renderNoTocar() {
-  renderGenericTable("no-tocar-table", _noTocarReal(), [
-    { label: "Símbolo", render: r => `<span class="sym">${r.symbol}</span>`, sortValue: r => r.symbol },
-    { label: "Precio", render: r => `${fmtMoney(r.price)}<br>${priceContextLine(r)}`, sortValue: r => r.price },
-    { label: "Cambio", render: r => fmtPct(r.change_pct), sortValue: r => r.change_pct },
-    { label: "Motivo", render: r => _noTocarMotivo(r) },
-    { label: "Semáforo", render: r => semaforoHtml(r.semaforo), sortValue: r => r.semaforo },
-  ]);
 }
 
 function renderRadarCompleto() {
@@ -2971,14 +2940,13 @@ function init() {
   renderGlobalStatus();      // barra de actividad + estado real (renderActivity)
   renderActivity();          // estado honesto inmediato hasta el primer fetch
   renderMarketQuality();
-  startMemoryRankingPolling(); // Paneles 2-6: hero, Plan B, Explosivas, Momentum, No tocar, Radar Completo
+  startMemoryRankingPolling(); // Hero, Plan B, Radar Completo
   startHotChannel(); // Canal rápido (Plan A + Plan B): precio <=3s + indicadores de frescura
   renderOpina();             // Resumen Factual (datos reales; honesto si no hay)
   renderAlerts();            // solo eventos reales de Mission Control
   renderWhyNot();            // descartes reales de /api/explosive-diagnostics
   fetchExplosiveDiagnostics();
   setInterval(fetchExplosiveDiagnostics, MEMORY_POLL_MS);
-  renderEtf();               // estado honesto -- sin fuente simulada
   startPanelStatusPolling(); // Paneles 9-12: Memory Engine, Prediction Journal, Exit Journal, Mission Control
   renderConfig();            // valores reales de /api/config
   document.getElementById("btn-save-snapshot").addEventListener("click", saveDaySnapshot);
