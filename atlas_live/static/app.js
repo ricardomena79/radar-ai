@@ -135,8 +135,8 @@ function renderHero(topExplosive) {
 
   if (!topExplosive) {
     hero.innerHTML = `
-      <div class="hero-label">🔥 Oportunidad más explosiva</div>
-      <div class="hero-empty">Todavía no hay ninguna oportunidad de alto momentum. Puede tardar unos minutos, o simplemente no hay nada explosivo ahora mismo.</div>
+      <div class="hero-label">⭐ Oportunidad Principal</div>
+      <div class="hero-empty">Todavía no hay ninguna Oportunidad Principal seleccionada. Puede tardar unos minutos, o Atlas Decision Core no encontró ningún candidato hoy.</div>
     `;
     return;
   }
@@ -149,7 +149,7 @@ function renderHero(topExplosive) {
 
   hero.innerHTML = `
     <div class="hero-card${highlightClass}" data-symbol="${topExplosive.symbol}">
-      <div class="hero-label">🔥 Oportunidad más explosiva</div>
+      <div class="hero-label">⭐ Oportunidad Principal</div>
       <div class="hero-field">
         <div class="label">Empresa</div>
         <div class="hero-symbol">${topExplosive.symbol}</div>
@@ -317,7 +317,20 @@ async function refreshRanking() {
     const newOpportunities = detectNewOpportunities(eligibleExplosive);
     dispatchNotifications(newOpportunities);
 
-    renderHero(eligibleExplosive[0] || null);
+    // Fase 3/5 (2026-08-26, autorizado explícitamente): el Hero muestra
+    // la selección CANÓNICA (`data.current_top_opportunity`, decidida por
+    // `select_current_top_opportunity()`), nunca el propio sort local de
+    // `explosivoRows()` (que seguía siendo un segundo selector
+    // independiente, ver auditoría "CURRENT_TOP_OPPORTUNITY"). Se busca
+    // el ticker elegido dentro de TODO `data.ranking` (no solo
+    // `eligibleExplosive`), porque el ganador canónico puede no ser
+    // `eligible` según las gates propias de Radar Explosivo -- esa
+    // decisión ya no es la que manda acá.
+    const topOpportunity = data.current_top_opportunity;
+    const heroRow = topOpportunity
+      ? (data.ranking || []).find(r => r.symbol === topOpportunity.ticker) || null
+      : null;
+    renderHero(heroRow);
     renderExplosivoList(eligibleExplosive);
     renderRanking(data.ranking);
     renderWatchlist(data.ranking);

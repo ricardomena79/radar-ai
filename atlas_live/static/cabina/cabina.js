@@ -38,6 +38,32 @@ const ATLAS_DECISION_BADGE_CLASS = {
   NO_TOCAR: "badge-rojo",
 };
 
+// CURRENT TOP OPPORTUNITY (2026-08-26, Fase 3/5 -- autorizado
+// explícitamente): fuente ÚNICA de "mejor oportunidad ahora", ya decidida
+// en el backend por `select_current_top_opportunity()` (Fase 1/5) y
+// registrada por `register_top_opportunity()` (Fase 2/5) -- este helper
+// SOLO busca, dentro de la lista ya traída, la fila que corresponde al
+// ticker que el backend ya eligió. Nunca vuelve a ordenar ni a decidir
+// nada -- reemplaza el uso anterior de `_memoryRanking.candidates[0]`
+// (que dependía del propio sort de Memory Engine, un segundo selector
+// independiente, ver auditoría "CURRENT_TOP_OPPORTUNITY").
+function _currentTopOpportunityCandidate() {
+  const ctop = _memoryRanking.current_top_opportunity;
+  if (!ctop || !ctop.ticker) return null;
+  return (_memoryRanking.candidates || []).find(c => c.symbol === ctop.ticker) || null;
+}
+
+// Fase 4/5 (2026-08-27, autorizado explícitamente -- corrige la
+// discrepancia detectada en Fase 3/5): Plan B ya NO es `candidates[1]`
+// crudo del ranking de Memory Engine -- es el `runner_up_ticker` del
+// MISMO selector canónico que decide la Oportunidad Principal. No existe
+// un segundo concepto de "segundo lugar".
+function _currentRunnerUpCandidate() {
+  const ctop = _memoryRanking.current_top_opportunity;
+  if (!ctop || !ctop.runner_up_ticker) return null;
+  return (_memoryRanking.candidates || []).find(c => c.symbol === ctop.runner_up_ticker) || null;
+}
+
 function atlasDecisionBadge(atlasDecision) {
   if (!atlasDecision || !atlasDecision.decision) return '<span class="dim">s/d</span>';
   const cls = ATLAS_DECISION_BADGE_CLASS[atlasDecision.decision] || "badge-neutro";
@@ -580,8 +606,10 @@ async function fetchMemoryRanking() {
   } catch (err) {
     console.error("fetchMemoryRanking:", err);
   }
-  const top = _memoryRanking.candidates && _memoryRanking.candidates[0];
-  await fetchEntryWindow(top && top.eligible_radar ? top.symbol : null);
+  // Fase 3/5: la ventana de entrada se calcula para el candidato CANÓNICO,
+  // no para `candidates[0]` crudo.
+  const top = _currentTopOpportunityCandidate();
+  await fetchEntryWindow(top ? top.symbol : null);
   renderHero();
   renderPlanB();
   renderTripleColumns();
@@ -718,9 +746,12 @@ function hotFreshnessHtml(entry) {
 // el fetch (cada 3s) Y desde el tick de 1s (para que "hace X s" avance solo
 // aunque no llegue dato nuevo). Actualiza también el precio destacado.
 function renderHotWidgets() {
-  const c = _memoryRanking.candidates || [];
-  const heroSym = (c[0] && c[0].eligible_radar) ? c[0].symbol : null;
-  const planBSym = (c[1] && c[1].eligible_radar) ? c[1].symbol : null;
+  // Fase 4/5: mismo candidato canónico que renderHero()/renderPlanB(),
+  // nunca candidates[0]/[1] crudo.
+  const heroCand = _currentTopOpportunityCandidate();
+  const planBCand = _currentRunnerUpCandidate();
+  const heroSym = heroCand ? heroCand.symbol : null;
+  const planBSym = planBCand ? planBCand.symbol : null;
 
   const heroBox = document.getElementById("hot-fresh-hero");
   if (heroBox) {
@@ -2208,15 +2239,10 @@ function startPanelStatusPolling() {
  * JSON -- no recalcula, no analiza, no interpreta nada. Sirve para
  * comparar manualmente distintos momentos del día más tarde. */
 function collectDaySnapshot() {
-  // Regla de consenso (2026-08-03): mismo criterio que renderHero()/
-  // renderPlanB() -- el snapshot descargado no debe capturar un
-  // candidato inelegible como "oportunidad_del_dia"/"plan_b" aunque sea
-  // candidates[0]/[1] en el array crudo (pasaría solo si hay menos de 2
-  // candidatos elegibles hoy).
-  const c0 = _memoryRanking.candidates[0];
-  const c1 = _memoryRanking.candidates[1];
-  const oportunidad = (c0 && c0.eligible_radar) ? c0 : null;
-  const planB = (c1 && c1.eligible_radar) ? c1 : null;
+  // Fase 4/5: "oportunidad_del_dia" y "plan_b" usan el MISMO candidato
+  // canónico que renderHero()/renderPlanB() -- nunca candidates[0]/[1] crudo.
+  const oportunidad = _currentTopOpportunityCandidate();
+  const planB = _currentRunnerUpCandidate();
   const explosivasAll = _explosivasReal();
   const momentumAll = _momentumReal();
   const noTocarAll = _noTocarReal();
@@ -2255,15 +2281,17 @@ function saveDaySnapshot() {
 }
 
 function renderHero() {
-  const o = _memoryRanking.candidates[0];
+  // Fase 3/5: Hero muestra la selección CANÓNICA (`current_top_opportunity`,
+  // decidida por `select_current_top_opportunity()`), nunca
+  // `candidates[0]` crudo -- `eligible_radar` de Radar Explosivo queda
+  // como informativo (se sigue mostrando en el badge), nunca como filtro
+  // de si Hero muestra algo: esa decisión ya la tomó Atlas Decision Core.
+  const o = _currentTopOpportunityCandidate();
   const el = document.getElementById("dashboard-hero");
-  // Regla de consenso (2026-08-03): el servidor ya ordena elegibles
-  // primero, pero si NO existe ningún candidato elegible hoy,
-  // candidates[0] puede ser inelegible -- Hero nunca debe recomendarlo.
-  if (!o || !o.eligible_radar) {
+  if (!o) {
     el.innerHTML = `<div class="hero-empty">${_memoryRanking.generated_at === null
       ? "Esperando el primer escaneo del día..."
-      : "Sin oportunidad destacada en este momento -- ningún candidato pasa el filtro de Radar Explosivo y el Memory Engine a la vez."}</div>`;
+      : "Sin oportunidad destacada en este momento -- Atlas Decision Core todavía no seleccionó ningún candidato."}</div>`;
     return;
   }
   el.innerHTML = `
@@ -2294,12 +2322,10 @@ function renderHero() {
 }
 
 function renderPlanB() {
-  const b = _memoryRanking.candidates[1];
+  // Fase 4/5: Plan B = runner_up del selector canónico, nunca candidates[1] crudo.
+  const b = _currentRunnerUpCandidate();
   const el = document.getElementById("dashboard-plan-b");
-  // Regla de consenso (2026-08-03): mismo criterio que Hero -- si el
-  // segundo candidato del ranking no es elegible (porque hay menos de 2
-  // candidatos elegibles hoy), Plan B no debe mostrarlo.
-  if (!b || !b.eligible_radar) {
+  if (!b) {
     el.innerHTML = `<div class="hero-empty">Sin Plan B disponible hoy.</div>`;
     return;
   }
@@ -2485,12 +2511,12 @@ function renderTripleColumns() {
 /* ---------------- Oportunidad del día (detalle, Q5-Q8) ---------------- */
 
 function renderOportunidad() {
-  const o = _memoryRanking.candidates[0];
+  // Fase 3/5: mismo criterio que renderHero() -- detalle completo del
+  // MISMO candidato canónico, nunca `candidates[0]` crudo.
+  const o = _currentTopOpportunityCandidate();
   const el = document.getElementById("oportunidad-detail");
-  // Regla de consenso (2026-08-03): mismo criterio que renderHero() --
-  // este es su detalle completo, mismo candidato.
-  if (!o || !o.eligible_radar) {
-    el.innerHTML = `<div class="empty-state">${_memoryRanking.generated_at === null ? "Esperando el primer escaneo del día..." : "Sin oportunidad destacada en este momento -- ningún candidato pasa el filtro de Radar Explosivo y el Memory Engine a la vez."}</div>`;
+  if (!o) {
+    el.innerHTML = `<div class="empty-state">${_memoryRanking.generated_at === null ? "Esperando el primer escaneo del día..." : "Sin oportunidad destacada en este momento -- Atlas Decision Core todavía no seleccionó ningún candidato."}</div>`;
     return;
   }
   el.innerHTML = `

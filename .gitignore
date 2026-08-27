@@ -92,3 +92,10 @@ atlas_live/learning/*.db-shm
 # el patrón atlas_live/radar/*.db de arriba (shadow_unified_detector.db
 # vive en atlas_live/radar/), sin entrada nueva necesaria -- documentado
 # acá para que quede explícito.
+
+# Atlas Decision Core -- CURRENT_TOP_OPPORTUNITY (Fases 1-2/5, 2026-08-26):
+# base de runtime propia y aislada (current_top_opportunity.db vive en
+# atlas_live/core/), mismo patrón que radar/signals/market_study/catalyst/learning.
+atlas_live/core/*.db
+atlas_live/core/*.db-wal
+atlas_live/core/*.db-shm

@@ -551,6 +551,13 @@ class _State:
         # ya trazado en explosive_engine.py) -- mismo criterio que
         # last_market_state, solo transiciones reales.
         self.last_provider_source: Optional[str] = None
+        # CURRENT TOP OPPORTUNITY (2026-08-26, Fase 3/5) -- la ÚNICA
+        # selección canónica de "mejor oportunidad ahora", calculada una
+        # vez por ciclo vía `current_top_opportunity.select_current_top_opportunity()`
+        # (sin modificar, Fase 1/5) y registrada vía
+        # `current_top_opportunity_registry.register_top_opportunity()`
+        # (sin modificar, Fase 2/5). `None` hasta que corra el primer ciclo.
+        self.current_top_opportunity: Optional[Dict[str, Any]] = None
 
     def snapshot(self) -> Dict[str, Any]:
         with self._lock:
@@ -576,6 +583,7 @@ class _State:
                 "last_cycle_finished_at": self.last_cycle_finished_at,
                 "last_cycle_status": self.last_cycle_status,
                 "last_failure_reason": self.last_failure_reason,
+                "current_top_opportunity": self.current_top_opportunity,
             }
 
     def update(self, **kwargs: Any) -> None:
@@ -608,7 +616,11 @@ class _State:
 
     def memory_ranking_snapshot(self) -> Dict[str, Any]:
         with self._lock:
-            return {"generated_at": self.memory_ranking_generated_at, "candidates": self.memory_ranking}
+            return {
+                "generated_at": self.memory_ranking_generated_at,
+                "candidates": self.memory_ranking,
+                "current_top_opportunity": self.current_top_opportunity,
+            }
 
 
 STATE = _State()
@@ -786,6 +798,71 @@ def _build_sector_flow_snapshot(money_flow_engine: MoneyFlowEngine) -> Dict[str,
     }
 
 
+def _update_current_top_opportunity(
+    results: List[Dict[str, Any]], ranked: List[Any],
+) -> Optional[Dict[str, Any]]:
+    """CURRENT TOP OPPORTUNITY (2026-08-26/27, Fases 3/5-4/5, autorizado
+    explícitamente) -- ÚNICA fuente de verdad de "mejor oportunidad
+    ahora". Reutiliza exactamente lo que este ciclo YA calculó
+    (`ranked`/`results`) -- ningún sort ni algoritmo nuevo acá,
+    `select_current_top_opportunity()` (Fase 1/5, sin modificar) sigue
+    siendo la única lógica de selección. Desde Fase 4/5, la decisión de
+    CONFIRMAR o mantener pasa por `top_opportunity_stability.apply_stability()`
+    (sin cambiar el criterio de orden del selector, solo exige evidencia
+    sostenida antes de aceptar un reemplazo) y el resultado servido se lee
+    DIRECTAMENTE del registro (`get_open_top_opportunity()`) -- una sola
+    fuente de verdad, nunca dos objetos calculados por separado. Extraída
+    como función propia para poder testear la integración real sin
+    simular un ciclo de red completo. El llamador es responsable de
+    envolver esto en su propio try/except."""
+    from atlas_live.core import current_top_opportunity as ctop
+    from atlas_live.core import current_top_opportunity_registry as ctop_reg
+    from atlas_live.core import top_opportunity_stability as stability
+    from atlas_live.memory import market_hours as _market_hours_ctop
+
+    results_by_symbol = {r["symbol"]: r for r in results}
+    candidatos_para_seleccion = [
+        ctop.CandidateForSelection(
+            ticker=c.symbol,
+            decision=(c.atlas_decision or {}).get("decision") or "NO_TOCAR",
+            ranking_score=tuple(c.ranking_score),
+            atlas_score=results_by_symbol.get(c.symbol, {}).get("atlas_score"),
+            momentum_score=results_by_symbol.get(c.symbol, {}).get("momentum_score"),
+        )
+        for c in ranked
+    ]
+    market_date = _market_hours_ctop.market_date()
+    resultado_estabilidad = stability.apply_stability(candidatos_para_seleccion, market_date)
+    confirmado = ctop_reg.get_open_top_opportunity(market_date)
+    if confirmado is None:
+        return None
+    componentes = confirmado["score_components"]
+    return {
+        "ticker": confirmado["ticker"],
+        "decision": componentes.get("decision"),
+        "criterio_decisivo": componentes.get("criterio_decisivo"),
+        "score_final": confirmado["score"],
+        "motivo_seleccion": confirmado["replacement_reason"],
+        "runner_up_ticker": confirmado["runner_up_ticker"],
+        "runner_up_score": confirmado["runner_up_score"],
+        "candidatos_considerados": componentes.get("candidatos_considerados"),
+        "methodology_version": confirmado["methodology_version"],
+        "selected_at": confirmado["selected_at"],
+        "selection_sequence": confirmado["selection_sequence"],
+        # Observabilidad de la capa de estabilidad (Fase 4/5) -- punto 10
+        # de la autorización: "current_top_ticker/selected_at/
+        # selection_sequence/runner_up_ticker/criterio_decisivo/
+        # methodology_version" ya están arriba; se agregan además los
+        # campos propios de estabilidad para poder auditar POR QUÉ se
+        # mantuvo o confirmó un cambio en cada ciclo.
+        "stability_action": resultado_estabilidad["action"],
+        "stability_reason": resultado_estabilidad["reason"],
+        "pending_ticker": resultado_estabilidad["pending_ticker"],
+        "pending_streak": resultado_estabilidad["pending_streak"],
+        "raw_selection_this_cycle": resultado_estabilidad["raw_selection"],
+    }
+
+
 def _run_scan_once_locked() -> None:
     STATE.update(scanning=True, last_error=None, last_score_symbol_error=None)
     start = time.monotonic()
@@ -926,16 +1003,16 @@ def _run_scan_once_locked() -> None:
         # tumbar el escaneo principal. No modifica nada de lo anterior, solo
         # lee `results` ya calculado. Ver atlas_live/memory/live_integration.py.
         memory_ranking_serialized: List[Dict[str, Any]] = []
+        current_top_opportunity_serialized: Optional[Dict[str, Any]] = None
         try:
             from atlas_live.memory import live_integration
             live_integration.run_live_cycle(results)
             # Cabina del Piloto, Panel 2 en adelante: mismo ranking que ya se
             # usa para el snapshot dinámico del Prediction Journal, servido
             # también para la interfaz -- ninguna llamada ni cálculo nuevo.
-            memory_ranking_serialized = [
-                live_integration.serialize_ranked_candidate(c)
-                for c in live_integration.build_live_ranking(results)
-            ]
+            ranked = live_integration.build_live_ranking(results)
+            memory_ranking_serialized = [live_integration.serialize_ranked_candidate(c) for c in ranked]
+            current_top_opportunity_serialized = _update_current_top_opportunity(results, ranked)
         except Exception:
             pass
 
@@ -1035,6 +1112,10 @@ def _run_scan_once_locked() -> None:
                 memory_ranking_generated_at=(
                     datetime.now(timezone.utc).isoformat()
                     if memory_ranking_serialized else STATE.memory_ranking_generated_at
+                ),
+                current_top_opportunity=(
+                    current_top_opportunity_serialized
+                    if current_top_opportunity_serialized else STATE.current_top_opportunity
                 ),
                 last_error=None,
             )
