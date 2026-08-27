@@ -259,6 +259,134 @@ def test_J_un_solo_call_site_de_register_top_opportunity():
         f"se esperaba un unico archivo productivo, se encontraron: {call_sites}"
 
 
+# --- K/A: caso real CRM -- decision viva diverge de la congelada ----------
+# (2026-08-27, autorizado explícitamente, auditoría post-cierre): mientras
+# un ticker sigue "MANTENIDO" (CASO B, sin nueva escritura), `decision`
+# debe reflejar la decisión Atlas VIVA de ESE ciclo, nunca la congelada en
+# el momento en que se confirmó -- que queda disponible aparte en
+# `decision_at_confirmation`, para auditoría, sin perderse.
+
+def test_K_caso_crm_decision_viva_diverge_de_la_confirmada():
+    _fresh()
+    try:
+        # Ciclo 1: CRM es la única candidata, confirmado con
+        # OPORTUNIDAD_PRIORITARIA (CASO A -- primera selección).
+        sw._update_current_top_opportunity([_result("CRM")], [_ranked("CRM", "OPORTUNIDAD_PRIORITARIA")])
+
+        # Ciclo 2: CRM sigue en el ciclo, pero su decisión Atlas VIVA ya
+        # cambió a NO_TOCAR (ej. paso a etapa NO_PERSEGUIR); aparece TEAM
+        # como nueva candidata OPORTUNIDAD_PRIORITARIA -- gana la selección
+        # CRUDA de este ciclo, pero la estabilidad (2 ciclos, sin tocar)
+        # todavía no la confirma con un solo ciclo -- CRM sigue siendo el
+        # ticker CONFIRMADO (CASO C, "ACUMULANDO_CONFIRMACION").
+        ranked_2 = [_ranked("CRM", "NO_TOCAR"), _ranked("TEAM", "OPORTUNIDAD_PRIORITARIA", ranking_score=(5.0, 0, 0.0, 0.0))]
+        results_2 = [_result("CRM"), _result("TEAM")]
+        serializado = sw._update_current_top_opportunity(results_2, ranked_2)
+
+        assert serializado["ticker"] == "CRM"  # sigue siendo el confirmado -- la estabilidad no lo reemplazó
+        assert serializado["stability_action"] == "MANTENIDO"
+        assert serializado["pending_ticker"] == "TEAM"  # acumulando confirmación, sin reemplazar todavía
+        assert serializado["decision"] == "NO_TOCAR"  # recomendabilidad VIVA -- ya no se presenta como recomendación
+        assert serializado["decision_at_confirmation"] == "OPORTUNIDAD_PRIORITARIA"  # historial intacto
+    finally:
+        _restore()
+
+
+# --- L/B: caso normal -- decision viva == decision historica --------------
+
+def test_L_caso_normal_decision_viva_igual_a_la_confirmada():
+    _fresh()
+    try:
+        ranked = [_ranked("NSSC", "OPORTUNIDAD_PRIORITARIA")]
+        results = [_result("NSSC")]
+        # Varios ciclos idénticos -- CASO B, ninguna divergencia real.
+        for _ in range(3):
+            serializado = sw._update_current_top_opportunity(results, ranked)
+
+        assert serializado["decision"] == "OPORTUNIDAD_PRIORITARIA"
+        assert serializado["decision_at_confirmation"] == "OPORTUNIDAD_PRIORITARIA"
+        assert serializado["decision"] == serializado["decision_at_confirmation"]
+    finally:
+        _restore()
+
+
+# --- M/C: ticker confirmado desaparece del ciclo actual --------------------
+
+def test_M_ticker_confirmado_desaparece_del_ciclo_actual():
+    _fresh()
+    try:
+        # Ciclo 1: NSSC confirmado con OPORTUNIDAD_PRIORITARIA.
+        sw._update_current_top_opportunity([_result("NSSC")], [_ranked("NSSC", "OPORTUNIDAD_PRIORITARIA")])
+
+        # Ciclo 2: NSSC ni siquiera aparece entre las candidatas de este
+        # ciclo (ej. dejó de cumplir alguna puerta de detección) -- otra
+        # candidata (XYZ) gana la selección cruda, pero la estabilidad (sin
+        # tocar) todavía no la confirma con un solo ciclo -- NSSC sigue
+        # siendo el ticker CONFIRMADO.
+        ranked_2 = [_ranked("XYZ", "VIGILAR", ranking_score=(5.0, 0, 0.0, 0.0))]
+        results_2 = [_result("XYZ")]
+        serializado = sw._update_current_top_opportunity(results_2, ranked_2)
+
+        assert serializado["ticker"] == "NSSC"  # sigue confirmado
+        assert serializado["decision"] == "NO_TOCAR"  # fallback conservador -- no se puede verificar, no se recomienda
+        assert serializado["decision_at_confirmation"] == "OPORTUNIDAD_PRIORITARIA"  # historial intacto
+    finally:
+        _restore()
+
+
+# --- N/D: la fila persistida (score_components) no cambia ------------------
+
+def test_N_persistencia_score_components_no_cambia():
+    _fresh()
+    try:
+        sw._update_current_top_opportunity([_result("CRM")], [_ranked("CRM", "OPORTUNIDAD_PRIORITARIA")])
+        fila_antes = ctop_reg.get_open_top_opportunity(_hoy())
+        componentes_antes = dict(fila_antes["score_components"])
+
+        # Mismo escenario de staleness que test_K -- CRM sigue confirmado,
+        # su decisión viva ya es NO_TOCAR.
+        ranked_2 = [_ranked("CRM", "NO_TOCAR"), _ranked("TEAM", "OPORTUNIDAD_PRIORITARIA", ranking_score=(5.0, 0, 0.0, 0.0))]
+        results_2 = [_result("CRM"), _result("TEAM")]
+        sw._update_current_top_opportunity(results_2, ranked_2)
+
+        fila_despues = ctop_reg.get_open_top_opportunity(_hoy())
+        # La fila sigue siendo la MISMA (CASO B/C -- sin reemplazo todavia,
+        # `apply_stability`/el registry no se tocaron) y `score_components`
+        # persistido conserva EXACTAMENTE el valor original -- el fix vive
+        # solo en qué se sirve, nunca en qué se guarda.
+        assert fila_despues["ticker"] == "CRM"
+        assert dict(fila_despues["score_components"]) == componentes_antes
+        assert fila_despues["score_components"]["decision"] == "OPORTUNIDAD_PRIORITARIA"
+    finally:
+        _restore()
+
+
+# --- O/E: selector canonico y estabilidad sin modificaciones (estructural) -
+
+def test_O_selector_y_estabilidad_sin_modificaciones():
+    """Mismo patrón que test_J -- verificación estructural con `git diff`,
+    no una suposición: el fix de staleness (2026-08-27) vive enteramente en
+    `scan_worker.py`. Confirma que ningún archivo protegido (selector
+    canónico, estabilidad, registry, Decision Core, priority_classifier,
+    decision_engine, radar_worker) tiene un diff pendiente."""
+    import subprocess
+
+    protegidos = [
+        "atlas_live/core/current_top_opportunity.py",
+        "atlas_live/core/top_opportunity_stability.py",
+        "atlas_live/core/current_top_opportunity_registry.py",
+        "atlas_live/core/atlas_decision_core.py",
+        "atlas_live/radar/priority_classifier.py",
+        "atlas/engine/decision_engine.py",
+        "atlas_live/radar/radar_worker.py",
+    ]
+    resultado = subprocess.run(
+        ["git", "diff", "--stat", "--"] + protegidos,
+        capture_output=True, text=True, cwd=".",
+    )
+    assert resultado.stdout.strip() == "", f"archivos protegidos con diff pendiente: {resultado.stdout}"
+
+
 if __name__ == "__main__":
     import traceback
 

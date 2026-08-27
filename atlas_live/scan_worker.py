@@ -831,6 +831,19 @@ def _update_current_top_opportunity(
         )
         for c in ranked
     ]
+    # Fix de staleness NO_TOCAR/"Atlas Recomienda" (2026-08-27, autorizado
+    # explícitamente, auditoría post-cierre -- caso real CRM): mientras un
+    # ticker sigue "MANTENIDO" (CASO B de current_top_opportunity_registry,
+    # sin nueva escritura), `score_components.decision` queda CONGELADO en
+    # el valor vigente cuando ese ticker fue confirmado/reforzado por
+    # última vez -- puede quedar desactualizado respecto a la decisión
+    # Atlas VIVA de ese mismo ticker en el ciclo actual (ya calculada
+    # arriba, en `candidatos_para_seleccion`, sin ningún cálculo nuevo).
+    decision_viva_por_ticker = {
+        c.ticker: c.decision
+        for c in candidatos_para_seleccion
+    }
+
     market_date = _market_hours_ctop.market_date()
     resultado_estabilidad = stability.apply_stability(candidatos_para_seleccion, market_date)
     confirmado = ctop_reg.get_open_top_opportunity(market_date)
@@ -839,7 +852,18 @@ def _update_current_top_opportunity(
     componentes = confirmado["score_components"]
     return {
         "ticker": confirmado["ticker"],
-        "decision": componentes.get("decision"),
+        # "decision" es ahora la recomendabilidad VIVA del ticker
+        # confirmado en este ciclo -- nunca el ticker confirmado
+        # (identidad/historial, sin cambios abajo), solo si sigue siendo
+        # recomendable AHORA. Fallback conservador "NO_TOCAR" si el ticker
+        # confirmado no aparece entre los candidatos de este ciclo (mismo
+        # criterio ya usado en el resto del proyecto: sin poder verificarlo,
+        # no se recomienda).
+        "decision": decision_viva_por_ticker.get(confirmado["ticker"], "NO_TOCAR"),
+        # Valor histórico -- la decisión que tenía este ticker en el
+        # momento exacto en que fue confirmado/reforzado por última vez.
+        # Auditoría pura, nunca usado para gatear la presentación.
+        "decision_at_confirmation": componentes.get("decision"),
         "criterio_decisivo": componentes.get("criterio_decisivo"),
         "score_final": confirmado["score"],
         "motivo_seleccion": confirmado["replacement_reason"],
