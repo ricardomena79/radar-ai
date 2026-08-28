@@ -830,6 +830,30 @@ def api_radar_oportunidades():
         o["shadow_differs"] = shadow_decision.shadow_differs
         o["atlas_decision_methodology_version"] = atlas_decision.methodology_version
 
+        # SHADOW/VALIDACIÓN de LEK, Fase 2 (2026-08-27, autorizado
+        # explícitamente): persiste el resultado que YA se calculó arriba
+        # -- no recalcula nada, no es un segundo algoritmo de decisión.
+        # Solo escribe cuando shadow_differs=True (record_shadow_decision
+        # también lo verifica). apply_recalibration sigue False -- este
+        # registro es puramente de auditoría, nunca participa en
+        # `estado_final`, ya fijado en la primera llamada de arriba.
+        # Protegido con su propio try/except: un fallo al escribir el log
+        # nunca puede romper la respuesta del endpoint.
+        if shadow_decision.shadow_differs:
+            try:
+                le_evidence = o["learned_evidence"] or {}
+                radar_registry.record_shadow_decision(
+                    ticker=o["ticker"], market_date=market_date,
+                    decision=atlas_decision.decision, decision_shadow=shadow_decision.decision_shadow,
+                    shadow_differs=True,
+                    validation_state=le_evidence.get("validation_state"),
+                    sample_size=le_evidence.get("sample_size"),
+                    wilson_upper_bound_20_pct=le_evidence.get("wilson_upper_bound_20_pct"),
+                    baseline_pct_20=le_evidence.get("baseline_pct_20"),
+                )
+            except Exception:
+                pass
+
     conteos: dict = {}
     conteos_estado_final: dict = {}
     for o in oportunidades:
@@ -1248,6 +1272,32 @@ def api_admin_alert_effectiveness_report():
 
     market_date = request.args.get("date")
     return jsonify(radar_registry.alert_stage_effectiveness_report(market_date))
+
+
+@app.route("/api/admin/shadow-validation-report")
+def api_admin_shadow_validation_report():
+    """Solo lectura (Fase 2 de la transición SHADOW->VALIDACIÓN de LEK,
+    2026-08-27, autorizado explícitamente): cruza `shadow_decision_log`
+    (cada evento real donde `atlas_decision_core.decide()` calculó
+    `shadow_differs=True`) contra `candidate_outcome` ya cerrado, para
+    medir si el downgrade que LEK propuso en la sombra habría acertado
+    más que la decisión real. Puramente observacional -- NO participa en
+    ninguna decisión, NO cambia `apply_recalibration` (sigue en `False`,
+    hardcodeado, sin ninguna vía de configuración -- ver
+    `atlas_live/core/atlas_decision_core.py`). `?date=YYYY-MM-DD` limita a
+    un día; sin parámetro, toda la historia registrada. Ver
+    `atlas_live/radar/candidate_registry.py::shadow_validation_report` para
+    la definición exacta de "downgrade correcto/incorrecto" (reutiliza la
+    agrupación de categorías ya usada por `eod_report.py`, no inventa un
+    criterio nuevo). Admin porque puede ser una consulta pesada, no
+    pensada para el refresco frecuente de la Cabina."""
+    if not _admin_token_ok():
+        return jsonify({"error": "no autorizado"}), 403
+
+    from atlas_live.radar import candidate_registry as radar_registry
+
+    market_date = request.args.get("date")
+    return jsonify(radar_registry.shadow_validation_report(market_date))
 
 
 @app.route("/api/admin/candidate-timeline")

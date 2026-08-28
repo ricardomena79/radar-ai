@@ -220,6 +220,38 @@ CREATE TABLE IF NOT EXISTS magnitud_prediction (
     UNIQUE(ticker, market_date)
 );
 CREATE INDEX IF NOT EXISTS idx_magnitud_pred_date ON magnitud_prediction(market_date);
+
+-- SHADOW/VALIDACIÓN de LEK (2026-08-27, Fase 2 de la transición
+-- SHADOW->VALIDACIÓN, autorizado explícitamente): `atlas_decision_core.decide()`
+-- calcula `decision_shadow`/`shadow_differs` en cada request de
+-- /api/radar-oportunidades, pero ese resultado se servía y se perdía --
+-- sin ningún registro, era imposible medir después si LEK habría
+-- acertado más que el Decision Core real. Esta tabla SOLO persiste el
+-- resultado que LEK ya calculó (nunca recalcula nada, nunca es un
+-- segundo algoritmo de decisión) -- write-once por (ticker, market_date),
+-- mismo patrón que magnitud_prediction/missed_mover de arriba. Solo se
+-- escribe cuando shadow_differs=True (ver record_shadow_decision(), que
+-- rechaza cualquier otro caso) -- no hace falta una fila por candidata,
+-- solo por evento real de divergencia. Puramente informativo/de
+-- auditoría: nunca se lee desde atlas_decision_core.py,
+-- current_top_opportunity.py, top_opportunity_stability.py, scan_worker.py
+-- ni ningún punto que participe en una decisión real -- apply_recalibration
+-- sigue en False, sin ninguna vía de configuración, sin cambios en esta fase.
+CREATE TABLE IF NOT EXISTS shadow_decision_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker TEXT NOT NULL,
+    market_date TEXT NOT NULL,
+    decision TEXT NOT NULL,
+    decision_shadow TEXT NOT NULL,
+    shadow_differs INTEGER NOT NULL,
+    validation_state TEXT,
+    sample_size INTEGER,
+    wilson_upper_bound_20_pct REAL,
+    baseline_pct_20 REAL,
+    recorded_at TEXT NOT NULL,
+    UNIQUE(ticker, market_date)
+);
+CREATE INDEX IF NOT EXISTS idx_shadow_decision_date ON shadow_decision_log(market_date);
 """
 
 _schema_ready_for: Optional[str] = None
@@ -1941,3 +1973,177 @@ def radar_status() -> Dict[str, Any]:
         "market_date_actual": today,
         "eod_ejecutado_para": meta.get("eod_ejecutado_para"),
     }
+
+
+# ------------------- SHADOW/VALIDACIÓN de LEK (Fase 2) -------------------
+# 2026-08-27, autorizado explícitamente. Ver docstring de `shadow_decision_log`
+# en _SCHEMA arriba. Estas funciones SOLO persisten/leen -- nunca calculan
+# `decision_shadow` ni `shadow_differs` (eso sigue siendo exclusivo de
+# `atlas_live/core/atlas_decision_core.py`, que esta fase no toca), y nunca
+# escriben ni leen `candidate_outcome`/ninguna decisión real.
+
+_DOWNGRADE_RESULTADO_A_CAMPO = {
+    "DOWNGRADE_CORRECTO": "correcto",
+    "DOWNGRADE_INCORRECTO": "incorrecto",
+    "AMBIGUO": "ambiguo",
+    "PENDIENTE": "pendiente",
+}
+
+
+def record_shadow_decision(
+    ticker: str, market_date: str, decision: str, decision_shadow: str,
+    shadow_differs: bool, validation_state: Optional[str], sample_size: Optional[int],
+    wilson_upper_bound_20_pct: Optional[float], baseline_pct_20: Optional[float],
+) -> bool:
+    """Persiste UN evento donde LEK (`atlas_decision_core.decide()`, Shadow
+    Mode) propuso una decisión distinta a la real -- Fase 2 de la
+    transición SHADOW->VALIDACIÓN. Nunca recalcula nada: solo guarda el
+    resultado que el llamador ya calculó. Rechaza (no escribe nada) si
+    `shadow_differs=False` -- solo interesan los eventos de divergencia
+    real, no una fila por cada candidata evaluada. Write-once por
+    (ticker, market_date) vía `INSERT OR IGNORE` (mismo patrón que
+    `magnitud_prediction`/`missed_mover`) -- idempotente ante múltiples
+    requests del mismo día a `/api/radar-oportunidades`. Devuelve `True`
+    solo si se insertó una fila NUEVA."""
+    if not shadow_differs:
+        return False
+    with _connect() as conn:
+        cur = conn.execute(
+            """INSERT OR IGNORE INTO shadow_decision_log
+               (ticker, market_date, decision, decision_shadow, shadow_differs,
+                validation_state, sample_size, wilson_upper_bound_20_pct,
+                baseline_pct_20, recorded_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (ticker, market_date, decision, decision_shadow, 1,
+             validation_state, sample_size, wilson_upper_bound_20_pct,
+             baseline_pct_20, _now()),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def shadow_validation_report(market_date: Optional[str] = None) -> Dict[str, Any]:
+    """Solo lectura -- cruza `shadow_decision_log` con `candidate_outcome`
+    por `(ticker, market_date)`, la misma clave natural que usa TODO el
+    proyecto para identificar una candidata en un día (ver `UNIQUE(ticker,
+    market_date)` de ambas tablas). Nunca modifica ningún outcome ni
+    ninguna decisión -- exclusivamente un reporte de auditoría.
+
+    Definición de "downgrade correcto/incorrecto" -- declarada
+    explícitamente acá, REUTILIZANDO la misma agrupación de categorías que
+    ya usa `eod_report.py` (línea ~320, "mejores oportunidades del día" =
+    mejor_oportunidad/buena_oportunidad) en vez de inventar un criterio
+    nuevo para este reporte:
+      - `category in ("mejor_oportunidad", "buena_oportunidad")` -> el
+        downgrade de LEK habría sido INCORRECTO (la candidata sí era
+        buena; LEK la habría rebajado sin motivo real).
+      - `category == "falsa_senal"` -> el downgrade habría sido CORRECTO
+        (la cautela extra de LEK estaba justificada por el resultado real).
+      - cualquier otro valor (`oportunidad_moderada`, `deteccion_tardia`,
+        `error_evaluacion`, o `category` ausente) -> AMBIGUO -- no cuenta
+        ni a favor ni en contra de la tasa de acierto, se reporta aparte,
+        nunca se fuerza a una de las dos categorías de arriba.
+    Solo se considera "outcome cerrado" cuando `is_final=1` -- mismo
+    criterio que `has_final_outcome()` usa en todo el proyecto; un outcome
+    en curso (`is_final=0`) queda como pendiente, nunca se evalúa."""
+    with _connect() as conn:
+        if market_date:
+            eventos = conn.execute(
+                "SELECT * FROM shadow_decision_log WHERE market_date=? ORDER BY market_date, ticker",
+                (market_date,),
+            ).fetchall()
+        else:
+            eventos = conn.execute(
+                "SELECT * FROM shadow_decision_log ORDER BY market_date, ticker"
+            ).fetchall()
+        eventos = [_row(r) for r in eventos]
+
+        con_outcome = 0
+        pendientes = 0
+        downgrade_correcto = 0
+        downgrade_incorrecto = 0
+        ambiguos = 0
+        por_decision_original: Dict[str, Dict[str, int]] = {}
+        por_validation_state: Dict[str, Dict[str, int]] = {}
+        detalle: List[Dict[str, Any]] = []
+
+        for ev in eventos:
+            outcome_row = conn.execute(
+                "SELECT category, is_final FROM candidate_outcome WHERE ticker=? AND market_date=?",
+                (ev["ticker"], ev["market_date"]),
+            ).fetchone()
+            outcome = _row(outcome_row) if outcome_row else None
+
+            if outcome is None or not outcome.get("is_final"):
+                pendientes += 1
+                resultado = "PENDIENTE"
+            else:
+                con_outcome += 1
+                categoria = outcome.get("category")
+                if categoria in ("mejor_oportunidad", "buena_oportunidad"):
+                    downgrade_incorrecto += 1
+                    resultado = "DOWNGRADE_INCORRECTO"
+                elif categoria == "falsa_senal":
+                    downgrade_correcto += 1
+                    resultado = "DOWNGRADE_CORRECTO"
+                else:
+                    ambiguos += 1
+                    resultado = "AMBIGUO"
+
+            campo = _DOWNGRADE_RESULTADO_A_CAMPO[resultado]
+            od = por_decision_original.setdefault(
+                ev["decision"], {"total": 0, "correcto": 0, "incorrecto": 0, "ambiguo": 0, "pendiente": 0},
+            )
+            od["total"] += 1
+            od[campo] += 1
+
+            vs = ev.get("validation_state") or "SIN_DATO"
+            ov = por_validation_state.setdefault(
+                vs, {"total": 0, "correcto": 0, "incorrecto": 0, "ambiguo": 0, "pendiente": 0},
+            )
+            ov["total"] += 1
+            ov[campo] += 1
+
+            detalle.append({
+                "ticker": ev["ticker"], "market_date": ev["market_date"],
+                "decision": ev["decision"], "decision_shadow": ev["decision_shadow"],
+                "validation_state": ev["validation_state"], "sample_size": ev["sample_size"],
+                "wilson_upper_bound_20_pct": ev["wilson_upper_bound_20_pct"],
+                "baseline_pct_20": ev["baseline_pct_20"], "resultado": resultado,
+                "outcome_category": outcome.get("category") if outcome else None,
+            })
+
+        # Mismo criterio que magnitud_precision_report(): ambiguos y
+        # pendientes quedan FUERA del denominador de la tasa -- nunca se
+        # cuenta un caso sin resultado claro como si fuera un acierto o un
+        # fallo.
+        n_evaluables_tasa = downgrade_correcto + downgrade_incorrecto
+        tasa_acierto_pct = round(100 * downgrade_correcto / n_evaluables_tasa, 1) if n_evaluables_tasa else None
+        wilson_ci = wilson_confidence_interval(downgrade_correcto, n_evaluables_tasa) if n_evaluables_tasa else None
+
+        return {
+            "market_date": market_date,
+            "total_eventos_shadow_differs": len(eventos),
+            "con_outcome_final": con_outcome,
+            "pendientes": pendientes,
+            "downgrade_correcto": downgrade_correcto,
+            "downgrade_incorrecto": downgrade_incorrecto,
+            "ambiguos": ambiguos,
+            "n_evaluables_tasa": n_evaluables_tasa,
+            "tasa_acierto_pct": tasa_acierto_pct,
+            "wilson_ci": list(wilson_ci) if wilson_ci else None,
+            "por_decision_original": por_decision_original,
+            "por_validation_state": por_validation_state,
+            "eventos": detalle,
+            "nota_metodologica": (
+                "DOWNGRADE_CORRECTO/DOWNGRADE_INCORRECTO reutilizan la "
+                "agrupacion de categorias de candidate_outcome ya usada por "
+                "eod_report.py (mejor_oportunidad/buena_oportunidad = "
+                "candidata buena -> downgrade incorrecto; falsa_senal = "
+                "candidata mala -> downgrade correcto). AMBIGUO "
+                "(oportunidad_moderada/deteccion_tardia/error_evaluacion) no "
+                "cuenta en la tasa de acierto. Con n_evaluables_tasa chico, "
+                "el wilson_ci sera ancho -- no concluir nada sobre si LEK "
+                "'funciona' hasta que la muestra sea suficiente."
+            ),
+        }
