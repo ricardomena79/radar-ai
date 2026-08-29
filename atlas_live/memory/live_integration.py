@@ -363,6 +363,33 @@ def _grade_predictive_engine(now: datetime) -> str:
     )
 
 
+def _build_journaled_snapshot(results: List[Dict[str, Any]], now: datetime) -> List[pj.JournaledCandidate]:
+    """Arma el ranking + snapshot de métricas listo para sellar -- misma
+    lógica exacta que ya armaba el bloque premarket antes del fallback de
+    sellado (2026-08-28), extraída acá para reutilizarse en los dos
+    puntos donde puede ocurrir un sellado (ventana ideal y fallback), sin
+    duplicar código ni inventar una segunda forma de construir el
+    ranking. No decide nada de aprendizaje ni de Radar Explosivo, solo
+    empaqueta lo que `build_live_ranking()` ya calculó."""
+    ranking = build_live_ranking(results, now=now)
+    # Regla de consenso (2026-08-03): el Prediction Journal entero -- no
+    # solo el candidato #1 -- excluye a quien Radar Explosivo rechazó.
+    elegibles = [c for c in ranking if c.eligible_radar]
+    # Snapshot de métricas de detección por símbolo (F2): se toma del
+    # mismo `results` de este ciclo, sin recalcular ni reconsultar --
+    # viaja dentro de la predicción sellada para reconstruir la
+    # observación de aprendizaje cuando la trayectoria cierre.
+    metrics_por_symbol = {
+        row["symbol"]: row["explosive"]["metrics"]
+        for row in results
+        if row.get("explosive") is not None
+    }
+    return [
+        _to_journaled(i, c, metrics_snapshot=metrics_por_symbol.get(c.symbol))
+        for i, c in enumerate(elegibles[:TOP_N_JOURNAL], start=1)
+    ]
+
+
 def run_live_cycle(results: List[Dict[str, Any]], now: Optional[datetime] = None) -> Dict[str, Any]:
     """Punto de entrada único. Nunca lanza una excepción hacia el
     llamador -- cualquier error queda en el campo `error` del resumen que
@@ -376,27 +403,7 @@ def run_live_cycle(results: List[Dict[str, Any]], now: Optional[datetime] = None
 
     try:
         if session == "premarket":
-            ranking = build_live_ranking(results, now=now)
-            # Regla de consenso (2026-08-03): el Prediction Journal entero
-            # -- no solo el candidato #1 -- excluye a quien Radar Explosivo
-            # rechazó. `ranking` ya viene ordenado con los elegibles
-            # primero, pero si hay menos de TOP_N_JOURNAL elegibles, un
-            # slice ciego arrastraría inelegibles a las posiciones bajas
-            # -- se filtran acá antes de tomar el top N.
-            elegibles = [c for c in ranking if c.eligible_radar]
-            # Snapshot de métricas de detección por símbolo (F2): se toma del
-            # mismo `results` de este ciclo, sin recalcular ni reconsultar --
-            # viaja dentro de la predicción sellada para reconstruir la
-            # observación de aprendizaje cuando la trayectoria cierre.
-            metrics_por_symbol = {
-                row["symbol"]: row["explosive"]["metrics"]
-                for row in results
-                if row.get("explosive") is not None
-            }
-            journaled = [
-                _to_journaled(i, c, metrics_snapshot=metrics_por_symbol.get(c.symbol))
-                for i, c in enumerate(elegibles[:TOP_N_JOURNAL], start=1)
-            ]
+            journaled = _build_journaled_snapshot(results, now)
             pj.record_dynamic_snapshot(date, now.isoformat(), journaled)
             accion = "snapshot_dinamico"
 
@@ -413,7 +420,32 @@ def run_live_cycle(results: List[Dict[str, Any]], now: Optional[datetime] = None
             prediccion = _predict_entries(date, now, results)
 
         elif session == "regular":
+            # Fallback de sellado (2026-08-28, autorizado explícitamente --
+            # bloqueo confirmado con evidencia real de producción,
+            # `sealed_today=null` varios días seguidos): la ventana ideal
+            # (`is_seal_window`, 09:25-09:30 ET, SIN CAMBIOS) puede perderse
+            # si ningún ciclo de `scan_worker` cae dentro de esos 5 minutos
+            # exactos (cadencia ~300s, no anclada al reloj) -- sin sellado,
+            # `_track_trajectory()` (abajo) nunca corre ("sin_sellado_hoy"),
+            # así que TODO lo que depende de él (Exit Journal,
+            # `learning_writeback`, Memory Store) se queda sin datos ese
+            # día entero. Se sella en el PRIMER ciclo de sesión regular que
+            # corra, SOLO si el día todavía no está sellado -- misma guarda
+            # de idempotencia (`pj.is_sealed`) que ya usaba el camino
+            # normal, más la protección propia de `seal_ranking()`
+            # (`AlreadySealedError` si ya existe). Nunca en
+            # afterhours/closed: `_track_trajectory` solo corre en
+            # "regular", un sellado más tarde no podría capturar ninguna
+            # muestra de trayectoria ese día -- no serviría de nada.
+            sellado_fallback = False
+            if not pj.is_sealed(date):
+                journaled_fallback = _build_journaled_snapshot(results, now)
+                pj.seal_ranking(date, now.isoformat(), journaled_fallback)
+                sellado_fallback = True
+
             accion = _track_trajectory(date, now, results)
+            if sellado_fallback:
+                accion = f"sellado_fallback+{accion}"
             prediccion = _predict_entries(date, now, results)
 
         elif session in ("afterhours", "closed"):

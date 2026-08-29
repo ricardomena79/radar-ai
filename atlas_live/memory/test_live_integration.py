@@ -167,14 +167,24 @@ def test_run_live_cycle_regular_registra_trayectoria_si_hay_sellado() -> None:
     print("OK - ciclos sucesivos van acumulando la trayectoria, sin sobrescribir")
 
 
-def test_run_live_cycle_regular_sin_sellado_no_registra_nada() -> None:
+def test_run_live_cycle_regular_sin_sellado_activa_fallback() -> None:
+    """Comportamiento actualizado (2026-08-28, autorizado explícitamente --
+    bloqueo real confirmado en producción, `sealed_today=null` varios días
+    seguidos): antes de este cambio, llegar a sesión regular sin ningún
+    sellado dejaba el día entero sin trayectoria ("sin_sellado_hoy", sin
+    reintentar). Ahora el primer ciclo de sesión regular sella (fallback,
+    misma guarda de idempotencia `pj.is_sealed`) y YA registra un punto de
+    trayectoria en el mismo ciclo -- ver `atlas_live/memory/test_seal_fallback.py`
+    para la cobertura completa del fallback."""
     _reset_db()
+    date = "2026-08-03"
     resumen = li.run_live_cycle(SYNTHETIC_RESULTS, now=_et(2026, 8, 3, 12, 0))
     assert resumen["session"] == "regular"
-    assert resumen["accion"] == "sin_sellado_hoy"
+    assert resumen["accion"].startswith("sellado_fallback+")
     assert resumen["error"] is None
-    assert ej.get_trajectory("FUERTE1", "2026-08-03") == []
-    print("OK - sin ranking sellado, la sesión regular no registra ninguna trayectoria")
+    assert pj.is_sealed(date) is True
+    assert len(ej.get_trajectory("FUERTE1", date)) == 1
+    print("OK - sin ranking sellado, el primer ciclo de sesión regular sella (fallback) y registra el primer punto de trayectoria")
 
 
 def test_run_live_cycle_califica_al_cierre_con_collector_falso() -> None:
