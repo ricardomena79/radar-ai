@@ -2935,6 +2935,139 @@ async function renderConfig() {
 
 /* ---------------- Arranque ---------------- */
 
+/* ---------------- Mercado (2026-08-29, autorizado explícitamente) ----------
+ * Ranking en vivo del universo EQUITY de Racional (1.646 símbolos, sin
+ * ETFs/ETNs), ordenado por variación % del día -- vista de solo lectura,
+ * consume `/api/mercado` (snapshot ya cacheado por el backend, esta
+ * pantalla NUNCA dispara una consulta nueva a Tradier, sin importar la
+ * frecuencia de polling). No participa en ninguna decisión de Atlas. */
+
+const MERCADO_POLL_MS = 3000; // pedido explícito: refresco de pantalla cada ~3s
+let _mercado = { generated_at: null, cycle_duration_s: null, rows: [] };
+let _mercadoSearch = "";
+
+async function fetchMercado() {
+  try {
+    const res = await fetch("/api/mercado");
+    _mercado = await res.json();
+  } catch (e) {
+    // Sin cambios de estado ante un fallo de red puntual -- se sigue
+    // mostrando el último snapshot conocido, con su antigüedad real.
+  }
+  renderMercado();
+}
+
+function _mercadoAgeLabel(generatedAtIso) {
+  if (!generatedAtIso) return "Sin datos todavía";
+  const ageSeconds = Math.max(0, Math.round((Date.now() - new Date(generatedAtIso).getTime()) / 1000));
+  if (ageSeconds < 60) return `Actualizado hace ${ageSeconds}s`;
+  const minutes = Math.round(ageSeconds / 60);
+  if (minutes < 60) return `Actualizado hace ${minutes} min`;
+  const hours = Math.round(minutes / 60);
+  return `Actualizado hace ${hours} h`;
+}
+
+function _mercadoAgeShort(ageSeconds) {
+  if (ageSeconds == null) return "?";
+  if (ageSeconds < 60) return `${Math.round(ageSeconds)}s`;
+  const minutes = Math.round(ageSeconds / 60);
+  if (minutes < 60) return `${minutes}min`;
+  const hours = Math.round(minutes / 60);
+  return `${hours}h`;
+}
+
+// Sparkline SVG minimalista -- sin librerías externas, mismo criterio que
+// el resto de la Cabina. Puntos ya vienen del backend (buffer circular de
+// precios reales, `market_view.py`); acá solo se normalizan a un viewBox
+// fijo, ningún dato se inventa ni se interpola.
+function _sparklineSvg(points, isUp) {
+  if (!points || points.length < 2) {
+    return `<svg class="mercado-spark" viewBox="0 0 100 30"><line x1="0" y1="15" x2="100" y2="15" stroke="var(--text-faint,#5a6178)" stroke-width="1"/></svg>`;
+  }
+  const min = Math.min(...points);
+  const max = Math.max(...points);
+  const span = max - min || 1;
+  const coords = points.map((p, i) => {
+    const x = (i / (points.length - 1)) * 100;
+    const y = 28 - ((p - min) / span) * 26;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
+  const color = isUp ? "var(--green,#2ecc71)" : "var(--red,#e74c3c)";
+  return `<svg class="mercado-spark" viewBox="0 0 100 30"><polyline points="${coords}" fill="none" stroke="${color}" stroke-width="2"/></svg>`;
+}
+
+function _mercadoInitials(symbol) {
+  return (symbol || "?").slice(0, 2).toUpperCase();
+}
+
+function renderMercado() {
+  const listEl = document.getElementById("mercado-list");
+  const metaEl = document.getElementById("mercado-meta");
+  if (!listEl || !metaEl) return;
+
+  const rows = _mercado.rows || [];
+  metaEl.innerHTML =
+    `Universo: ${_mercado.total_universe ?? "--"} acciones EQUITY de Racional -- ` +
+    `🟢 ${_mercado.frescos ?? _mercado.resueltos ?? 0} frescos · ⏱ ${_mercado.stale_cache ?? 0} antiguos · — ${_mercado.sin_datos ?? 0} sin dato · ` +
+    `${_mercadoAgeLabel(_mercado.generated_at)}` +
+    (_mercado.cycle_duration_s != null ? ` · último ciclo: ${_mercado.cycle_duration_s}s` : "");
+
+  if (!rows.length) {
+    listEl.innerHTML = `<div class="empty-state">${_mercado.ultimo_error ? "Error: " + _mercado.ultimo_error : "Esperando el primer ciclo de Mercado..."}</div>`;
+    return;
+  }
+
+  const q = _mercadoSearch.trim().toUpperCase();
+  const filtered = q
+    ? rows.filter(r => r.symbol.toUpperCase().includes(q) || (r.name || "").toUpperCase().includes(q))
+    : rows;
+
+  if (!filtered.length) {
+    listEl.innerHTML = `<div class="empty-state">Sin resultados para "${_mercadoSearch}".</div>`;
+    return;
+  }
+
+  listEl.innerHTML = filtered.map(r => {
+    const isUp = (r.change_pct ?? 0) >= 0;
+    const changeText = r.change_pct == null
+      ? '<span class="dim">s/d</span>'
+      : `<span class="${isUp ? "mercado-up" : "mercado-down"}">${isUp ? "+" : ""}${r.change_pct.toFixed(2)}%</span>`;
+    let statusTag = "";
+    if (r.data_status === "STALE") {
+      statusTag = `<span class="mercado-stale" title="Último dato conocido -- Tradier no respondió este ciclo">⏱ antiguo (${_mercadoAgeShort(r.data_age_seconds)})</span>`;
+    } else if (r.data_status === "SIN_DATO") {
+      statusTag = '<span class="mercado-sindato" title="Sin datos de Tradier todavía para este símbolo">— sin dato</span>';
+    } else if (r.price_is_stale) {
+      statusTag = '<span class="mercado-stale" title="Precio vencido -- fuera de sesión, no se finge un dato nuevo">⏱ antiguo</span>';
+    }
+    return `
+      <div class="mercado-row" data-symbol="${r.symbol}">
+        <div class="mercado-logo">${_mercadoInitials(r.symbol)}</div>
+        <div class="mercado-id">
+          <div class="mercado-name">${r.name || r.symbol}</div>
+          <div class="mercado-ticker">${r.symbol} ${statusTag}</div>
+        </div>
+        ${_sparklineSvg(r.sparkline, isUp)}
+        <div class="mercado-change">
+          <div class="mercado-price">${r.price != null ? "$" + r.price.toFixed(2) : "--"}</div>
+          ${changeText}
+        </div>
+      </div>`;
+  }).join("");
+}
+
+function startMercadoPolling() {
+  fetchMercado();
+  setInterval(fetchMercado, MERCADO_POLL_MS);
+  const searchInput = document.getElementById("mercado-search");
+  if (searchInput) {
+    searchInput.addEventListener("input", () => {
+      _mercadoSearch = searchInput.value;
+      renderMercado();
+    });
+  }
+}
+
 function init() {
   setupNav();
   renderGlobalStatus();      // barra de actividad + estado real (renderActivity)
@@ -2948,6 +3081,7 @@ function init() {
   fetchExplosiveDiagnostics();
   setInterval(fetchExplosiveDiagnostics, MEMORY_POLL_MS);
   startPanelStatusPolling(); // Paneles 9-12: Memory Engine, Prediction Journal, Exit Journal, Mission Control
+  startMercadoPolling();     // Mercado: ranking en vivo del universo EQUITY de Racional
   renderConfig();            // valores reales de /api/config
   document.getElementById("btn-save-snapshot").addEventListener("click", saveDaySnapshot);
 }

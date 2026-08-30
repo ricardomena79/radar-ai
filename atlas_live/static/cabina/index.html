@@ -44,6 +44,7 @@
 
     <button class="nav-item active" data-view="dashboard">🏠 Dashboard</button>
     <button class="nav-item" data-view="oportunidad">🎯 Oportunidad del día</button>
+    <button class="nav-item" data-view="mercado">📈 Mercado</button>
 
     <div class="nav-group-label">INTELIGENCIA</div>
     <button class="nav-item nav-item--sub" data-view="memory-engine">🧠 Memory Engine</button>
@@ -121,6 +122,19 @@
     <section class="view" id="view-oportunidad">
       <header class="view-header"><h1>🎯 Oportunidad del día</h1></header>
       <div id="oportunidad-detail"></div>
+    </section>
+
+    <!-- ---------- MERCADO (2026-08-29, autorizado explícitamente) ----------
+         Universo EQUITY de Racional (1.646 símbolos, sin ETFs/ETNs),
+         ranking en vivo por variación % del día vía Tradier. Vista de
+         solo lectura -- no participa en ninguna decisión de Atlas. -->
+    <section class="view" id="view-mercado">
+      <header class="view-header mercado-header">
+        <h1>📈 Mercado</h1>
+        <input type="text" id="mercado-search" class="mercado-search" placeholder="🔍 Buscar ticker o empresa...">
+      </header>
+      <div class="header-meta" id="mercado-meta"></div>
+      <div id="mercado-list" class="mercado-list"></div>
     </section>
 
     <!-- ---------- 7. MEMORY ENGINE ---------- -->

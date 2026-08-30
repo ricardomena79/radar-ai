@@ -99,6 +99,17 @@ catalyst_worker.start_catalyst_worker()
 from atlas_live.radar import unified_detector
 unified_detector.start_shadow_detector()
 
+# Mercado (2026-08-29, autorizado explícitamente): vista de ranking en
+# vivo del universo EQUITY de Racional (1.646 símbolos), ordenado por
+# variación del día. Hilo de fondo COMPLETAMENTE AISLADO -- solo lee
+# precios vía Tradier y los presenta; nunca escribe en ninguna tabla de
+# decisión, nunca es importado por current_top_opportunity.py,
+# atlas_decision_core.py, scan_worker.py, radar_worker.py ni ningún
+# módulo de aprendizaje. Se habilita/deshabilita por
+# ATLAS_MARKET_VIEW_ENABLED (default: encendido).
+from atlas_live import market_view
+market_view.start_market_view()
+
 
 @app.route("/")
 def index():
@@ -281,6 +292,20 @@ def api_market_study():
         "summary": study_registry.summary(),
         "top_explosions": study_registry.list_explosions(limit=50),
     })
+
+
+@app.route("/api/mercado")
+def api_mercado():
+    """Mercado (2026-08-29, autorizado explícitamente): snapshot ya
+    cacheado del ranking en vivo del universo EQUITY de Racional (1.646
+    símbolos), ordenado por variación % del día, descendente. Público,
+    sin token -- mismo patrón que `/api/radar-universo`. Solo lectura del
+    snapshot ya calculado por el hilo de fondo (`market_view.py`) -- este
+    endpoint NUNCA dispara una consulta nueva a Tradier, así que el
+    frontend puede pedirlo con la frecuencia que quiera (cada 3s) sin
+    ningún costo adicional. Completamente aislado de cualquier decisión
+    de Atlas -- ver docstring de `atlas_live/market_view.py`."""
+    return jsonify(market_view.get_market_snapshot())
 
 
 @app.route("/api/radar-universo")
