@@ -2981,8 +2981,11 @@ function _mercadoAgeShort(ageSeconds) {
 // precios reales, `market_view.py`); acá solo se normalizan a un viewBox
 // fijo, ningún dato se inventa ni se interpola.
 function _sparklineSvg(points, isUp) {
+  // Colores propios del tema claro de Mercado (--mkt-up/--mkt-down,
+  // definidos en #view-mercado) -- nunca las variables oscuras globales
+  // de Atlas, para que el trazo se vea bien sobre fondo blanco.
   if (!points || points.length < 2) {
-    return `<svg class="mercado-spark" viewBox="0 0 100 30"><line x1="0" y1="15" x2="100" y2="15" stroke="var(--text-faint,#5a6178)" stroke-width="1"/></svg>`;
+    return `<svg class="mercado-spark" viewBox="0 0 100 30"><line x1="0" y1="15" x2="100" y2="15" stroke="var(--mkt-border,#e5e7eb)" stroke-width="1"/></svg>`;
   }
   const min = Math.min(...points);
   const max = Math.max(...points);
@@ -2992,7 +2995,7 @@ function _sparklineSvg(points, isUp) {
     const y = 28 - ((p - min) / span) * 26;
     return `${x.toFixed(1)},${y.toFixed(1)}`;
   }).join(" ");
-  const color = isUp ? "var(--green,#2ecc71)" : "var(--red,#e74c3c)";
+  const color = isUp ? "var(--mkt-up,#0f9d58)" : "var(--mkt-down,#d93025)";
   return `<svg class="mercado-spark" viewBox="0 0 100 30"><polyline points="${coords}" fill="none" stroke="${color}" stroke-width="2"/></svg>`;
 }
 
@@ -3007,7 +3010,7 @@ function renderMercado() {
 
   const rows = _mercado.rows || [];
   metaEl.innerHTML =
-    `Universo: ${_mercado.total_universe ?? "--"} acciones EQUITY de Racional -- ` +
+    `Universo: ${_mercado.total_universe ?? "--"} instrumentos de Racional (EQUITY+ETF+ETN) -- ` +
     `🟢 ${_mercado.frescos ?? _mercado.resueltos ?? 0} frescos · ⏱ ${_mercado.stale_cache ?? 0} antiguos · — ${_mercado.sin_datos ?? 0} sin dato · ` +
     `${_mercadoAgeLabel(_mercado.generated_at)}` +
     (_mercado.cycle_duration_s != null ? ` · último ciclo: ${_mercado.cycle_duration_s}s` : "");
@@ -3029,29 +3032,40 @@ function renderMercado() {
 
   listEl.innerHTML = filtered.map(r => {
     const isUp = (r.change_pct ?? 0) >= 0;
-    const changeText = r.change_pct == null
+    const priceText = r.price != null ? r.price.toFixed(2) : '<span class="dim">--</span>';
+    const changeAbsText = r.change_abs == null
+      ? '<span class="dim">s/d</span>'
+      : `<span class="${isUp ? "mercado-up" : "mercado-down"}">${r.change_abs >= 0 ? "+" : ""}${r.change_abs.toFixed(2)}</span>`;
+    const changePctText = r.change_pct == null
       ? '<span class="dim">s/d</span>'
       : `<span class="${isUp ? "mercado-up" : "mercado-down"}">${isUp ? "+" : ""}${r.change_pct.toFixed(2)}%</span>`;
-    let statusTag = "";
+
+    // Columna "Ext" -- indicador compacto de frescura del dato (pedido
+    // explícito: mostrar precio extendido/stale claramente, estilo
+    // Racional). 🟢 fresco de este ciclo, ⏱ antiguo (con antigüedad en
+    // tooltip), — sin dato todavía.
+    let extIcon = '<span class="mercado-ext" title="Dato fresco de este ciclo">🟢</span>';
+    let staleTitle = "";
     if (r.data_status === "STALE") {
-      statusTag = `<span class="mercado-stale" title="Último dato conocido -- Tradier no respondió este ciclo">⏱ antiguo (${_mercadoAgeShort(r.data_age_seconds)})</span>`;
+      extIcon = `<span class="mercado-ext mercado-stale" title="Último dato conocido -- Tradier no respondió este ciclo (${_mercadoAgeShort(r.data_age_seconds)})">⏱</span>`;
     } else if (r.data_status === "SIN_DATO") {
-      statusTag = '<span class="mercado-sindato" title="Sin datos de Tradier todavía para este símbolo">— sin dato</span>';
+      extIcon = '<span class="mercado-ext mercado-sindato" title="Sin datos de Tradier todavía para este símbolo">—</span>';
     } else if (r.price_is_stale) {
-      statusTag = '<span class="mercado-stale" title="Precio vencido -- fuera de sesión, no se finge un dato nuevo">⏱ antiguo</span>';
+      extIcon = '<span class="mercado-ext mercado-stale" title="Precio vencido -- fuera de sesión, no se finge un dato nuevo">⏱</span>';
     }
+
     return `
       <div class="mercado-row" data-symbol="${r.symbol}">
         <div class="mercado-logo">${_mercadoInitials(r.symbol)}</div>
         <div class="mercado-id">
           <div class="mercado-name">${r.name || r.symbol}</div>
-          <div class="mercado-ticker">${r.symbol} ${statusTag}</div>
+          <div class="mercado-ticker">${r.symbol}</div>
         </div>
+        <div class="mercado-price">${priceText}</div>
+        <div class="mercado-change-abs">${changeAbsText}</div>
+        <div class="mercado-change-pct">${changePctText}</div>
+        ${extIcon}
         ${_sparklineSvg(r.sparkline, isUp)}
-        <div class="mercado-change">
-          <div class="mercado-price">${r.price != null ? "$" + r.price.toFixed(2) : "--"}</div>
-          ${changeText}
-        </div>
       </div>`;
   }).join("");
 }

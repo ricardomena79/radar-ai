@@ -1,7 +1,8 @@
-"""Tests de Mercado (2026-08-29, autorizado explícitamente). Sin red --
-`TradierProvider`/`get_equities()` se reemplazan por versiones falsas
-dentro del módulo (`mv.build_tradier_provider`/`mv.get_equities`), mismo
-patrón de monkey-patching ya usado en `test_scan_stability.py`."""
+"""Tests de Mercado (2026-08-29, autorizado explícitamente; ampliado a
+EQUITY+ETF+ETN el 2026-08-30). Sin red -- `TradierProvider`/`load_universe()`
+se reemplazan por versiones falsas dentro del módulo
+(`mv.build_tradier_provider`/`mv.load_universe`), mismo patrón de
+monkey-patching ya usado en `test_scan_stability.py`."""
 
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -11,12 +12,13 @@ from atlas.data.universe.universe import Asset
 
 
 class _FakeQuote:
-    def __init__(self, symbol, last_price, change_percent, timestamp=None, price_is_stale=False):
+    def __init__(self, symbol, last_price, change_percent, timestamp=None, price_is_stale=False, previous_close=None):
         self.symbol = symbol
         self.last_price = last_price
         self.change_percent = change_percent
         self.timestamp = timestamp or datetime.now(timezone.utc)
         self.price_is_stale = price_is_stale
+        self.previous_close = previous_close
 
 
 class _FakeTradierProvider:
@@ -37,8 +39,8 @@ class _FakeTradierProvider:
         return [self.quotes_by_symbol[s] for s in symbols if s in self.quotes_by_symbol]
 
 
-def _asset(symbol, name="Empresa " + "X"):
-    return Asset(symbol=symbol, name=f"{symbol} Inc.", type="EQUITY")
+def _asset(symbol, type_="EQUITY"):
+    return Asset(symbol=symbol, name=f"{symbol} Inc.", type=type_)
 
 
 def _fake_normalize(symbol):
@@ -47,10 +49,12 @@ def _fake_normalize(symbol):
     return SimpleNamespace(query_symbol=symbol, state="ACTIVE")
 
 
-def _patch(monkeypatch, universe_symbols, quotes_by_symbol, fail_on_calls=None, chunk_size=None):
-    assets = [_asset(s) for s in universe_symbols]
+def _patch(monkeypatch, universe_symbols, quotes_by_symbol, fail_on_calls=None, chunk_size=None, types_by_symbol=None):
+    types_by_symbol = types_by_symbol or {}
+    assets = [_asset(s, types_by_symbol.get(s, "EQUITY")) for s in universe_symbols]
+    universe_dict = {a.symbol: a for a in assets}
     provider = _FakeTradierProvider(quotes_by_symbol, fail_on_calls=fail_on_calls)
-    monkeypatch.setattr(mv, "get_equities", lambda: assets)
+    monkeypatch.setattr(mv, "load_universe", lambda: universe_dict)
     monkeypatch.setattr(mv, "build_tradier_provider", lambda: provider)
     monkeypatch.setattr(mv, "normalize", _fake_normalize)
     if chunk_size is not None:
@@ -58,9 +62,9 @@ def _patch(monkeypatch, universe_symbols, quotes_by_symbol, fail_on_calls=None, 
     return provider
 
 
-# --- A: universo exacto -- solo lo que get_equities() devuelve, sin agregar nada ---
+# --- A: universo exacto -- solo lo que load_universe() devuelve, sin agregar nada ---
 
-def test_A_universo_es_exactamente_get_equities(monkeypatch):
+def test_A_universo_es_exactamente_load_universe(monkeypatch):
     mv._last_known_by_symbol.clear()
     quotes = {"AAA": _FakeQuote("AAA", 10.0, 5.0), "BBB": _FakeQuote("BBB", 20.0, -2.0)}
     _patch(monkeypatch, ["AAA", "BBB"], quotes)
@@ -71,12 +75,29 @@ def test_A_universo_es_exactamente_get_equities(monkeypatch):
     assert {r["symbol"] for r in snap["rows"]} == {"AAA", "BBB"}
 
 
-# --- B: ningún ETF/ETN -- get_equities() ya filtra, se confirma que Mercado no agrega nada más ---
+# --- A2: EQUITY + ETF + ETN conviven en el MISMO ranking (2026-08-30) ---
+
+def test_A2_equity_etf_etn_conviven_en_un_solo_ranking(monkeypatch):
+    mv._last_known_by_symbol.clear()
+    quotes = {
+        "EQ1": _FakeQuote("EQ1", 10.0, 15.0),
+        "ETF1": _FakeQuote("ETF1", 20.0, 8.0),
+        "ETN1": _FakeQuote("ETN1", 30.0, -4.0),
+    }
+    _patch(monkeypatch, ["EQ1", "ETF1", "ETN1"], quotes,
+           types_by_symbol={"EQ1": "EQUITY", "ETF1": "ETF", "ETN1": "ETN"})
+    mv.run_market_cycle_once()
+    rows = mv.get_market_snapshot()["rows"]
+    # un solo ranking, ordenado por change_pct sin importar el tipo de instrumento
+    assert [r["symbol"] for r in rows] == ["EQ1", "ETF1", "ETN1"]
+
+
+# --- B: ningún símbolo fuera del universo provisto, sin importar el tipo ---
 
 def test_B_no_incluye_simbolos_fuera_del_universo_provisto(monkeypatch):
     mv._last_known_by_symbol.clear()
-    quotes = {"AAA": _FakeQuote("AAA", 10.0, 5.0), "SPY_ETF_NO_DEBERIA_APARECER": _FakeQuote("SPY_ETF_NO_DEBERIA_APARECER", 1.0, 1.0)}
-    _patch(monkeypatch, ["AAA"], quotes)  # el universo (get_equities) NO incluye el ETF
+    quotes = {"AAA": _FakeQuote("AAA", 10.0, 5.0), "NO_DEBERIA_APARECER": _FakeQuote("NO_DEBERIA_APARECER", 1.0, 1.0)}
+    _patch(monkeypatch, ["AAA"], quotes)  # el universo (load_universe) NO incluye el segundo símbolo
     mv.run_market_cycle_once()
     snap = mv.get_market_snapshot()
     assert {r["symbol"] for r in snap["rows"]} == {"AAA"}
@@ -405,3 +426,66 @@ def test_universo_real_racional_equity_es_1646():
     equities = get_equities()
     assert len(equities) == 1646
     assert all(a.type == "EQUITY" for a in equities)
+
+
+# --- confirmación real (2026-08-30, autorizado): universo AMPLIADO de
+# Mercado = EQUITY+ETF+ETN = 2.577, sin duplicados, y en 11 chunks de 250 ---
+
+def test_universo_real_completo_es_2577_equity_etf_etn():
+    from atlas.data.universe import load_universe
+    instruments = load_universe()
+    assert len(instruments) == 2577
+    from collections import Counter
+    counts = Counter(a.type for a in instruments.values())
+    assert counts["EQUITY"] == 1646
+    assert counts["ETF"] == 929
+    assert counts["ETN"] == 2
+    # ningún otro tipo se cuela (nunca cripto -- no existe en este loader)
+    assert set(counts.keys()) == {"EQUITY", "ETF", "ETN"}
+
+
+def test_universo_real_completo_normaliza_a_11_chunks_sin_duplicados():
+    """Sin red -- `normalize()` es una función pura local. Confirma la
+    cuenta real de chunks (2.567 query symbols únicos -> 11 de 250) medida
+    en el diagnóstico previo a la implementación, y que ningún símbolo
+    original se pierde ni se duplica en el mapeo."""
+    from atlas.data.providers.tradier_provider import TRADIER_CHUNK_SIZE
+    from atlas.data.providers.tradier_symbol_map import normalize
+    from atlas.data.universe import load_universe
+
+    originals = list(load_universe().keys())
+    assert len(originals) == len(set(originals))  # el universo en sí no trae duplicados
+
+    query_to_originals = {}
+    for sym in originals:
+        n = normalize(sym)
+        query_to_originals.setdefault(n.query_symbol, []).append(sym)
+
+    query_symbols = list(query_to_originals.keys())
+    chunks = [query_symbols[i:i + TRADIER_CHUNK_SIZE] for i in range(0, len(query_symbols), TRADIER_CHUNK_SIZE)]
+    assert len(query_symbols) == 2567
+    assert len(chunks) == 11
+    # cada original aparece en exactamente un query_symbol -- sin duplicados
+    todos_los_originales = [s for originals_list in query_to_originals.values() for s in originals_list]
+    assert sorted(todos_los_originales) == sorted(originals)
+    assert len(todos_los_originales) == len(set(todos_los_originales))
+
+
+def test_change_abs_se_calcula_desde_previous_close_real(monkeypatch):
+    """Cambio $ = precio actual - previous_close real de Tradier -- nunca
+    derivado de change_pct (evita inventar por redondeo inverso)."""
+    mv._last_known_by_symbol.clear()
+    q = _FakeQuote("AAA", 105.0, 5.0, previous_close=100.0)
+    _patch(monkeypatch, ["AAA"], {"AAA": q})
+    mv.run_market_cycle_once()
+    row = mv.get_market_snapshot()["rows"][0]
+    assert row["change_abs"] == 5.0
+
+
+def test_change_abs_none_si_no_hay_previous_close(monkeypatch):
+    mv._last_known_by_symbol.clear()
+    q = _FakeQuote("AAA", 105.0, 5.0, previous_close=None)
+    _patch(monkeypatch, ["AAA"], {"AAA": q})
+    mv.run_market_cycle_once()
+    row = mv.get_market_snapshot()["rows"][0]
+    assert row["change_abs"] is None  # nunca inventado

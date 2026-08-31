@@ -1,5 +1,6 @@
-"""Vista de Mercado -- ranking en vivo del universo EQUITY de Racional
-(2026-08-29, autorizado explícitamente).
+"""Vista de Mercado -- ranking en vivo del universo negociable de Racional
+(2026-08-29, autorizado explícitamente; ampliado a EQUITY+ETF+ETN el
+2026-08-30, mismo criterio de autorización explícita).
 
 Módulo COMPLETAMENTE AISLADO: solo lee precios vía Tradier y los presenta
 ordenados por variación del día -- nunca participa en ninguna decisión de
@@ -10,11 +11,13 @@ Atlas. No importa ni es importado por `atlas_decision_core.py`,
 `atlas_live/learning/`. Hilo de fondo propio, independiente de los ya
 existentes.
 
-Universo: `atlas.data.universe.get_equities()` -- exactamente las EQUITY
-del snapshot de Racional (1.646 símbolos reales, contados directamente
-del JSON), sin ETFs/ETNs (`Universe.equities()` ya filtra por
-`type=="EQUITY"`, no se agrega ningún filtro nuevo ni se toca ese
-módulo).
+Universo: `atlas.data.universe.load_universe()` -- TODOS los instrumentos
+del snapshot de Racional (2.577 reales: 1.646 EQUITY + 929 ETF + 2 ETN,
+contados directamente del loader), nunca solo EQUITY. Sin filtro de tipo
+nuevo -- se toma el universo completo tal cual lo expone `Universe`, sin
+tocar ese módulo. No hay cripto en este loader (Racional lo maneja aparte),
+así que la exclusión de cripto pedida ya queda satisfecha por los datos
+mismos, sin ningún filtro adicional.
 
 Paralelización (pedido explícito, autorizado): los chunks de 250 símbolos
 (mismo `TRADIER_CHUNK_SIZE` que ya usa `TradierProvider.get_quotes()`) se
@@ -42,7 +45,7 @@ from typing import Any, Deque, Dict, List, Optional
 
 from atlas.data.providers.tradier_provider import TRADIER_CHUNK_SIZE, TradierProvider
 from atlas.data.providers.tradier_symbol_map import normalize
-from atlas.data.universe import get_equities
+from atlas.data.universe import load_universe
 from atlas_live.data_fusion.universe_quotes import build_tradier_provider
 from atlas_live.memory import market_hours
 
@@ -146,11 +149,12 @@ def _run_cycle_body() -> float:
     if tradier_provider is None:
         raise RuntimeError("TRADIER_API_TOKEN no configurado -- Mercado no puede operar sin Tradier")
 
-    # Universo EXACTO de Racional EQUITY -- sin filtro nuevo, sin agregar
-    # ni quitar ningún símbolo. get_equities() ya excluye ETF/ETN.
-    equities = get_equities()
-    originals = [a.symbol for a in equities]
-    name_by_original = {a.symbol: a.name for a in equities}
+    # Universo COMPLETO de Racional (EQUITY+ETF+ETN, 2.577 reales) -- sin
+    # filtro nuevo, sin agregar ni quitar ningún símbolo. `load_universe()`
+    # ya es la fuente completa de `Universe`, no se toca ese módulo.
+    instruments = list(load_universe().values())
+    originals = [a.symbol for a in instruments]
+    name_by_original = {a.symbol: a.name for a in instruments}
 
     # Normalización -- MISMA función pura ya usada por
     # `atlas_live/data_fusion/universe_quotes.py`, sin modificarla.
@@ -212,10 +216,20 @@ def _run_cycle_body() -> float:
                 ts = q.timestamp if q.timestamp.tzinfo else q.timestamp.replace(tzinfo=timezone.utc)
                 data_age_seconds = round((now_utc - ts).total_seconds(), 1)
             price_is_stale = bool(getattr(q, "price_is_stale", False))
+            # Cambio $ = precio actual - cierre anterior real de Tradier
+            # (`previous_close`, ya poblado por `TradierProvider`). Nunca
+            # se deriva de `change_pct` (evita inventar un número por
+            # redondeo inverso) -- si falta `previous_close`, queda `None`.
+            previous_close = getattr(q, "previous_close", None)
+            change_abs = (
+                round(q.last_price - previous_close, 4)
+                if previous_close is not None else None
+            )
             row = {
                 "symbol": original,
                 "name": name_by_original.get(original, original),
                 "price": q.last_price,
+                "change_abs": change_abs,
                 "change_pct": q.change_percent,
                 "price_is_stale": price_is_stale,
                 "data_age_seconds": data_age_seconds,
@@ -225,6 +239,7 @@ def _run_cycle_body() -> float:
             with _last_known_lock:
                 _last_known_by_symbol[original] = {
                     "price": q.last_price,
+                    "change_abs": change_abs,
                     "change_pct": q.change_percent,
                     "price_is_stale": price_is_stale,
                     "cached_at": now_utc,
@@ -239,6 +254,7 @@ def _run_cycle_body() -> float:
                 "symbol": original,
                 "name": name_by_original.get(original, original),
                 "price": None,
+                "change_abs": None,
                 "change_pct": None,
                 "price_is_stale": None,
                 "data_age_seconds": None,
@@ -253,6 +269,7 @@ def _run_cycle_body() -> float:
             "symbol": original,
             "name": name_by_original.get(original, original),
             "price": cached["price"],
+            "change_abs": cached.get("change_abs"),
             "change_pct": cached["change_pct"],
             "price_is_stale": cached["price_is_stale"],
             "data_age_seconds": round((now_utc - cached["cached_at"]).total_seconds(), 1),

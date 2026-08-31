@@ -124,16 +124,29 @@
       <div id="oportunidad-detail"></div>
     </section>
 
-    <!-- ---------- MERCADO (2026-08-29, autorizado explícitamente) ----------
-         Universo EQUITY de Racional (1.646 símbolos, sin ETFs/ETNs),
+    <!-- ---------- MERCADO (2026-08-29, autorizado explícitamente; ampliado
+         a EQUITY+ETF+ETN y rediseñado con tema claro tipo Racional el
+         2026-08-30) ----------
+         Universo COMPLETO de Racional (2.577 símbolos: EQUITY+ETF+ETN),
          ranking en vivo por variación % del día vía Tradier. Vista de
-         solo lectura -- no participa en ninguna decisión de Atlas. -->
+         solo lectura -- no participa en ninguna decisión de Atlas. Tema
+         claro AISLADO (ver cabina.css, reglas bajo #view-mercado) -- el
+         resto de la Cabina sigue oscura sin ningún cambio. -->
     <section class="view" id="view-mercado">
       <header class="view-header mercado-header">
         <h1>📈 Mercado</h1>
         <input type="text" id="mercado-search" class="mercado-search" placeholder="🔍 Buscar ticker o empresa...">
       </header>
       <div class="header-meta" id="mercado-meta"></div>
+      <div class="mercado-table-head">
+        <span></span>
+        <span>Símbolo</span>
+        <span class="mercado-col-right">Última</span>
+        <span class="mercado-col-right">Cambio $</span>
+        <span class="mercado-col-right">Cambio %</span>
+        <span class="mercado-col-center">Ext</span>
+        <span></span>
+      </div>
       <div id="mercado-list" class="mercado-list"></div>
     </section>
 
