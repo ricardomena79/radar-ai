@@ -4,7 +4,7 @@ se reemplazan por versiones falsas dentro del módulo
 (`mv.build_tradier_provider`/`mv.load_universe`), mismo patrón de
 monkey-patching ya usado en `test_scan_stability.py`."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import atlas_live.market_view as mv
@@ -49,7 +49,18 @@ def _fake_normalize(symbol):
     return SimpleNamespace(query_symbol=symbol, state="ACTIVE")
 
 
-def _patch(monkeypatch, universe_symbols, quotes_by_symbol, fail_on_calls=None, chunk_size=None, types_by_symbol=None):
+def _patch(monkeypatch, universe_symbols, quotes_by_symbol, fail_on_calls=None, chunk_size=None,
+           types_by_symbol=None, yahoo_quotes_by_symbol=None, finnhub_quotes_by_symbol=None,
+           session="regular"):
+    """Por defecto, Yahoo/Finnhub quedan como no-op (nunca red real, nunca
+    fallback) -- exactamente el mismo comportamiento que antes del
+    multi-fuente para todos los tests que no pasan
+    `yahoo_quotes_by_symbol`/`finnhub_quotes_by_symbol` explícitamente.
+    `session` (default "regular", una sesión activa real) evita que estos
+    tests dependan del reloj real -- sin este patch, `market_hours.get_session()`
+    real podría devolver "closed" según el día/hora en que corran los
+    tests, y el guard nuevo de sesión (2026-09-01) bloquearía el fallback
+    en tests que no tienen nada que ver con esa regla."""
     types_by_symbol = types_by_symbol or {}
     assets = [_asset(s, types_by_symbol.get(s, "EQUITY")) for s in universe_symbols]
     universe_dict = {a.symbol: a for a in assets}
@@ -57,8 +68,40 @@ def _patch(monkeypatch, universe_symbols, quotes_by_symbol, fail_on_calls=None, 
     monkeypatch.setattr(mv, "load_universe", lambda: universe_dict)
     monkeypatch.setattr(mv, "build_tradier_provider", lambda: provider)
     monkeypatch.setattr(mv, "normalize", _fake_normalize)
+    # Solo se fuerza la sesión "actual" (llamada sin `now`, usada por
+    # `_run_cycle_body()` para decidir si el fallback puede activarse) --
+    # la clasificación de sesión de un timestamp puntual (`get_session(now=...)`,
+    # usada por el resolver para etiquetar el dato ganador) sigue siendo
+    # la función real, sin esto los tests de sesión del dato (H/I/J) se
+    # rompen (mismo módulo `market_hours` compartido por ambos).
+    real_get_session = mv.market_hours.get_session
+
+    def _fake_get_session(now=None):
+        if now is not None:
+            return real_get_session(now=now)
+        return session
+
+    monkeypatch.setattr(mv.market_hours, "get_session", _fake_get_session)
     if chunk_size is not None:
         monkeypatch.setattr(mv, "TRADIER_CHUNK_SIZE", chunk_size)
+
+    yahoo_quotes_by_symbol = yahoo_quotes_by_symbol or {}
+    finnhub_quotes_by_symbol = finnhub_quotes_by_symbol or {}
+
+    def _stats(attempted, success):
+        return {"attempted": attempted, "success": success, "errors": attempted - success, "aborted": 0}
+
+    def _fake_yahoo_batch(symbols):
+        found = {s: yahoo_quotes_by_symbol[s] for s in symbols if s in yahoo_quotes_by_symbol}
+        return found, _stats(len(symbols), len(found))
+
+    def _fake_finnhub_batch(symbols, finnhub_provider):
+        found = {s: finnhub_quotes_by_symbol[s] for s in symbols if s in finnhub_quotes_by_symbol}
+        return found, _stats(len(symbols), len(found))
+
+    monkeypatch.setattr(mv, "_fetch_yahoo_batch", _fake_yahoo_batch)
+    monkeypatch.setattr(mv, "_fetch_finnhub_batch", _fake_finnhub_batch)
+    monkeypatch.setattr(mv, "_build_finnhub_provider", lambda: object() if finnhub_quotes_by_symbol else None)
     return provider
 
 
@@ -489,3 +532,398 @@ def test_change_abs_none_si_no_hay_previous_close(monkeypatch):
     mv.run_market_cycle_once()
     row = mv.get_market_snapshot()["rows"][0]
     assert row["change_abs"] is None  # nunca inventado
+
+
+# =============================================================================
+# Multi-fuente Tradier -> Yahoo -> Finnhub (2026-08-31, autorizado explícitamente)
+# =============================================================================
+
+def test_multisource_tradier_fresco_no_dispara_fallback(monkeypatch):
+    """M) 'no duplicar requests innecesariamente' -- si Tradier ya está
+    fresco para TODOS los símbolos, Yahoo/Finnhub NUNCA se llaman."""
+    mv._last_known_by_symbol.clear()
+    yahoo_calls = []
+
+    def _spy_yahoo(symbols):
+        yahoo_calls.append(list(symbols))
+        return {}, mv._empty_circuit_stats()
+
+    q = _FakeQuote("AAA", 100.0, 5.0, previous_close=95.0, price_is_stale=False)
+    _patch(monkeypatch, ["AAA"], {"AAA": q})
+    monkeypatch.setattr(mv, "_fetch_yahoo_batch", _spy_yahoo)
+    mv.run_market_cycle_once()
+    assert yahoo_calls == []  # nunca se llamó -- Tradier ya estaba fresco
+    row = mv.get_market_snapshot()["rows"][0]
+    assert row["source"] == "tradier"
+    snap = mv.get_market_snapshot()
+    assert snap["yahoo_checked"] == 0
+
+
+def test_multisource_tradier_stale_yahoo_fresco_gana_yahoo(monkeypatch):
+    """Caso B end-to-end: Tradier stale, Yahoo fresco -> Mercado muestra Yahoo."""
+    mv._last_known_by_symbol.clear()
+    tq = _FakeQuote("AAA", 100.0, None, previous_close=95.0, price_is_stale=True)
+    yq = _FakeQuote("AAA", 103.0, 8.42, previous_close=95.0,
+                     timestamp=datetime.now(timezone.utc), price_is_stale=False)
+    _patch(monkeypatch, ["AAA"], {"AAA": tq}, yahoo_quotes_by_symbol={"AAA": yq})
+    mv.run_market_cycle_once()
+    snap = mv.get_market_snapshot()
+    row = snap["rows"][0]
+    assert row["source"] == "yahoo"
+    assert row["price"] == 103.0
+    assert row["data_status"] == "FRESCO"
+    assert snap["tradier_stale"] == 1
+    assert snap["yahoo_checked"] == 1
+    assert snap["yahoo_fresh"] == 1
+
+
+def test_multisource_tradier_yahoo_stale_finnhub_fresco_gana_finnhub(monkeypatch):
+    """Caso C end-to-end: Tradier y Yahoo stale -> Finnhub fresco gana."""
+    mv._last_known_by_symbol.clear()
+    tq = _FakeQuote("AAA", 100.0, None, previous_close=95.0, price_is_stale=True)
+    yq_vieja = _FakeQuote("AAA", 99.0, None, previous_close=95.0,
+                            timestamp=datetime.now(timezone.utc) - timedelta(hours=5))
+    fq = _FakeQuote("AAA", 104.0, 9.47, previous_close=95.0,
+                     timestamp=datetime.now(timezone.utc), price_is_stale=False)
+    _patch(monkeypatch, ["AAA"], {"AAA": tq},
+           yahoo_quotes_by_symbol={"AAA": yq_vieja}, finnhub_quotes_by_symbol={"AAA": fq})
+    mv.run_market_cycle_once()
+    snap = mv.get_market_snapshot()
+    row = snap["rows"][0]
+    assert row["source"] == "finnhub"
+    assert row["price"] == 104.0
+    assert snap["finnhub_checked"] == 1
+    assert snap["finnhub_fresh"] == 1
+
+
+def test_multisource_las_tres_stale_usa_cache_marca_source_cache(monkeypatch):
+    """Caso D end-to-end: las 3 fuentes stale -> usa el último dato
+    conocido de Mercado, marcado STALE con source='cache'."""
+    mv._last_known_by_symbol.clear()
+    # Ciclo 1: Tradier fresco, se guarda en cache.
+    tq_fresco = _FakeQuote("AAA", 100.0, 5.0, previous_close=95.0, price_is_stale=False)
+    provider = _patch(monkeypatch, ["AAA"], {"AAA": tq_fresco})
+    mv.run_market_cycle_once()
+    assert mv.get_market_snapshot()["rows"][0]["source"] == "tradier"
+
+    # Ciclo 2: Tradier stale, Yahoo/Finnhub sin dato -> debe usar cache.
+    tq_stale = _FakeQuote("AAA", 100.0, None, previous_close=95.0, price_is_stale=True)
+    provider.quotes_by_symbol = {"AAA": tq_stale}
+    mv.run_market_cycle_once()
+    snap = mv.get_market_snapshot()
+    row = snap["rows"][0]
+    assert row["source"] == "cache"
+    assert row["data_status"] == "STALE"
+    assert row["price"] == 100.0  # el dato fresco del ciclo 1, conservado
+    assert snap["cache_used"] == 1
+
+
+def test_multisource_cache_se_actualiza_cuando_cambia_la_fuente(monkeypatch):
+    """N) el cache de último dato conocido se actualiza con la fuente que
+    gane, no solo con Tradier -- si Yahoo aporta el dato fresco, el
+    siguiente ciclo (todo stale) debe conservar el precio de YAHOO."""
+    mv._last_known_by_symbol.clear()
+    tq = _FakeQuote("AAA", 100.0, None, previous_close=95.0, price_is_stale=True)
+    yq = _FakeQuote("AAA", 107.5, 13.16, previous_close=95.0,
+                     timestamp=datetime.now(timezone.utc), price_is_stale=False)
+    provider = _patch(monkeypatch, ["AAA"], {"AAA": tq}, yahoo_quotes_by_symbol={"AAA": yq})
+    mv.run_market_cycle_once()
+    assert mv.get_market_snapshot()["rows"][0]["price"] == 107.5  # gano Yahoo
+
+    # Ciclo 2: ahora ninguna fuente responde -- debe conservar 107.5 (de Yahoo), no 100.0 (de Tradier).
+    provider.quotes_by_symbol = {"AAA": tq}
+    monkeypatch.setattr(mv, "_fetch_yahoo_batch", lambda symbols: ({}, mv._empty_circuit_stats()))
+    mv.run_market_cycle_once()
+    row = mv.get_market_snapshot()["rows"][0]
+    assert row["source"] == "cache"
+    assert row["price"] == 107.5
+
+
+def test_multisource_overnight_sin_proveedor_no_se_inventa(monkeypatch):
+    """K) ninguna fuente entrega overnight hoy -> `overnight_disponible`
+    siempre False, nunca inventado."""
+    mv._last_known_by_symbol.clear()
+    tq = _FakeQuote("AAA", 100.0, None, previous_close=95.0, price_is_stale=True)
+    yq = _FakeQuote("AAA", 101.0, 6.32, previous_close=95.0,
+                     timestamp=datetime.now(timezone.utc), price_is_stale=False)
+    _patch(monkeypatch, ["AAA"], {"AAA": tq}, yahoo_quotes_by_symbol={"AAA": yq})
+    mv.run_market_cycle_once()
+    row = mv.get_market_snapshot()["rows"][0]
+    assert row["overnight_disponible"] is False
+
+
+def test_multisource_sesion_del_dato_ganador_se_expone(monkeypatch):
+    """H/I/J) la sesión expuesta (`session_dato`) corresponde al timestamp
+    real del dato ganador, no al reloj actual."""
+    mv._last_known_by_symbol.clear()
+    ts_regular = datetime(2026, 9, 1, 15, 0, 0, tzinfo=timezone.utc)  # 11:00 ET martes = regular
+    tq = _FakeQuote("AAA", 100.0, 5.0, previous_close=95.0, price_is_stale=False, timestamp=ts_regular)
+    _patch(monkeypatch, ["AAA"], {"AAA": tq})
+    mv.run_market_cycle_once()
+    row = mv.get_market_snapshot()["rows"][0]
+    assert row["session_dato"] == "REGULAR"
+
+
+# =============================================================================
+# Top N por movimiento (2026-08-31, pedido explícito: "simplificar Mercado
+# a lo que realmente necesitamos" -- Mercado muestra únicamente las
+# primeras MERCADO_TOP_N filas del ranking ya ordenado, nunca el universo
+# completo -- los conteos de auditoría siguen siendo sobre el universo
+# completo).
+# =============================================================================
+
+def test_mercado_nunca_corre_dos_ciclos_simultaneos(monkeypatch):
+    """Pedido explícito: 'nunca ejecutar ciclos simultáneos'. El lock ya
+    existente (`_lock.acquire(blocking=False)`) debe rechazar una segunda
+    llamada mientras la primera sigue "corriendo" (simulado reteniendo
+    el lock manualmente)."""
+    mv._last_known_by_symbol.clear()
+    _patch(monkeypatch, ["AAA"], {"AAA": _FakeQuote("AAA", 10.0, 5.0)})
+    assert mv._lock.acquire(blocking=False)  # simula un ciclo ya en curso
+    try:
+        resultado = mv.run_market_cycle_once()
+        assert resultado is None  # rechazado, nunca corre en paralelo
+    finally:
+        mv._lock.release()
+    # liberado el lock, un ciclo normal sí debe correr
+    assert mv.run_market_cycle_once() is not None
+
+
+def test_mercado_muestra_solo_top_n_pero_audita_universo_completo(monkeypatch):
+    mv._last_known_by_symbol.clear()
+    symbols = [f"SYM{i}" for i in range(150)]
+    quotes = {s: _FakeQuote(s, 10.0, float(i), price_is_stale=False) for i, s in enumerate(symbols)}
+    monkeypatch.setattr(mv, "MERCADO_TOP_N", 100)
+    _patch(monkeypatch, symbols, quotes)
+    mv.run_market_cycle_once()
+    snap = mv.get_market_snapshot()
+
+    assert len(snap["rows"]) == 100  # solo se muestran 100, aunque el universo tenga 150
+    assert snap["total_universe"] == 150  # la auditoría sigue siendo del universo completo
+    assert snap["frescos"] == 150  # el conteo de frescos NO se recorta -- son 150 símbolos frescos reales
+
+    # Los 100 mostrados deben ser EXACTAMENTE los 100 de mayor change_pct
+    # (SYM149..SYM50, change_pct de 149.0 a 50.0), en orden descendente.
+    esperados = [f"SYM{i}" for i in range(149, 49, -1)]
+    assert [r["symbol"] for r in snap["rows"]] == esperados
+    assert [r["rank"] for r in snap["rows"]] == list(range(1, 101))
+
+
+def test_mercado_top_n_configurable_por_env(monkeypatch):
+    mv._last_known_by_symbol.clear()
+    symbols = [f"SYM{i}" for i in range(10)]
+    quotes = {s: _FakeQuote(s, 10.0, float(i), price_is_stale=False) for i, s in enumerate(symbols)}
+    monkeypatch.setattr(mv, "MERCADO_TOP_N", 3)
+    _patch(monkeypatch, symbols, quotes)
+    mv.run_market_cycle_once()
+    rows = mv.get_market_snapshot()["rows"]
+    assert [r["symbol"] for r in rows] == ["SYM9", "SYM8", "SYM7"]
+
+
+def test_mercado_reordena_top_n_cuando_cambian_precios_entre_ciclos(monkeypatch):
+    """Verifica que, con universo grande (> top N), el ranking mostrado se
+    recalcula correctamente cuando los precios cambian entre ciclos --
+    mismo criterio que test_D, a escala del recorte top-N."""
+    mv._last_known_by_symbol.clear()
+    symbols = [f"SYM{i}" for i in range(120)]
+    monkeypatch.setattr(mv, "MERCADO_TOP_N", 50)
+    quotes_ciclo1 = {s: _FakeQuote(s, 10.0, float(i), price_is_stale=False) for i, s in enumerate(symbols)}
+    provider = _patch(monkeypatch, symbols, quotes_ciclo1)
+    mv.run_market_cycle_once()
+    top1 = [r["symbol"] for r in mv.get_market_snapshot()["rows"]]
+    assert top1[0] == "SYM119"  # el más alto del ciclo 1
+
+    # SYM0 (antes el último) pega un salto fuerte -> debe pasar al frente
+    # del top mostrado en el ciclo siguiente.
+    quotes_ciclo2 = dict(quotes_ciclo1)
+    quotes_ciclo2["SYM0"] = _FakeQuote("SYM0", 10.0, 500.0, price_is_stale=False)
+    provider.quotes_by_symbol = quotes_ciclo2
+    mv.run_market_cycle_once()
+    top2 = [r["symbol"] for r in mv.get_market_snapshot()["rows"]]
+    assert top2[0] == "SYM0"
+    assert top2 != top1
+
+
+def test_multisource_sin_finnhub_key_no_intenta_finnhub(monkeypatch):
+    """Sin FINNHUB_API_KEY (provider=None) -- Finnhub nunca se intenta,
+    degradación segura (mismo criterio que build_tradier_provider)."""
+    mv._last_known_by_symbol.clear()
+    finnhub_calls = []
+
+    def _spy_finnhub_provider():
+        finnhub_calls.append(1)
+        return None
+
+    tq = _FakeQuote("AAA", 100.0, None, previous_close=95.0, price_is_stale=True)
+    yq_vieja = _FakeQuote("AAA", 99.0, None, previous_close=95.0,
+                            timestamp=datetime.now(timezone.utc) - timedelta(hours=5))
+    _patch(monkeypatch, ["AAA"], {"AAA": tq}, yahoo_quotes_by_symbol={"AAA": yq_vieja})
+    monkeypatch.setattr(mv, "_build_finnhub_provider", _spy_finnhub_provider)
+    mv.run_market_cycle_once()
+    assert finnhub_calls == [1]  # se intento construir el provider
+    row = mv.get_market_snapshot()["rows"][0]
+    assert row["source"] != "finnhub"  # pero sin key, nunca puede ganar
+
+
+# =============================================================================
+# Optimización del fallback -- sesión cerrada + circuit breaker + batch real
+# de Yahoo (2026-09-01, autorizado explícitamente tras medir 421s/2.577
+# llamadas Yahoo/1.687 errores en la prueba real anterior con el mercado
+# cerrado).
+# =============================================================================
+
+def test_cerrado_nunca_dispara_fallback_yahoo_finnhub(monkeypatch):
+    """Test de seguridad pedido explícitamente (punto 11): session=='closed'
+    -> CERO llamadas a Yahoo/Finnhub, sin importar cuántos símbolos de
+    Tradier estén stale (acá los 30/30 lo están -- el peor caso real
+    medido). El universo completo se sigue representando (último dato
+    conocido / SIN_DATO), Tradier se sigue consultando (barato)."""
+    mv._last_known_by_symbol.clear()
+    yahoo_calls = []
+    finnhub_calls = []
+
+    def _spy_yahoo(symbols):
+        yahoo_calls.append(list(symbols))
+        return {}, mv._empty_circuit_stats()
+
+    def _spy_finnhub(symbols, provider):
+        finnhub_calls.append(list(symbols))
+        return {}, mv._empty_circuit_stats()
+
+    symbols = [f"SYM{i}" for i in range(30)]
+    quotes = {s: _FakeQuote(s, 10.0, None, price_is_stale=True) for s in symbols}  # TODOS stale
+    _patch(monkeypatch, symbols, quotes, session="closed")
+    monkeypatch.setattr(mv, "_fetch_yahoo_batch", _spy_yahoo)
+    monkeypatch.setattr(mv, "_fetch_finnhub_batch", _spy_finnhub)
+    mv.run_market_cycle_once()
+
+    assert yahoo_calls == []
+    assert finnhub_calls == []
+    snap = mv.get_market_snapshot()
+    assert snap["yahoo_attempted"] == 0
+    assert snap["finnhub_attempted"] == 0
+    assert len(snap["rows"]) == 30  # el universo se sigue representando
+
+
+def test_activa_si_dispara_fallback_cuando_hay_stale(monkeypatch):
+    """Contraprueba de la anterior: la MISMA situación (todo Tradier-stale)
+    en sesión activa SÍ debe intentar el fallback -- confirma que el
+    guard de 'closed' es específico, no una regresión general."""
+    mv._last_known_by_symbol.clear()
+    yahoo_calls = []
+
+    def _spy_yahoo(symbols):
+        yahoo_calls.append(list(symbols))
+        return {}, mv._empty_circuit_stats()
+
+    symbols = [f"SYM{i}" for i in range(5)]
+    quotes = {s: _FakeQuote(s, 10.0, None, price_is_stale=True) for s in symbols}
+    _patch(monkeypatch, symbols, quotes, session="premarket")
+    monkeypatch.setattr(mv, "_fetch_yahoo_batch", _spy_yahoo)
+    mv.run_market_cycle_once()
+    assert len(yahoo_calls) == 1
+    assert sorted(yahoo_calls[0]) == sorted(symbols)
+
+
+def test_yahoo_usa_get_quotes_batch_no_una_sesion_por_simbolo(monkeypatch):
+    """Punto 3 del pedido: reutilizar el batch YA EXISTENTE
+    (`YahooFinanceProvider.get_quotes()`, sesión HTTP compartida vía
+    `yf.Tickers`) en vez de una sesión nueva por símbolo
+    (`yf.Ticker(symbol).info`). Se llama a la función REAL
+    `_fetch_yahoo_batch` (sin mockear), reemplazando solo
+    `get_quotes()` -- si el código siguiera pidiendo una cotización por
+    símbolo, `calls` tendría 85 entradas, no 3."""
+    calls = []
+
+    def _fake_get_quotes(self, symbols):
+        calls.append(list(symbols))
+        return []
+
+    monkeypatch.setattr(mv.YahooFinanceLiveProvider, "get_quotes", _fake_get_quotes)
+    monkeypatch.setattr(mv, "YAHOO_BATCH_SIZE", 40)
+    monkeypatch.setattr(mv, "YAHOO_BATCH_WORKERS", 4)
+    symbols = [f"SYM{i}" for i in range(85)]  # 85 -> 3 chunks de <=40
+    mv._fetch_yahoo_batch(symbols)
+    assert len(calls) == 3
+    assert sorted(len(c) for c in calls) == [5, 40, 40]
+    assert sorted(s for c in calls for s in c) == sorted(symbols)
+
+
+def test_circuit_breaker_yahoo_abre_tras_error_rate_alto_y_aborta_el_resto(monkeypatch):
+    """Punto 4 del pedido: si Yahoo empieza a fallar sistemáticamente,
+    Mercado deja de encolar chunks nuevos y cuenta el resto como
+    'aborted' -- Yahoo no puede mantener bloqueado el ciclo entero."""
+    calls = []
+
+    def _always_fail(symbols):
+        calls.append(list(symbols))
+        raise RuntimeError("Yahoo caído")
+
+    monkeypatch.setattr(mv, "_fetch_yahoo_chunk", _always_fail)
+    monkeypatch.setattr(mv, "YAHOO_BATCH_SIZE", 10)
+    monkeypatch.setattr(mv, "YAHOO_BATCH_WORKERS", 2)
+    monkeypatch.setattr(mv, "CIRCUIT_MIN_SAMPLE", 20)
+    monkeypatch.setattr(mv, "CIRCUIT_ERROR_RATE", 0.85)
+
+    symbols = [f"SYM{i}" for i in range(200)]  # 20 chunks de 10
+    result, stats = mv._fetch_yahoo_batch(symbols)
+    assert result == {}
+    assert stats["aborted"] > 0
+    assert len(calls) < 20  # se frenó antes de intentar los 20 chunks
+    assert stats["attempted"] + stats["aborted"] == 200
+
+
+def test_circuit_breaker_yahoo_ratelimit_abre_de_inmediato(monkeypatch):
+    """Un RateLimitError explícito (Yahoo ya está diciendo 'parame') abre
+    el circuito de inmediato, sin esperar la muestra mínima."""
+    calls = []
+
+    def _rate_limited(symbols):
+        calls.append(list(symbols))
+        from atlas.data.providers.base import RateLimitError
+        raise RateLimitError("rate limited")
+
+    monkeypatch.setattr(mv, "_fetch_yahoo_chunk", _rate_limited)
+    monkeypatch.setattr(mv, "YAHOO_BATCH_SIZE", 10)
+    monkeypatch.setattr(mv, "YAHOO_BATCH_WORKERS", 1)  # secuencial, fácil de razonar
+    monkeypatch.setattr(mv, "CIRCUIT_MIN_SAMPLE", 1000)  # si abre, fue por RateLimitError
+
+    symbols = [f"SYM{i}" for i in range(100)]  # 10 chunks
+    result, stats = mv._fetch_yahoo_batch(symbols)
+    assert len(calls) == 1
+    assert stats["aborted"] == 90
+
+
+def test_circuit_breaker_finnhub_aborta_tras_errores(monkeypatch):
+    """Mismo circuit breaker para Finnhub -- 'mejor esfuerzo', nunca
+    bloquea Mercado esperando a que se resuelvan todos los símbolos."""
+    monkeypatch.setattr(mv, "CIRCUIT_MIN_SAMPLE", 5)
+    monkeypatch.setattr(mv, "CIRCUIT_ERROR_RATE", 0.8)
+    monkeypatch.setattr(mv, "FINNHUB_BATCH_WORKERS", 2)
+
+    class _FailingProvider:
+        def get_quote(self, symbol):
+            raise RuntimeError("Finnhub caído")
+
+    symbols = [f"SYM{i}" for i in range(50)]
+    result, stats = mv._fetch_finnhub_batch(symbols, _FailingProvider())
+    assert result == {}
+    assert stats["aborted"] > 0
+    assert stats["attempted"] < 50
+
+
+def test_symbols_override_limita_el_universo_del_ciclo(monkeypatch):
+    """Solo para pruebas/diagnóstico reales de alcance acotado -- nunca
+    usado por el hilo de fondo. Confirma que limita el universo sin
+    romper el resto del ciclo."""
+    mv._last_known_by_symbol.clear()
+    quotes = {
+        "AAA": _FakeQuote("AAA", 10.0, 5.0),
+        "BBB": _FakeQuote("BBB", 20.0, -2.0),
+        "CCC": _FakeQuote("CCC", 30.0, 1.0),
+    }
+    _patch(monkeypatch, ["AAA", "BBB", "CCC"], quotes)
+    mv.run_market_cycle_once(symbols_override=["AAA", "CCC"])
+    snap = mv.get_market_snapshot()
+    assert snap["total_universe"] == 2
+    assert {r["symbol"] for r in snap["rows"]} == {"AAA", "CCC"}

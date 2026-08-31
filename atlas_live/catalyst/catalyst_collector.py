@@ -115,12 +115,18 @@ def process_news_item(
         price_change_since_published_pct=price_change,
     )
 
+    # `event_date` = fecha real de publicación (nunca inventada) -- sin esto
+    # `list_upcoming_events()` (filtra `event_date IS NOT NULL`) excluía
+    # TODO catalizador de noticia del calendario/ranking, aunque el radar
+    # hubiera detectado un movimiento real hoy (bug real confirmado
+    # 2026-08-31, 19/100 noticias reales en producción con event_date=NULL).
     catalyst_id = reg.upsert_catalyst_event(
         ticker=ticker, catalyst_type=clasificado.catalyst_type, headline=headline,
         source="finnhub_company_news", importance=clasificado.importance,
         direction=clasificado.direction, confidence=clasificado.confidence,
         summary=summary, source_id=(str(item["id"]) if item.get("id") is not None else None),
         url=item.get("url"), published_at=(published_at.isoformat() if published_at else None),
+        event_date=(published_at.date().isoformat() if published_at else None),
         racional_available=_racional_available(ticker),
     )
     reg.record_lifecycle_transition(

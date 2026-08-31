@@ -157,6 +157,55 @@ def test_process_earnings_calendar_item_calcula_racional_available_real(monkeypa
         _restore()
 
 
+def test_process_news_item_evento_date_cadena_completa_hasta_ranking(monkeypatch):
+    """Fix 2026-08-31 -- antes de este fix, toda noticia real quedaba con
+    `event_date=NULL` y por lo tanto invisible para `list_upcoming_events()`
+    (calendario_completo) y, en consecuencia, para `top_catalyst_opportunities`
+    (que se arma exclusivamente a partir de esa lista, ver `server.py`).
+    Cadena completa: noticia real procesada -> event_date no nulo ->
+    catalyst_registry la conserva -> aparece en calendario_completo
+    (list_upcoming_events) -> puede llegar a top_catalyst_opportunities
+    (is_relevant_for_ranking)."""
+    _fresh()
+    try:
+        from types import SimpleNamespace
+        from atlas_live.catalyst import catalyst_market_join as mj
+
+        monkeypatch.setattr("atlas.data.universe.is_available", lambda t: t == "ZYME")
+        now = datetime(2026, 8, 31, 14, 0, tzinfo=timezone.utc)
+        item = {
+            "id": 999, "headline": "ZYME Announces Positive Topline Phase 3 Results",
+            "summary": "Meets primary endpoint.", "url": "https://example.com/n/999",
+            "datetime": int(now.timestamp()) - 1800,
+        }
+
+        resultado = coll.process_news_item("ZYME", item, now)
+
+        # 1) event_date no nulo, conservado por catalyst_registry
+        eventos = reg.get_events_for_ticker("ZYME")
+        assert len(eventos) == 1
+        assert eventos[0]["event_date"] == "2026-08-31"
+
+        # 2) aparece en calendario_completo (list_upcoming_events)
+        upcoming = reg.list_upcoming_events(days_ahead=14, reference_date="2026-08-31")
+        assert any(e["ticker"] == "ZYME" and e["source_id"] == "999" for e in upcoming)
+
+        # 3) puede llegar a top_catalyst_opportunities -- movimiento real
+        # (RVOL alto) sin ser candidata tecnica de hoy, mismo camino que
+        # usa server.py::api_catalyst_events() para decidir relevancia.
+        catalyst_row = next(e for e in upcoming if e["source_id"] == "999")
+        quote = SimpleNamespace(
+            last_price=12.5, change_percent=9.2, volume=500000, average_volume=100000,
+            relative_volume=5.0, open=11.9, previous_close=11.45,
+        )
+        enriched = mj.enrich_catalyst_row(
+            catalyst_row, resultado["lifecycle_state"], {"ZYME": quote}, None, now,
+        )
+        assert mj.is_relevant_for_ranking(enriched) is True
+    finally:
+        _restore()
+
+
 if __name__ == "__main__":
     import traceback
 
