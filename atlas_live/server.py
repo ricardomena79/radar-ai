@@ -313,6 +313,47 @@ def api_mercado():
     return jsonify(market_view.get_market_snapshot())
 
 
+@app.route("/api/admin/mercado-cycle-now", methods=["POST"])
+def api_admin_mercado_cycle_now():
+    """Disparo manual, bajo demanda, de UN ciclo real de Mercado
+    (2026-08-31, autorizado explícitamente) -- reutiliza
+    `market_view.run_market_cycle_once()` tal cual, sin duplicar su
+    lógica. NO reemplaza ni modifica el hilo de fondo automático
+    (`market_view.start_market_view()`), que sigue respetando el guard de
+    sesión cerrada sin cambios -- Mercado NO se convierte en un worker
+    24/7, este endpoint es solo la forma de forzar un ciclo puntual antes
+    de que el reloj llegue a sesión activa. No-reentrante: reutiliza el
+    mismo lock que ya protege `run_market_cycle_once()` (`_lock.acquire(blocking=False)`)
+    -- si ya hay un ciclo en curso (del hilo automático o de otra llamada
+    a este mismo endpoint), esta llamada devuelve de inmediato sin
+    esperar ni disparar un segundo ciclo simultáneo. Protegido con
+    `ATLAS_ADMIN_TOKEN` (mismo patrón fail-closed que el resto de
+    `/api/admin/*`, header `X-Admin-Token` o `?token=`)."""
+    if not _admin_token_ok():
+        return jsonify({"error": "no autorizado"}), 403
+
+    duration = market_view.run_market_cycle_once()
+    snap = market_view.get_market_snapshot()
+    if duration is None:
+        # `None` cubre dos casos reales, nunca se inventa cuál fue: el
+        # lock ya estaba tomado (otro ciclo real en curso, ni se intenta
+        # uno nuevo) o el ciclo corrió y terminó en excepción real
+        # (queda en `ultimo_error`, ya seteado por run_market_cycle_once()).
+        motivo = "ciclo_fallido" if snap.get("ultimo_error") else "ciclo_ya_en_curso_no_se_disparo_otro"
+        return jsonify({"disparado": False, "motivo": motivo, "snapshot": snap}), 202
+
+    return jsonify({
+        "disparado": True,
+        "duration_s": duration,
+        "total_universe": snap.get("total_universe"),
+        "filas_mostradas": len(snap.get("rows", [])),
+        "cycles_total": snap.get("cycles_total"),
+        "cycles_ok": snap.get("cycles_ok"),
+        "cycles_error": snap.get("cycles_error"),
+        "session_at_generation": snap.get("session_at_generation"),
+    }), 200
+
+
 @app.route("/api/radar-universo")
 def api_radar_universo():
     """Radar de universo completo (CAPA 2, 2026-08-14): estado del Hilo A
