@@ -15,7 +15,7 @@ llama a `main()`, solo importa `app`.
 import os
 from pathlib import Path
 
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, jsonify, redirect, request, send_from_directory
 
 from atlas.data.collectors.data_collector import DataCollector
 from atlas_live import evolution_panel, explosive_config, hot_quote, performance_panel, scan_worker
@@ -113,7 +113,12 @@ market_view.start_market_view()
 
 @app.route("/")
 def index():
-    return send_from_directory(STATIC_DIR, "index.html")
+    # La raiz servia atlas_live/static/index.html -- una app legacy
+    # ("Atlas Live": Radar Explosivo/General/Watchlist/Diagnostico)
+    # distinta de la Cabina del Piloto real (cabina/index.html, donde vive
+    # Mercado). Redirige para que el dominio siempre abra la Cabina; la
+    # app legacy sigue existiendo en disco, solo deja de ser la raiz.
+    return redirect("/cabina/index.html")
 
 
 @app.route("/<path:filename>")

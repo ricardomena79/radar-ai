@@ -36,6 +36,15 @@ def test_cabina_index_agrega_version_a_js_y_css():
     assert 'href="cabina.css"' not in html
 
 
+def test_raiz_redirige_a_cabina_del_piloto():
+    """La raiz servia la app legacy (atlas_live/static/index.html) en vez
+    de la Cabina del Piloto real -- se agrega la redireccion (2026-08-30)
+    sin borrar el archivo legacy, que sigue accesible en disco."""
+    r = _client().get("/", follow_redirects=False)
+    assert r.status_code in (301, 302)
+    assert r.headers["Location"] == "/cabina/index.html"
+
+
 def test_cabina_js_sigue_sirviendose_normal_con_query_string():
     """El archivo real (`cabina.js`) sigue siendo servido tal cual por
     `send_from_directory` -- la versión solo cambia la URL, nunca el
