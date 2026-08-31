@@ -734,8 +734,11 @@ html, body {
   --mkt-bg: #ffffff;
   --mkt-bg-alt: #f8f9fb;
   --mkt-bg-hover: #f1f3f6;
-  --mkt-text: #16181d;
-  --mkt-text-dim: #6b7280;
+  /* Ajuste visual (2026-08-31, pedido explícito): TODO el texto de
+     Mercado es negro -- el único color condicional vive en
+     .mercado-up/.mercado-down, aplicados solo a Cambio %. */
+  --mkt-text: #000000;
+  --mkt-text-dim: #000000;
   --mkt-border: #e5e7eb;
   --mkt-up: #0f9d58;
   --mkt-down: #d93025;
@@ -759,6 +762,7 @@ html, body {
   margin-left: auto;
 }
 .mercado-search:focus { outline: 1px solid var(--mkt-accent); }
+.mercado-search::placeholder { color: var(--mkt-text-dim); }
 #view-mercado .header-meta { color: var(--mkt-text-dim); font-size: 12px; padding: 2px 4px 8px; }
 #view-mercado .empty-state { color: var(--mkt-text-dim); }
 

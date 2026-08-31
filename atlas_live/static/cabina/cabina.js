@@ -3031,14 +3031,22 @@ function renderMercado() {
   }
 
   listEl.innerHTML = filtered.map(r => {
+    // Ajuste visual (2026-08-31, pedido explícito): todo el texto de
+    // Mercado es negro -- el ÚNICO color condicional es Cambio %
+    // (positivo=verde, negativo=rojo, cero=negro/neutro). Cambio $ queda
+    // siempre negro, nunca coloreado. `isUp` sigue usándose solo para el
+    // color del sparkline (no es texto).
     const isUp = (r.change_pct ?? 0) >= 0;
-    const priceText = r.price != null ? r.price.toFixed(2) : '<span class="dim">--</span>';
+    const priceText = r.price != null ? r.price.toFixed(2) : "--";
     const changeAbsText = r.change_abs == null
-      ? '<span class="dim">s/d</span>'
-      : `<span class="${isUp ? "mercado-up" : "mercado-down"}">${r.change_abs >= 0 ? "+" : ""}${r.change_abs.toFixed(2)}</span>`;
+      ? "s/d"
+      : `${r.change_abs >= 0 ? "+" : ""}${r.change_abs.toFixed(2)}`;
+    let pctClass = "";
+    if (r.change_pct > 0) pctClass = "mercado-up";
+    else if (r.change_pct < 0) pctClass = "mercado-down";
     const changePctText = r.change_pct == null
-      ? '<span class="dim">s/d</span>'
-      : `<span class="${isUp ? "mercado-up" : "mercado-down"}">${isUp ? "+" : ""}${r.change_pct.toFixed(2)}%</span>`;
+      ? "s/d"
+      : `<span class="${pctClass}">${r.change_pct > 0 ? "+" : ""}${r.change_pct.toFixed(2)}%</span>`;
 
     // Columna "Ext" -- indicador compacto de frescura del dato (pedido
     // explícito: mostrar precio extendido/stale claramente, estilo
