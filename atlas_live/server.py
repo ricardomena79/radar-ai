@@ -13,9 +13,13 @@ llama a `main()`, solo importa `app`.
 """
 
 import os
+import sys
+import traceback
+from datetime import datetime, timezone
 from pathlib import Path
 
 from flask import Flask, jsonify, redirect, request, send_from_directory
+from flask import got_request_exception
 
 from atlas.data.collectors.data_collector import DataCollector
 from atlas_live import evolution_panel, explosive_config, hot_quote, performance_panel, scan_worker
@@ -29,6 +33,37 @@ from atlas_live.signals import signal_registry, signal_tracker
 STATIC_DIR = Path(__file__).parent / "static"
 
 app = Flask(__name__, static_folder=None)
+
+# Instrumentación temporal de diagnóstico (2026-09-01, autorizado
+# explícitamente): Railway no está mostrando el traceback real de los 500
+# de /api/memory-engine (ni por request-id ni por rango horario) en su
+# visor de logs. Se usa la señal `got_request_exception` de Flask --
+# puramente observacional, NUNCA cambia la respuesta que recibe el
+# cliente (Flask sigue devolviendo exactamente el mismo 500 genérico de
+# siempre; esta señal se dispara en paralelo, no reemplaza nada) -- solo
+# imprime a stderr (mismo canal que Railway sí captura, patrón ya probado
+# esta sesión en radar_worker.py::_record_error()) un marcador buscable +
+# el traceback completo. Nunca registra el body/headers de la request
+# (podrían traer tokens/datos sensibles) -- solo path, método, tipo de
+# excepción, mensaje y el traceback del CÓDIGO (nunca credenciales).
+def _log_unhandled_exception(sender, exception, **extra):
+    marcador = "MEMORY_ENGINE_EXCEPTION" if request.path == "/api/memory-engine" else "ATLAS_UNHANDLED_EXCEPTION"
+    try:
+        tb_text = "".join(traceback.format_exception(type(exception), exception, exception.__traceback__))
+    except Exception:
+        tb_text = "traceback no disponible"
+    try:
+        print(
+            f"[{marcador}] {datetime.now(timezone.utc).isoformat()} "
+            f"path={request.path} method={request.method} "
+            f"tipo={type(exception).__name__} mensaje={exception}\n{tb_text}",
+            file=sys.stderr, flush=True,
+        )
+    except Exception:
+        pass  # el registro de un error NUNCA puede convertirse en una causa nueva de fallo
+
+
+got_request_exception.connect(_log_unhandled_exception, app)
 
 # Reinicio del aprendizaje anterior (2026-08-15, "Reinicio v2" -- pedido
 # explícito del usuario): las 73.123 observaciones "v1" del Memory Store, el

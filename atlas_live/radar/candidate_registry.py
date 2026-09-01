@@ -26,6 +26,7 @@ fila de `candidate_detection` queda, se resuelva bien o mal.
 import json
 import os as _os
 import sqlite3
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -255,6 +256,9 @@ CREATE INDEX IF NOT EXISTS idx_shadow_decision_date ON shadow_decision_log(marke
 """
 
 _schema_ready_for: Optional[str] = None
+# Lock de migración (2026-09-01, fix de concurrencia -- autorizado
+# explícitamente, cambio mínimo, solo sincronización, ver `_ensure_schema()`).
+_schema_lock = threading.Lock()
 
 
 def _ensure_column(conn: sqlite3.Connection, table: str, column: str, decl: str) -> None:
@@ -268,13 +272,23 @@ def _ensure_column(conn: sqlite3.Connection, table: str, column: str, decl: str)
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
 
-def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH, timeout=15)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=15000")
+def _ensure_schema(conn: sqlite3.Connection) -> None:
+    """Migra el esquema una sola vez por proceso -- protegido por
+    `_schema_lock` (2026-09-01, fix de concurrencia, autorizado
+    explícitamente): antes, dos hilos/requests podían llamar a `_connect()`
+    casi al mismo tiempo justo después de un reinicio (con
+    `_schema_ready_for` todavía en `None`), y ambos intentaban correr esta
+    migración a la vez -- colisión real posible en `ALTER TABLE ADD COLUMN`
+    (el segundo hilo la encuentra ya agregada por el primero). El
+    double-check de abajo (`if _schema_ready_for == str(DB_PATH): return`,
+    ya DENTRO del lock) evita que un hilo que esperó el lock repita la
+    migración que otro ya terminó mientras esperaba. Ningún cambio de
+    tabla/columna/query respecto a antes -- exclusivamente sincronización;
+    el cuerpo de la migración es idéntico, solo se movió a esta función."""
     global _schema_ready_for
-    if _schema_ready_for != str(DB_PATH):
+    with _schema_lock:
+        if _schema_ready_for == str(DB_PATH):
+            return  # otro hilo ya la corrió mientras este esperaba el lock
         conn.executescript(_SCHEMA)
         _ensure_column(conn, "candidate_detection", "es_senal", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(conn, "candidate_detection", "phase_tag", "TEXT")
@@ -367,6 +381,15 @@ def _connect() -> sqlite3.Connection:
         _ensure_column(conn, "candidate_detection", "pm_volume_at_detection", "INTEGER")
         _ensure_column(conn, "candidate_detection", "pm_dollar_volume_at_detection", "REAL")
         _schema_ready_for = str(DB_PATH)
+
+
+def _connect() -> sqlite3.Connection:
+    conn = sqlite3.connect(DB_PATH, timeout=15)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=15000")
+    if _schema_ready_for != str(DB_PATH):
+        _ensure_schema(conn)
     return conn
 
 

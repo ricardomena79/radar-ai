@@ -1,6 +1,8 @@
 """Tests del registro de candidatas del radar (2026-08-14). DB temporal, sin red."""
 
 import tempfile
+import threading
+import time
 import uuid as _uuid
 from pathlib import Path
 
@@ -18,6 +20,113 @@ def _fresh():
 
 def _restore():
     reg.DB_PATH = _ORIG
+
+
+# --- Concurrencia de migración de esquema (2026-09-01, autorizado
+# explícitamente): incidente real de producción -- dos hilos/requests
+# podían llamar a _connect() casi al mismo tiempo justo después de un
+# reinicio (_schema_ready_for todavía en None), colisionando en
+# ALTER TABLE ADD COLUMN. Fix: _schema_lock + double-check dentro de
+# _ensure_schema(). Este test reproduce la condición de carrera de forma
+# determinística (Barrier + retraso artificial dentro de _ensure_column,
+# nunca dependiendo de la suerte del scheduler real). ---
+
+def test_migracion_concurrente_no_colisiona(monkeypatch):
+    """Escenario real de producción: el ARCHIVO ya existe con el esquema
+    completo y WAL ya activado (persiste entre reinicios, ej. el Volume de
+    Railway) -- lo único que se resetea al reiniciar el proceso es
+    `_schema_ready_for` (variable en memoria, vuelve a `None`). Por eso el
+    setup acá corre `_connect()` una vez PRIMERO para crear el archivo real
+    con su esquema, y recién después resetea el flag en memoria -- así el
+    test aísla específicamente la carrera de migración (el escenario real),
+    sin mezclar el caso aparte de "SQLite creando un archivo nuevo" (que es
+    otra cosa, no lo que causó el incidente de producción)."""
+    _fresh()
+    try:
+        reg._connect().close()  # crea el archivo real, corre la migración una vez
+        reg._schema_ready_for = None  # simula el reinicio del proceso: el archivo queda, el flag no
+
+        orig_ensure_column = reg._ensure_column
+
+        def _slow_ensure_column(conn, table, column, decl):
+            time.sleep(0.01)  # ensancha la ventana de carrera a propósito
+            return orig_ensure_column(conn, table, column, decl)
+
+        monkeypatch.setattr(reg, "_ensure_column", _slow_ensure_column)
+
+        n_hilos = 8
+        barrera = threading.Barrier(n_hilos)
+        errores = []
+
+        def _worker():
+            barrera.wait()  # los 8 hilos arrancan _connect() exactamente juntos
+            try:
+                conn = reg._connect()
+                conn.close()
+            except Exception as exc:  # pragma: no cover -- esto es justo lo que probamos que NO pasa
+                errores.append(repr(exc))
+
+        hilos = [threading.Thread(target=_worker) for _ in range(n_hilos)]
+        for h in hilos:
+            h.start()
+        for h in hilos:
+            h.join(timeout=10)
+
+        assert errores == [], f"colisión real bajo concurrencia: {errores}"
+        assert reg._schema_ready_for == str(reg.DB_PATH)
+
+        # No alcanza con "no hubo excepción" -- confirmamos que el esquema
+        # realmente quedó migrado (columnas agregadas por _ensure_column).
+        conn = reg._connect()
+        try:
+            cols = {r["name"] for r in conn.execute("PRAGMA table_info(candidate_detection)")}
+        finally:
+            conn.close()
+        assert "es_senal" in cols
+        assert "phase_tag" in cols
+        assert "pm_dollar_volume_at_detection" in cols
+    finally:
+        _restore()
+
+
+def test_migracion_no_se_repite_una_vez_lista(monkeypatch):
+    """Con _schema_ready_for ya correcto, _ensure_schema() ni siquiera
+    debe llamar a _ensure_column -- el chequeo rápido (sin lock) en
+    _connect() debe evitar entrar a la función por completo."""
+    _fresh()
+    try:
+        conn = reg._connect()  # primera vez: migra de verdad
+        conn.close()
+        assert reg._schema_ready_for == str(reg.DB_PATH)
+
+        llamadas = []
+        monkeypatch.setattr(reg, "_ensure_column", lambda *a, **k: llamadas.append(a))
+
+        conn2 = reg._connect()  # segunda vez: ya migrado, no debe tocar nada
+        conn2.close()
+        assert llamadas == []
+    finally:
+        _restore()
+
+
+def test_ensure_schema_double_check_evita_repetir_bajo_lock(monkeypatch):
+    """Prueba directa del double-check: si _schema_ready_for ya quedó
+    correcto ANTES de que un hilo consiga el lock (porque otro hilo lo
+    terminó mientras esperaba), _ensure_schema() debe salir de inmediato
+    sin volver a tocar _ensure_column."""
+    _fresh()
+    try:
+        conn = reg._connect()
+        conn.close()
+        assert reg._schema_ready_for == str(reg.DB_PATH)
+
+        llamadas = []
+        monkeypatch.setattr(reg, "_ensure_column", lambda *a, **k: llamadas.append(a))
+
+        reg._ensure_schema(reg._connect())
+        assert llamadas == []
+    finally:
+        _restore()
 
 
 def test_primera_deteccion_es_idempotente():
