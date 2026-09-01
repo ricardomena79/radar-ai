@@ -233,8 +233,34 @@ def api_memory_ranking():
 def api_memory_engine():
     """Estado real del Memory Engine (Entregables 4-5) -- Cabina del
     Piloto, Panel 9. Reutiliza la evidencia ya cacheada por día en
-    `live_integration`, sin recalcular nada nuevo."""
-    return jsonify(live_integration.get_memory_engine_summary())
+    `live_integration`, sin recalcular nada nuevo.
+
+    Instrumentación temporal de diagnóstico (2026-09-01, autorizado
+    explícitamente): el marcador MEMORY_ENGINE_EXCEPTION vía
+    `got_request_exception` (más arriba en este archivo) no apareció en
+    los logs de Railway pese a un 500 real reproducido en producción --
+    esto captura la excepción DIRECTO en el punto donde ocurre, sin
+    depender del mecanismo de señales de Flask. Exclusivamente para
+    diagnóstico -- no cambia el comportamiento HTTP (sigue siendo 500,
+    el traceback nunca llega al cliente) y vuelve a lanzar la excepción
+    de inmediato. No registra headers/body de la request ni ningún dato
+    de la base -- solo tipo/mensaje/traceback de la excepción."""
+    try:
+        return jsonify(live_integration.get_memory_engine_summary())
+    except BaseException as exc:
+        try:
+            tb_text = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        except Exception:
+            tb_text = "traceback no disponible"
+        try:
+            print(
+                f"[MEMORY_ENGINE_EXCEPTION] {datetime.now(timezone.utc).isoformat()} "
+                f"path=/api/memory-engine tipo={type(exc).__name__} mensaje={exc}\n{tb_text}",
+                file=sys.stderr, flush=True,
+            )
+        except Exception:
+            pass  # el registro de un error NUNCA puede convertirse en una causa nueva de fallo
+        raise
 
 
 @app.route("/api/prediction-journal")

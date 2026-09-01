@@ -67,6 +67,41 @@ def test_excepcion_controlada_en_memory_engine_sigue_dando_500_y_queda_registrad
     assert "Cookie" not in captured.err
 
 
+def test_marcador_aparece_por_instrumentacion_directa_sin_depender_de_got_request_exception(monkeypatch, capfd):
+    """2026-09-01: el marcador vía la señal `got_request_exception` no
+    apareció en los logs de Railway pese a un 500 real reproducido en
+    producción -- se agregó una instrumentación DIRECTA dentro del propio
+    handler (try/except BaseException alrededor de la única línea real),
+    que no depende del mecanismo de señales de Flask. Esta prueba
+    desconecta la señal para aislar que el marcador sigue apareciendo
+    solo por la instrumentación directa."""
+    from flask import got_request_exception
+
+    from atlas_live.server import _log_unhandled_exception
+
+    def _boom(now=None):
+        raise RuntimeError("fallo controlado -- solo instrumentación directa")
+
+    monkeypatch.setattr(live_integration, "get_memory_engine_summary", _boom)
+    got_request_exception.disconnect(_log_unhandled_exception, server.app)
+    try:
+        resp = _client().get("/api/memory-engine")
+    finally:
+        got_request_exception.connect(_log_unhandled_exception, server.app)
+
+    assert resp.status_code == 500
+    body = resp.get_data(as_text=True)
+    assert "fallo controlado" not in body
+    assert "Traceback" not in body
+
+    captured = capfd.readouterr()
+    assert "MEMORY_ENGINE_EXCEPTION" in captured.err
+    assert "RuntimeError" in captured.err
+    assert "fallo controlado -- solo instrumentación directa" in captured.err
+    assert "Traceback (most recent call last)" in captured.err
+    assert "path=/api/memory-engine" in captured.err
+
+
 def test_excepcion_en_otro_endpoint_usa_marcador_generico_no_memory_engine(monkeypatch, capfd):
     """Confirma que el marcador es específico -- una excepción en OTRO
     endpoint no se confunde con MEMORY_ENGINE_EXCEPTION."""
