@@ -229,6 +229,200 @@ def test_E_no_se_re_ejecuta_el_mismo_dia_si_ya_se_genero():
         _restore()
 
 
+# ---------------------------------------------------------------------------
+# Blindaje del loop (2026-08-31) -- reconstrucción del incidente real de
+# producción: el 31/08 una excepción original en process_sweep() fue
+# atrapada por run_sweep_once(), pero el propio manejador de error
+# (reg.set_meta) lanzó una SEGUNDA excepción que escapó hasta _loop() y
+# terminó el hilo -- por eso el EOD/aprendizaje de ese día nunca corrió.
+# ---------------------------------------------------------------------------
+
+def test_doble_fallo_no_escapa_de_run_sweep_once():
+    """Reconstrucción exacta del incidente del 31/08: excepción original
+    en process_sweep() (línea real ~189/antes 131) + una segunda excepción
+    dentro del propio manejador de error (reg.set_meta, línea real ~222/
+    antes 153) -- ninguna de las dos, ni juntas, puede escapar de
+    run_sweep_once(). Debe seguir devolviendo None sin lanzar, y el lock
+    debe quedar liberado."""
+    _fresh()
+    saved = _install_fakes(session="regular", quotes={})
+    from atlas_live.radar import candidate_tracker as tracker
+
+    orig_process = tracker.process_sweep
+    orig_set_meta = reg.set_meta
+    calls = {"n": 0}
+
+    def _boom_process(*a, **kw):
+        raise RuntimeError("fallo original simulado -- caso real 31/08")
+
+    def _boom_set_meta(**kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("fallo secundario simulado -- database is locked (sintético)")
+        return orig_set_meta(**kwargs)
+
+    tracker.process_sweep = _boom_process
+    reg.set_meta = _boom_set_meta
+    try:
+        result = w.run_sweep_once()  # NO debe lanzar
+        assert result is None
+        assert w._lock.acquire(blocking=False)  # el lock quedó liberado igual
+        w._lock.release()
+    finally:
+        tracker.process_sweep = orig_process
+        reg.set_meta = orig_set_meta
+        _uninstall_fakes(saved)
+        _restore()
+
+
+def test_manejador_de_eod_tambien_resiliente_a_doble_fallo():
+    """Mismo patrón que arriba, pero para el manejador de error de
+    maybe_run_eod_evaluation() -- nunca falló en producción, pero
+    comparte el mismo riesgo estructural (reg.set_meta sin protección
+    propia dentro del except); se blinda simétricamente."""
+    _fresh()
+    market_date = market_hours.market_date()
+    reg.set_meta(current_market_date=market_date)
+    saved = _install_fakes(session="closed")
+    from atlas_live.radar import eod_report as eod
+
+    orig_build = w.build_tradier_provider
+    w.build_tradier_provider = lambda: SimpleNamespace(get_quotes=lambda syms: [])
+    orig_run_eod = eod.run_eod_evaluation
+    orig_set_meta = reg.set_meta
+    calls = {"n": 0}
+
+    def _boom_run_eod(*a, **kw):
+        raise RuntimeError("fallo original simulado en EOD")
+
+    def _boom_set_meta(**kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("fallo secundario simulado en el manejador de EOD")
+        return orig_set_meta(**kwargs)
+
+    eod.run_eod_evaluation = _boom_run_eod
+    reg.set_meta = _boom_set_meta
+    try:
+        resultado = w.maybe_run_eod_evaluation()  # NO debe lanzar
+        assert resultado is False
+    finally:
+        eod.run_eod_evaluation = orig_run_eod
+        reg.set_meta = orig_set_meta
+        w.build_tradier_provider = orig_build
+        _uninstall_fakes(saved)
+        _restore()
+
+
+def test_loop_exterior_no_muere_ante_excepcion_no_capturada_por_dentro():
+    """Blindaje exterior de _loop() -- incluso una excepción que ocurra
+    directamente en la primera línea del propio loop (market_hours.get_session,
+    fuera de la protección interna de run_sweep_once()) no debe terminar
+    el hilo: la iteración siguiente debe poder seguir corriendo con
+    normalidad, y el hilo solo debe terminar cuando se pide explícitamente
+    (_stop.set()), nunca por la excepción."""
+    _fresh()
+    quotes = {"AAPL": _fake_quote("AAPL", 6.0)}
+    saved = _install_fakes(session="regular", quotes=quotes)
+    orig_get_session = market_hours.get_session
+    orig_idle = w.IDLE_RECHECK_SECONDS
+    calls = {"n": 0}
+
+    def _flaky_session(now=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("fallo sintético directamente en _loop()")
+        return "regular"
+
+    market_hours.get_session = _flaky_session
+    w.IDLE_RECHECK_SECONDS = 0.05
+    w._stop.clear()
+    try:
+        t = threading.Thread(target=w._loop, daemon=True)
+        t.start()
+        time.sleep(0.5)
+        w._stop.set()
+        t.join(timeout=3)
+        assert not t.is_alive()  # terminó LIMPIO (por _stop), no por la excepción
+        assert calls["n"] >= 2  # sobrevivió la primera excepción y siguió iterando
+        meta = reg.get_meta()
+        assert meta.get("ultimo_error_etapa") == "loop_outer"
+        assert meta.get("ultimo_error_tipo") == "RuntimeError"
+    finally:
+        w._stop.clear()
+        market_hours.get_session = orig_get_session
+        w.IDLE_RECHECK_SECONDS = orig_idle
+        _uninstall_fakes(saved)
+        _restore()
+
+
+def test_eod_se_ejecuta_aunque_hubo_fallos_de_sweep_antes_ese_dia():
+    """El sweep que falla a media mañana no debe impedir que, más tarde,
+    el mismo _loop() (blindado) llegue a disparar el EOD -- la
+    precondición real (current_market_date == market_date) solo exige que
+    UN sweep haya tenido éxito ese día, no el último (mismo escenario real
+    del 31/08: 3.350 sweeps ok antes del que murió)."""
+    _fresh()
+    market_date = market_hours.market_date()
+    reg.set_meta(current_market_date=market_date, state="RUNNING")
+    saved = _install_fakes(session="closed")
+    from atlas_live.radar import eod_report as eod
+
+    orig_build = w.build_tradier_provider
+    w.build_tradier_provider = lambda: SimpleNamespace(get_quotes=lambda syms: [])
+    orig_run_eod = eod.run_eod_evaluation
+    llamado = {"n": 0}
+
+    def _fake_run_eod(market_date_arg, provider, **kw):
+        llamado["n"] += 1
+        return SimpleNamespace(
+            market_date=market_date_arg, n_estudiadas=0, n_candidatas=0, n_senales=0,
+            n_evaluadas=0, n_aciertos=0, n_reached_20=0, n_reached_50=0, n_reached_100=0,
+            n_falsas_senales=0, n_deteccion_tardia=0, n_direccion_correcta=0,
+            n_direccion_incorrecta=0, mejores_oportunidades=[], posibles_no_detectadas=[],
+        )
+
+    eod.run_eod_evaluation = _fake_run_eod
+    try:
+        resultado = w.maybe_run_eod_evaluation()
+        assert resultado is True
+        assert llamado["n"] == 1
+    finally:
+        eod.run_eod_evaluation = orig_run_eod
+        w.build_tradier_provider = orig_build
+        _uninstall_fakes(saved)
+        _restore()
+
+
+def test_maybe_run_eod_evaluation_no_se_duplica():
+    """Nivel radar_worker.py -- distinto de la idempotencia interna ya
+    cubierta en test_eod_report.py::test_run_eod_evaluation_completo_e_idempotente
+    (esa prueba corre eod.run_eod_evaluation() dos veces y confirma que no
+    duplica filas; ésta prueba el gate de MÁS AFUERA, en radar_worker.py,
+    que ni siquiera debe volver a LLAMAR a eod.run_eod_evaluation() una
+    segunda vez para el mismo market_date)."""
+    _fresh()
+    market_date = market_hours.market_date()
+    reg.set_meta(eod_ejecutado_para=market_date, current_market_date=market_date)
+    saved = _install_fakes(session="closed")
+    from atlas_live.radar import eod_report as eod
+
+    orig_build = w.build_tradier_provider
+    w.build_tradier_provider = lambda: SimpleNamespace(get_quotes=lambda syms: [])
+    orig_run_eod = eod.run_eod_evaluation
+    llamado = {"n": 0}
+    eod.run_eod_evaluation = lambda *a, **k: llamado.__setitem__("n", llamado["n"] + 1)
+    try:
+        resultado = w.maybe_run_eod_evaluation()
+        assert resultado is False
+        assert llamado["n"] == 0
+    finally:
+        eod.run_eod_evaluation = orig_run_eod
+        w.build_tradier_provider = orig_build
+        _uninstall_fakes(saved)
+        _restore()
+
+
 if __name__ == "__main__":
     import traceback
 

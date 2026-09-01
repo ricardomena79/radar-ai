@@ -27,8 +27,10 @@ Configurable con `ATLAS_RADAR_USE_FALLBACK=true` si se decide más adelante.
 """
 
 import os
+import sys
 import threading
 import time
+import traceback
 from datetime import datetime, timezone
 from typing import Dict, Optional
 
@@ -80,6 +82,62 @@ def _next_interval(last_duration: Optional[float]) -> float:
         return SWEEP_FLOOR_SECONDS
     target = SWEEP_SAFETY_MARGIN * last_duration
     return max(SWEEP_FLOOR_SECONDS, min(SWEEP_CEILING_SECONDS, target))
+
+
+def _record_error(etapa: str, exc: Exception, extra_meta: Optional[Dict[str, object]] = None) -> None:
+    """Registro de error de última instancia (2026-08-31, blindaje
+    posterior al incidente real del EOD -- el traceback de producción
+    confirmó que el hilo murió porque el propio manejador de error de
+    `run_sweep_once()` lanzó una SEGUNDA excepción al intentar registrar
+    la primera). Usado por `run_sweep_once()`, `maybe_run_eod_evaluation()`,
+    `_maybe_generate_experience_knowledge()` y el blindaje exterior de
+    `_loop()` -- punto único, para no repetir esta protección 4 veces.
+
+    Nunca relanza: ni formatear el traceback, ni leer sesión/fecha, ni
+    persistir en `radar_meta` pueden convertirse en una segunda excepción
+    sin atrapar. Si la persistencia falla, el intento queda solo en
+    stderr (que Railway sí captura) -- nunca se vuelve a intentar de un
+    modo que pueda fallar de nuevo."""
+    try:
+        tb_text = traceback.format_exc()
+    except Exception:
+        tb_text = "traceback no disponible"
+    try:
+        print(
+            f"[radar_worker] ERROR en {etapa}: {type(exc).__name__}: {exc}\n{tb_text}",
+            file=sys.stderr, flush=True,
+        )
+    except Exception:
+        pass
+    try:
+        session = market_hours.get_session()
+    except Exception:
+        session = None
+    try:
+        market_date = market_hours.market_date()
+    except Exception:
+        market_date = None
+    payload: Dict[str, object] = {
+        "ultimo_error_etapa": etapa,
+        "ultimo_error_tipo": type(exc).__name__,
+        "ultimo_error_traceback": tb_text[-4000:],
+        "ultimo_error_market_date": market_date,
+        "ultimo_error_session": session,
+        "ultimo_error_at": _now_iso(),
+    }
+    if extra_meta:
+        payload.update(extra_meta)
+    try:
+        reg.set_meta(**payload)
+    except Exception as meta_exc:
+        try:
+            print(
+                f"[radar_worker] no se pudo persistir el registro de error de '{etapa}': "
+                f"{type(meta_exc).__name__}: {meta_exc}",
+                file=sys.stderr, flush=True,
+            )
+        except Exception:
+            pass
 
 
 def run_sweep_once() -> Optional[float]:
@@ -149,13 +207,19 @@ def run_sweep_once() -> Optional[float]:
         )
         return duration
     except Exception as exc:  # un barrido roto nunca puede tumbar el hilo
-        meta = reg.get_meta()
-        reg.set_meta(
-            state="ERROR",
-            ultimo_error=f"{type(exc).__name__}: {exc}",
-            sweeps_total=int(meta.get("sweeps_total") or 0) + 1,
-            sweeps_error=int(meta.get("sweeps_error") or 0) + 1,
-        )
+        # 2026-08-31: el traceback real de producción confirmó que ESTE
+        # bloque (antes: un `reg.set_meta()` directo, sin protección
+        # propia) fue el que mató al hilo -- leer los contadores y
+        # persistir el error quedan blindados por separado, para que
+        # ninguno de los dos pueda volver a convertirse en la causa real.
+        extra_meta: Dict[str, object] = {"state": "ERROR", "ultimo_error": f"{type(exc).__name__}: {exc}"}
+        try:
+            meta = reg.get_meta()
+            extra_meta["sweeps_total"] = int(meta.get("sweeps_total") or 0) + 1
+            extra_meta["sweeps_error"] = int(meta.get("sweeps_error") or 0) + 1
+        except Exception:
+            pass  # sin los contadores previos no se pueden incrementar -- se omiten, nunca se inventan
+        _record_error("run_sweep_once", exc, extra_meta)
         return None
     finally:
         _lock.release()
@@ -189,7 +253,7 @@ def _maybe_generate_experience_knowledge(market_date: str) -> None:
             conocimiento_resumen=resumen,
         )
     except Exception as exc:
-        reg.set_meta(conocimiento_ultimo_error=f"{type(exc).__name__}: {exc}")
+        _record_error("experience_knowledge", exc, {"conocimiento_ultimo_error": f"{type(exc).__name__}: {exc}"})
 
 
 def maybe_run_eod_evaluation() -> bool:
@@ -239,19 +303,31 @@ def maybe_run_eod_evaluation() -> bool:
         _maybe_generate_experience_knowledge(market_date)
         return True
     except Exception as exc:
-        reg.set_meta(ultimo_error_eod=f"{type(exc).__name__}: {exc}")
+        _record_error("maybe_run_eod_evaluation", exc, {"ultimo_error_eod": f"{type(exc).__name__}: {exc}"})
         return False
 
 
 def _loop() -> None:
     while not _stop.is_set():
-        session = market_hours.get_session()
-        if session in ("premarket", "regular"):
-            duration = run_sweep_once()
-            interval = _next_interval(duration)
-        else:
-            maybe_run_eod_evaluation()
-            interval = IDLE_RECHECK_SECONDS
+        # 2026-08-31: blindaje exterior post-incidente (EOD del 31/08 no
+        # se ejecutó porque una excepción no capturada mató este hilo a
+        # media mañana, y `maybe_run_eod_evaluation()` solo se llama desde
+        # acá). `run_sweep_once()`/`maybe_run_eod_evaluation()` ya tienen
+        # su propia protección interna, pero esta capa es la red de
+        # última instancia: NINGUNA excepción, venga de donde venga
+        # (incluida una que escape de esa protección interna), puede
+        # volver a terminar el hilo -- como mucho, se pierde UN ciclo.
+        interval = IDLE_RECHECK_SECONDS
+        try:
+            session = market_hours.get_session()
+            if session in ("premarket", "regular"):
+                duration = run_sweep_once()
+                interval = _next_interval(duration)
+            else:
+                maybe_run_eod_evaluation()
+                interval = IDLE_RECHECK_SECONDS
+        except Exception as exc:
+            _record_error("loop_outer", exc)
         if _stop.wait(interval):
             break
 
