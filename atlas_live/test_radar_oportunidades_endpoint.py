@@ -14,21 +14,25 @@ el foco del test, para no ensombrecer lo que cada test realmente prueba."""
 import os
 
 import atlas_live.backtest.seed_import as _si
+import atlas_live.market_view as _mv
 import atlas_live.radar.radar_worker as _rw
 import atlas_live.scan_worker as _sw
 
 _orig_seed = _si.import_all_seeds
 _orig_refresh = _sw.start_background_refresh
 _orig_radar = _rw.start_universe_radar
+_orig_market_view = _mv.start_market_view
 _si.import_all_seeds = lambda *a, **k: None
 _sw.start_background_refresh = lambda *a, **k: None
 _rw.start_universe_radar = lambda *a, **k: None
+_mv.start_market_view = lambda *a, **k: None
 try:
     from atlas_live import server  # noqa: E402
 finally:
     _si.import_all_seeds = _orig_seed
     _sw.start_background_refresh = _orig_refresh
     _rw.start_universe_radar = _orig_radar
+    _mv.start_market_view = _orig_market_view
 
 from atlas_live.radar import candidate_registry as reg  # noqa: E402
 

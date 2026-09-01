@@ -6,6 +6,7 @@ ANTES de importar el servidor, para correr offline y sin red.
 """
 
 import atlas_live.backtest.seed_import as _si
+import atlas_live.market_view as _mv
 import atlas_live.scan_worker as _sw
 
 # Neutralizar el arranque pesado SOLO durante el import del servidor (que
@@ -14,13 +15,16 @@ import atlas_live.scan_worker as _sw
 # test_seed_sync) recibirían estos stubs y fallarían.
 _orig_seed = _si.import_all_seeds
 _orig_refresh = _sw.start_background_refresh
+_orig_market_view = _mv.start_market_view
 _si.import_all_seeds = lambda *a, **k: None
 _sw.start_background_refresh = lambda *a, **k: None
+_mv.start_market_view = lambda *a, **k: None
 try:
     from atlas_live import server  # noqa: E402  (import tras neutralizar el arranque)
 finally:
     _si.import_all_seeds = _orig_seed
     _sw.start_background_refresh = _orig_refresh
+    _mv.start_market_view = _orig_market_view
 from atlas_live.explosive_config import load_config as _load_exp
 from atlas_live.memory.classifier import load_config as _load_cls
 

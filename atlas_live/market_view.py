@@ -125,6 +125,15 @@ FINNHUB_BATCH_WORKERS = int(_env_float("ATLAS_MERCADO_FINNHUB_BATCH_WORKERS", 4)
 # aislados, ej. tickers delisted/OTC que Yahoo simplemente no reconoce).
 CIRCUIT_MIN_SAMPLE = int(_env_float("ATLAS_MERCADO_CIRCUIT_MIN_SAMPLE", 20))
 CIRCUIT_ERROR_RATE = _env_float("ATLAS_MERCADO_CIRCUIT_ERROR_RATE", 0.85)
+# Timeout duro por ronda de espera (2026-08-31, fix real -- confirmado en
+# producción durante premarket real: un ciclo quedó colgado >14 minutos
+# porque `wait()` en `_fetch_with_circuit_breaker()` no tenía límite --
+# el timeout interno de Yahoo (`NETWORK_TIMEOUT_SECONDS=15s` por símbolo,
+# en `atlas/data/providers/yahoo_finance.py`) no garantiza que la espera
+# externa termine si algo se cuelga por debajo de ese mecanismo. Mismo
+# valor que `CYCLE_CEILING_SECONDS` -- ya es el límite ya aceptado en
+# este archivo para "cuánto puede tardar Mercado como máximo".
+CIRCUIT_UNIT_TIMEOUT_SECONDS = _env_float("ATLAS_MERCADO_CIRCUIT_UNIT_TIMEOUT_SECONDS", 90.0)
 
 _lock = threading.Lock()
 _stop = threading.Event()
@@ -176,10 +185,14 @@ _sparkline_by_symbol: Dict[str, Deque[float]] = {}
 _last_known_lock = threading.Lock()
 _last_known_by_symbol: Dict[str, Dict[str, Any]] = {}
 
-# El ranking en vivo corre en premarket/regular/afterhours -- misma fuente
-# de verdad que el resto de Atlas (`market_hours.get_session()`), nunca un
-# horario propio. Fuera de esas 3 sesiones (cerrado) no se consulta Tradier.
-ACTIVE_SESSIONS = ("premarket", "regular", "afterhours")
+# El ranking en vivo corre en premarket/regular/afterhours/overnight --
+# misma fuente de verdad que el resto de Atlas (`market_hours.get_session()`),
+# nunca un horario propio. Fuera de esas 4 sesiones (cerrado, fin de
+# semana real) no se consulta ningún proveedor. Overnight (2026-09-01,
+# autorizado explícitamente) es distinto de las otras 3: durante esa
+# sesión `_run_cycle_body()` salta Tradier por completo y usa Yahoo como
+# única fuente primaria -- ver el bloque `is_overnight` más abajo.
+ACTIVE_SESSIONS = ("premarket", "regular", "afterhours", "overnight")
 
 
 def _now_iso() -> str:
@@ -258,7 +271,13 @@ def _fetch_with_circuit_breaker(
     circuit_open = False
     next_idx = 0
 
-    with ThreadPoolExecutor(max_workers=max(1, min(max_workers, len(units)))) as executor:
+    # NUNCA `with ThreadPoolExecutor(...) as executor:` acá -- su
+    # `__exit__` llama `shutdown(wait=True)`, que BLOQUEARÍA esta función
+    # hasta que todo hilo lanzado termine de verdad, incluidos los que el
+    # timeout de abajo ya dio por colgados. Shutdown manual con
+    # `wait=False` en el `finally` (2026-08-31, mismo fix del timeout).
+    executor = ThreadPoolExecutor(max_workers=max(1, min(max_workers, len(units))))
+    try:
         pending: Dict[Any, Any] = {}
 
         def _submit_next() -> None:
@@ -272,7 +291,24 @@ def _fetch_with_circuit_breaker(
             _submit_next()
 
         while pending:
-            done, _ = wait(list(pending.keys()), return_when=FIRST_COMPLETED)
+            done, _ = wait(list(pending.keys()), timeout=CIRCUIT_UNIT_TIMEOUT_SECONDS, return_when=FIRST_COMPLETED)
+            if not done:
+                # TIMEOUT real (2026-08-31, fix -- caso real confirmado en
+                # producción: un ciclo quedó colgado >14 minutos acá,
+                # esperando indefinidamente). Ninguna de las unidades
+                # pendientes respondió dentro de `CIRCUIT_UNIT_TIMEOUT_SECONDS`
+                # -- se tratan TODAS como colgadas: se cuentan como error,
+                # se abre el circuito, y el ciclo deja de esperarlas. El
+                # hilo real puede seguir corriendo de fondo (Python no
+                # puede cancelar un future en curso), pero el ciclo nunca
+                # vuelve a bloquearse por él.
+                for future in list(pending.keys()):
+                    unit = pending.pop(future)
+                    n = unit_len(unit)
+                    stats["attempted"] += n
+                    stats["errors"] += n
+                circuit_open = True
+                continue
             for future in done:
                 unit = pending.pop(future)
                 n = unit_len(unit)
@@ -295,6 +331,12 @@ def _fetch_with_circuit_breaker(
 
                 if not circuit_open:
                     _submit_next()
+    finally:
+        # wait=False -- nunca bloquear esta función esperando a que un
+        # hilo ya dado por colgado (arriba) termine de verdad. Python no
+        # puede cancelar un thread en curso; el proceso tampoco necesita
+        # esperarlo -- el executor se libera solo cuando (si) termina.
+        executor.shutdown(wait=False)
 
     if circuit_open:
         stats["aborted"] = sum(unit_len(u) for u in units[next_idx:])
@@ -354,9 +396,17 @@ def _fetch_finnhub_batch(symbols: List[str], provider: Optional[FinnhubProvider]
 
 def _run_cycle_body(symbols_override: Optional[List[str]] = None) -> float:
     t0 = time.time()
-    tradier_provider = build_tradier_provider()
-    if tradier_provider is None:
-        raise RuntimeError("TRADIER_API_TOKEN no configurado -- Mercado no puede operar sin Tradier")
+
+    # Sesión calculada AL PRINCIPIO (2026-09-01, overnight, autorizado
+    # explícitamente) -- antes se calculaba recién después de consultar
+    # Tradier; ahora decide de entrada si Tradier siquiera se consulta
+    # este ciclo. "overnight" (20:00-04:00 ET, ver market_hours.py) es la
+    # única sesión activa donde Tradier se salta por completo.
+    try:
+        session_now = market_hours.get_session()
+    except Exception:
+        session_now = None
+    is_overnight = session_now == "overnight"
 
     # Universo COMPLETO de Racional (EQUITY+ETF+ETN, 2.577 reales) -- sin
     # filtro nuevo, sin agregar ni quitar ningún símbolo. `load_universe()`
@@ -375,7 +425,10 @@ def _run_cycle_body(symbols_override: Optional[List[str]] = None) -> float:
     # Normalización -- MISMA función pura ya usada por
     # `atlas_live/data_fusion/universe_quotes.py`, sin modificarla.
     # Uno-a-muchos a propósito (ej. "PBR.A"/"PBRA" -> mismo query_symbol
-    # real de Tradier) -- mismo criterio ya validado en ese módulo.
+    # real de Tradier) -- mismo criterio ya validado en ese módulo. Se
+    # calcula SIEMPRE, incluso en overnight: el fallback multi-fuente y el
+    # resolver de más abajo la necesitan sin importar si Tradier participó
+    # este ciclo.
     normalized: Dict[str, str] = {}
     query_to_originals: Dict[str, List[str]] = {}
     for sym in originals:
@@ -383,31 +436,40 @@ def _run_cycle_body(symbols_override: Optional[List[str]] = None) -> float:
         normalized[sym] = n.query_symbol
         query_to_originals.setdefault(n.query_symbol, []).append(sym)
 
-    query_symbols = list(query_to_originals.keys())
-    chunks = [
-        query_symbols[i:i + TRADIER_CHUNK_SIZE]
-        for i in range(0, len(query_symbols), TRADIER_CHUNK_SIZE)
-    ]
-
     quotes_by_query: Dict[str, Any] = {}
+    chunks: List[List[str]] = []
     chunk_errors = 0
-    # Paralelización -- el único cambio real frente al patrón secuencial
-    # ya usado en `fetch_universe_quotes()`. Un chunk roto no descarta
-    # los demás: se captura por-future, se cuenta, se sigue.
-    with ThreadPoolExecutor(max_workers=max(1, min(MAX_WORKERS, len(chunks) or 1))) as executor:
-        futures = {executor.submit(_fetch_chunk, tradier_provider, chunk): chunk for chunk in chunks}
-        for future in as_completed(futures):
-            try:
-                quotes = future.result()
-                for q in quotes:
-                    quotes_by_query[q.symbol] = q
-            except Exception:
-                chunk_errors += 1
 
-    try:
-        session_now = market_hours.get_session()
-    except Exception:
-        session_now = None
+    if not is_overnight:
+        tradier_provider = build_tradier_provider()
+        if tradier_provider is None:
+            raise RuntimeError("TRADIER_API_TOKEN no configurado -- Mercado no puede operar sin Tradier")
+
+        query_symbols = list(query_to_originals.keys())
+        chunks = [
+            query_symbols[i:i + TRADIER_CHUNK_SIZE]
+            for i in range(0, len(query_symbols), TRADIER_CHUNK_SIZE)
+        ]
+
+        # Paralelización -- el único cambio real frente al patrón secuencial
+        # ya usado en `fetch_universe_quotes()`. Un chunk roto no descarta
+        # los demás: se captura por-future, se cuenta, se sigue.
+        with ThreadPoolExecutor(max_workers=max(1, min(MAX_WORKERS, len(chunks) or 1))) as executor:
+            futures = {executor.submit(_fetch_chunk, tradier_provider, chunk): chunk for chunk in chunks}
+            for future in as_completed(futures):
+                try:
+                    quotes = future.result()
+                    for q in quotes:
+                        quotes_by_query[q.symbol] = q
+                except Exception:
+                    chunk_errors += 1
+    # else: overnight -- Tradier se salta por completo, a propósito (pedido
+    # explícito: "no quiero llamadas innecesarias a Tradier" durante esta
+    # sesión). Ni siquiera hace falta un TRADIER_API_TOKEN configurado
+    # para que Mercado siga funcionando overnight. `quotes_by_query` queda
+    # vacío -> TODO el universo entra al fallback de Yahoo/Finnhub más
+    # abajo, sin ningún cambio en esa lógica (ya maneja
+    # `quotes_by_query.get(...) -> None` con gracia).
 
     now_utc = datetime.now(timezone.utc)
 

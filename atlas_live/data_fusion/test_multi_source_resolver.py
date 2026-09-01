@@ -124,6 +124,21 @@ def test_J_precio_fresco_afterhours_da_afterhours():
     assert r.session == "AFTERHOURS"
 
 
+def test_J2_precio_fresco_en_ventana_overnight_da_overnight():
+    """2026-09-01, autorizado explícitamente: `market_hours.get_session()`
+    ahora clasifica 20:00-04:00 ET como 'overnight' (antes 'closed', que
+    `_clasificar_sesion()` mapeaba a CLOSED_UNKNOWN) -- confirma que la
+    nueva llave del mapeo (`multi_source_resolver.py`) se usa de verdad,
+    vía el camino NORMAL (Caso A/Tradier fresco), no el mecanismo aparte
+    de `price_overnight` (ver K2 más abajo, que sigue siendo un caso
+    distinto)."""
+    ts_overnight = datetime(2026, 9, 2, 2, 0, 0, tzinfo=timezone.utc)  # 22:00 ET martes
+    tq = _q(last_price=101.0, price_is_stale=False, timestamp=ts_overnight)
+    r = res.resolver_mejor_precio("AAA", tq, None, None, ts_overnight)
+    assert r.session == "OVERNIGHT"
+    assert r.overnight_disponible is False  # mecanismo distinto -- no se activa acá
+
+
 # --- K: overnight sin proveedor -> NUNCA inventado ---
 
 def test_K_overnight_sin_proveedor_nunca_se_inventa():

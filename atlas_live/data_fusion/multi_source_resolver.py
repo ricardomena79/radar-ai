@@ -146,6 +146,7 @@ def _clasificar_sesion(timestamp: Optional[datetime]) -> str:
         "premarket": "PREMARKET",
         "regular": "REGULAR",
         "afterhours": "AFTERHOURS",
+        "overnight": "OVERNIGHT",
         "closed": "CLOSED_UNKNOWN",
     }.get(session, "CLOSED_UNKNOWN")
 

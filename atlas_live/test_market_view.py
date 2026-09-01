@@ -4,6 +4,7 @@ se reemplazan por versiones falsas dentro del módulo
 (`mv.build_tradier_provider`/`mv.load_universe`), mismo patrón de
 monkey-patching ya usado en `test_scan_stability.py`."""
 
+import time
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -430,8 +431,91 @@ def test_sesion_activa_incluye_premarket_regular_afterhours():
     assert mv._is_active_session("premarket") is True
     assert mv._is_active_session("regular") is True
     assert mv._is_active_session("afterhours") is True
+    assert mv._is_active_session("overnight") is True  # 2026-09-01, autorizado explícitamente
     assert mv._is_active_session("closed") is False
     assert mv._is_active_session(None) is False
+
+
+# --- OVERNIGHT (2026-09-01, autorizado explícitamente): Yahoo como única
+# fuente, Tradier nunca consultado, STALE conservado con evidencia real ---
+
+def test_overnight_no_llama_a_tradier(monkeypatch):
+    mv._last_known_by_symbol.clear()
+    quotes = {"AAA": _FakeQuote("AAA", 10.0, 5.0)}  # Tradier "tendría" esto -- no debe llegar a pedirlo
+    yq = _FakeQuote("AAA", 10.5, 5.5, timestamp=datetime.now(timezone.utc))
+    provider = _patch(monkeypatch, ["AAA"], quotes, session="overnight", yahoo_quotes_by_symbol={"AAA": yq})
+    mv.run_market_cycle_once()
+    assert provider.calls == []  # Tradier NUNCA se llamó durante overnight
+
+
+def test_overnight_usa_yahoo_como_fuente(monkeypatch):
+    mv._last_known_by_symbol.clear()
+    yq = _FakeQuote("AAA", 10.5, 5.5, timestamp=datetime.now(timezone.utc))
+    _patch(monkeypatch, ["AAA"], {}, session="overnight", yahoo_quotes_by_symbol={"AAA": yq})
+    mv.run_market_cycle_once()
+    row = mv.get_market_snapshot()["rows"][0]
+    assert row["source"] == "yahoo"
+    assert row["data_status"] == "FRESCO"
+
+
+def test_overnight_sin_yahoo_fresco_conserva_cache_y_marca_stale(monkeypatch):
+    mv._last_known_by_symbol.clear()
+    # Ciclo 1: sesión regular, Tradier fresco -- deja cache poblado.
+    quotes = {"AAA": _FakeQuote("AAA", 10.0, 5.0, previous_close=9.5)}
+    _patch(monkeypatch, ["AAA"], quotes, session="regular")
+    mv.run_market_cycle_once()
+    cached_row = mv.get_market_snapshot()["rows"][0]
+    assert cached_row["data_status"] == "FRESCO"
+    assert cached_row["price"] == 10.0
+
+    # Ciclo 2: overnight, sin Yahoo fresco disponible para AAA -- debe
+    # conservar el cache (mismo price/change_pct) y marcarlo STALE, nunca
+    # inventar un movimiento nuevo a partir de un precio viejo.
+    _patch(monkeypatch, ["AAA"], {}, session="overnight")
+    mv.run_market_cycle_once()
+    row = mv.get_market_snapshot()["rows"][0]
+    assert row["data_status"] == "STALE"
+    assert row["price"] == 10.0
+    assert row["change_pct"] == cached_row["change_pct"]
+    assert row["data_age_seconds"] is not None and row["data_age_seconds"] >= 0
+
+
+def test_overnight_no_requiere_token_tradier(monkeypatch):
+    mv._last_known_by_symbol.clear()
+    yq = _FakeQuote("AAA", 10.5, 5.5, timestamp=datetime.now(timezone.utc))
+    _patch(monkeypatch, ["AAA"], {}, session="overnight", yahoo_quotes_by_symbol={"AAA": yq})
+    monkeypatch.setattr(mv, "build_tradier_provider", lambda: None)  # sin TRADIER_API_TOKEN
+    duration = mv.run_market_cycle_once()
+    assert duration is not None  # corrió igual -- nunca lanza RuntimeError en overnight
+    row = mv.get_market_snapshot()["rows"][0]
+    assert row["source"] == "yahoo"
+
+
+def test_overnight_top_100_mantiene_orden(monkeypatch):
+    mv._last_known_by_symbol.clear()
+    now = datetime.now(timezone.utc)
+    yahoo_quotes = {
+        "LOW": _FakeQuote("LOW", 10.0, -5.0, timestamp=now),
+        "HIGH": _FakeQuote("HIGH", 10.0, 18.5, timestamp=now),
+        "MID": _FakeQuote("MID", 10.0, 3.2, timestamp=now),
+    }
+    _patch(monkeypatch, ["LOW", "HIGH", "MID"], {}, session="overnight", yahoo_quotes_by_symbol=yahoo_quotes)
+    mv.run_market_cycle_once()
+    rows = mv.get_market_snapshot()["rows"]
+    assert [r["symbol"] for r in rows] == ["HIGH", "MID", "LOW"]
+
+
+def test_overnight_no_duplica_ciclos(monkeypatch):
+    mv._last_known_by_symbol.clear()
+    yq = _FakeQuote("AAA", 10.0, 5.0, timestamp=datetime.now(timezone.utc))
+    _patch(monkeypatch, ["AAA"], {}, session="overnight", yahoo_quotes_by_symbol={"AAA": yq})
+    acquired = mv._lock.acquire(blocking=False)
+    assert acquired
+    try:
+        result = mv.run_market_cycle_once()
+        assert result is None  # el lock ya estaba tomado -- no corrió un segundo ciclo
+    finally:
+        mv._lock.release()
 
 
 # --- verificación estructural: ningún archivo protegido tiene diff ---
@@ -687,6 +771,51 @@ def test_mercado_nunca_corre_dos_ciclos_simultaneos(monkeypatch):
         mv._lock.release()
     # liberado el lock, un ciclo normal sí debe correr
     assert mv.run_market_cycle_once() is not None
+
+
+def test_timeout_duro_evita_que_un_future_colgado_congele_el_ciclo(monkeypatch):
+    """2026-08-31, fix real -- caso real confirmado en producción durante
+    premarket real: un ciclo quedó colgado >14 minutos en el `wait()` sin
+    límite de `_fetch_with_circuit_breaker()`. Una unidad más lenta que
+    `CIRCUIT_UNIT_TIMEOUT_SECONDS` NUNCA debe bloquear la función --
+    debe devolver control apenas se cumple el timeout, sin esperar a que
+    la unidad lenta termine de verdad."""
+    monkeypatch.setattr(mv, "CIRCUIT_UNIT_TIMEOUT_SECONDS", 0.3)
+
+    def _lento(unit):
+        time.sleep(2.0)  # más lento que el timeout -- simula el cuelgue real
+        return {unit: object()}
+
+    t0 = time.time()
+    result, stats = mv._fetch_with_circuit_breaker(
+        units=["AAA"], fetch_one=_lento, unit_len=lambda u: 1,
+        max_workers=1, min_sample=1, error_rate_threshold=0.85,
+    )
+    elapsed = time.time() - t0
+    assert elapsed < 1.0  # nunca esperó los 2s reales -- el timeout (0.3s) cortó antes
+    assert result == {}  # el resultado de la unidad colgada nunca se usa
+    assert stats["attempted"] == 1
+    assert stats["errors"] == 1
+
+
+def test_timeout_se_contabiliza_correctamente_y_abre_el_circuito(monkeypatch):
+    """El timeout cuenta como error (nunca se pierde en silencio) y abre
+    el circuito de inmediato -- las unidades que ni siquiera se llegaron a
+    encolar quedan `aborted`, nunca se intentan."""
+    monkeypatch.setattr(mv, "CIRCUIT_UNIT_TIMEOUT_SECONDS", 0.3)
+
+    def _lento(unit):
+        time.sleep(2.0)
+        return {unit: object()}
+
+    result, stats = mv._fetch_with_circuit_breaker(
+        units=["AAA", "BBB", "CCC", "DDD"], fetch_one=_lento, unit_len=lambda u: 1,
+        max_workers=1, min_sample=1, error_rate_threshold=0.85,
+    )
+    assert stats["attempted"] == 1  # solo la primera se llegó a intentar (max_workers=1)
+    assert stats["errors"] == 1
+    assert stats["success"] == 0
+    assert stats["aborted"] == 3  # BBB, CCC, DDD -- nunca se intentaron, circuito ya abierto
 
 
 def test_mercado_muestra_solo_top_n_pero_audita_universo_completo(monkeypatch):

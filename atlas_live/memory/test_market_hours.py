@@ -32,15 +32,83 @@ def test_afterhours() -> None:
     assert mh.get_session(_et(2026, 8, 3, 19, 59)) == "afterhours"
 
 
-def test_closed_fuera_de_horario() -> None:
-    assert mh.get_session(_et(2026, 8, 3, 20, 0)) == "closed"
-    assert mh.get_session(_et(2026, 8, 3, 2, 0)) == "closed"
-    assert mh.get_session(_et(2026, 8, 3, 3, 59)) == "closed"
+def test_overnight_reemplaza_al_viejo_closed_fuera_de_horario() -> None:
+    # 2026-09-01, autorizado explícitamente: 20:00-04:00 ET en día hábil
+    # ahora es "overnight" (antes era "closed") -- Mercado sigue
+    # actualizándose vía Yahoo en esta ventana.
+    assert mh.get_session(_et(2026, 8, 3, 20, 0)) == "overnight"
+    assert mh.get_session(_et(2026, 8, 3, 2, 0)) == "overnight"
+    assert mh.get_session(_et(2026, 8, 3, 3, 59)) == "overnight"
 
 
 def test_closed_fin_de_semana() -> None:
     assert mh.get_session(_et(2026, 8, 1, 10, 0)) == "closed"  # sábado, en pleno horario regular
-    assert mh.get_session(_et(2026, 8, 2, 6, 0)) == "closed"   # domingo, en pleno premarket
+    assert mh.get_session(_et(2026, 8, 2, 6, 0)) == "closed"   # domingo, antes de las 20:00
+
+
+# --- OVERNIGHT (2026-09-01, autorizado explícitamente) -----------------
+# 2026-08-03 es lunes; 2026-08-06 es jueves; 2026-08-07 es viernes;
+# 2026-08-08 es sábado; 2026-08-09 es domingo; 2026-08-10 es lunes.
+
+def test_overnight_lunes_a_jueves() -> None:
+    assert mh.get_session(_et(2026, 8, 4, 20, 0)) == "overnight"   # martes 20:00
+    assert mh.get_session(_et(2026, 8, 4, 23, 59)) == "overnight"  # martes 23:59
+    assert mh.get_session(_et(2026, 8, 5, 0, 0)) == "overnight"    # miércoles 00:00
+    assert mh.get_session(_et(2026, 8, 5, 3, 59)) == "overnight"   # miércoles 03:59
+
+
+def test_transicion_19_59_a_20_00_dia_habil() -> None:
+    assert mh.get_session(_et(2026, 8, 3, 19, 59)) == "afterhours"
+    assert mh.get_session(_et(2026, 8, 3, 20, 0)) == "overnight"
+
+
+def test_transicion_23_59_a_00_00() -> None:
+    assert mh.get_session(_et(2026, 8, 3, 23, 59)) == "overnight"
+    assert mh.get_session(_et(2026, 8, 4, 0, 0)) == "overnight"
+
+
+def test_transicion_03_59_a_04_00() -> None:
+    assert mh.get_session(_et(2026, 8, 4, 3, 59)) == "overnight"
+    assert mh.get_session(_et(2026, 8, 4, 4, 0)) == "premarket"
+
+
+def test_viernes_20_00_es_cerrado_no_overnight() -> None:
+    # 2026-08-07 es viernes -- nunca hay overnight hacia el sábado.
+    assert mh.get_session(_et(2026, 8, 7, 19, 59)) == "afterhours"
+    assert mh.get_session(_et(2026, 8, 7, 20, 0)) == "closed"
+    assert mh.get_session(_et(2026, 8, 7, 23, 59)) == "closed"
+
+
+def test_sabado_siempre_cerrado() -> None:
+    # 2026-08-08 es sábado.
+    assert mh.get_session(_et(2026, 8, 8, 0, 0)) == "closed"
+    assert mh.get_session(_et(2026, 8, 8, 10, 0)) == "closed"
+    assert mh.get_session(_et(2026, 8, 8, 23, 59)) == "closed"
+
+
+def test_domingo_antes_de_20_00_cerrado_despues_overnight() -> None:
+    # 2026-08-09 es domingo.
+    assert mh.get_session(_et(2026, 8, 9, 19, 59)) == "closed"
+    assert mh.get_session(_et(2026, 8, 9, 20, 0)) == "overnight"
+    assert mh.get_session(_et(2026, 8, 9, 23, 0)) == "overnight"
+
+
+def test_lunes_madrugada_es_cola_del_overnight_del_domingo() -> None:
+    # 2026-08-10 es lunes -- 00:00-03:59 es la cola del overnight
+    # iniciado el domingo 09/08 a las 20:00.
+    assert mh.get_session(_et(2026, 8, 10, 0, 0)) == "overnight"
+    assert mh.get_session(_et(2026, 8, 10, 3, 59)) == "overnight"
+    assert mh.get_session(_et(2026, 8, 10, 4, 0)) == "premarket"
+
+
+def test_market_date_no_cambia_con_overnight() -> None:
+    # Mercado no usa market_date() en absoluto (confirmado por lectura de
+    # market_view.py) -- este test confirma que la función en sí sigue
+    # siendo pura fecha-de-calendario-ET, sin ninguna lógica nueva de
+    # sesión, para que ese hecho quede protegido explícitamente.
+    assert mh.market_date(_et(2026, 8, 3, 20, 0)) == "2026-08-03"    # lunes 20:00 (overnight)
+    assert mh.market_date(_et(2026, 8, 4, 2, 0)) == "2026-08-04"     # martes 02:00 (overnight)
+    assert mh.market_date(_et(2026, 8, 9, 21, 0)) == "2026-08-09"    # domingo 21:00 (overnight)
 
 
 def test_seal_window() -> None:
