@@ -252,10 +252,27 @@ def api_memory_engine():
             tb_text = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
         except Exception:
             tb_text = "traceback no disponible"
+        # Frame exacto donde se originó la excepción (2026-09-01, ampliación
+        # autorizada explícitamente): el traceback completo de arriba ya lo
+        # incluye, pero se extrae también por separado -- archivo/línea/
+        # función/línea de código -- para que quede legible sin tener que
+        # parsear el texto completo del traceback a mano.
+        origen = "no disponible"
+        try:
+            frames = traceback.extract_tb(exc.__traceback__)
+            if frames:
+                ultimo = frames[-1]
+                origen = (
+                    f"archivo={ultimo.filename} linea={ultimo.lineno} "
+                    f"funcion={ultimo.name} operacion={ultimo.line!r}"
+                )
+        except Exception:
+            pass
         try:
             print(
                 f"[MEMORY_ENGINE_EXCEPTION] {datetime.now(timezone.utc).isoformat()} "
-                f"path=/api/memory-engine tipo={type(exc).__name__} mensaje={exc}\n{tb_text}",
+                f"path=/api/memory-engine tipo={type(exc).__name__} mensaje={exc} "
+                f"origen=({origen})\n{tb_text}",
                 file=sys.stderr, flush=True,
             )
         except Exception:

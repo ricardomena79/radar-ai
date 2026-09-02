@@ -105,6 +105,103 @@ def test_diagnostics_reporta_tamano_y_fecha_si_la_db_existe():
         ddd.HISTORICAL_REFERENCE_DB_PATH = original
 
 
+def test_filesystem_write_test_pasa_en_directorio_normal():
+    tmp, old = _with_temp_data_dir()
+    try:
+        result = ddd.filesystem_write_test()
+        assert result == {"passed": True}
+        # cleanup real -- no debe quedar ningún archivo temporal atrás
+        leftovers = [p for p in Path(tmp).iterdir() if p.name.startswith("_fs_write_test_")]
+        assert leftovers == []
+    finally:
+        _restore(old)
+
+
+def test_filesystem_write_test_reporta_error_si_no_puede_escribir(monkeypatch):
+    # _data_dir_path() apunta a un ARCHIVO (no un directorio) -- abrir
+    # "archivo/algo.tmp" falla con NotADirectoryError, un OSError real,
+    # sin necesitar simular permisos de filesystem.
+    tmp = Path(tempfile.mkdtemp(prefix="atlas_test_notadir_")) / "esto_es_un_archivo"
+    tmp.write_bytes(b"x")
+    monkeypatch.setattr(ddd, "_data_dir_path", lambda: tmp)
+    result = ddd.filesystem_write_test()
+    assert result["passed"] is False
+    assert "error_type" in result
+    assert "error_message" in result
+
+
+def test_file_stat_info_de_archivo_inexistente():
+    tmp = Path(tempfile.mkdtemp(prefix="atlas_test_stat_")) / "no_existe.db"
+    info = ddd._file_stat_info(tmp)
+    assert info["exists"] is False
+    assert "size_bytes" not in info
+    assert info["wal"]["exists"] is False
+    assert info["shm"]["exists"] is False
+
+
+def test_file_stat_info_incluye_wal_y_shm_si_existen():
+    base = Path(tempfile.mkdtemp(prefix="atlas_test_stat_"))
+    db = base / "fake.db"
+    db.write_bytes(b"fake-db-bytes")
+    (base / "fake.db-wal").write_bytes(b"wal-bytes-123")
+    (base / "fake.db-shm").write_bytes(b"shm")
+    info = ddd._file_stat_info(db)
+    assert info["exists"] is True
+    assert info["size_bytes"] == len(b"fake-db-bytes")
+    assert info["readable"] is True
+    assert info["writable"] is True
+    assert info["wal"]["exists"] is True
+    assert info["wal"]["size_bytes"] == len(b"wal-bytes-123")
+    assert info["shm"]["exists"] is True
+
+
+def test_sqlite_read_only_test_archivo_inexistente_se_salta_sin_crearlo():
+    tmp = Path(tempfile.mkdtemp(prefix="atlas_test_sqlro_")) / "no_existe.db"
+    result = ddd._sqlite_read_only_test(tmp)
+    assert result == {"connect": "SKIPPED", "read_test": "SKIPPED", "error": "archivo no existe"}
+    assert not tmp.exists()  # nunca lo crea
+
+
+def test_sqlite_read_only_test_db_real_pasa():
+    import sqlite3
+
+    tmp = Path(tempfile.mkdtemp(prefix="atlas_test_sqlro_")) / "real.db"
+    conn = sqlite3.connect(str(tmp))
+    conn.execute("CREATE TABLE t (id INTEGER)")
+    conn.commit()
+    conn.close()
+
+    result = ddd._sqlite_read_only_test(tmp)
+    assert result == {"connect": "OK", "read_test": "OK", "error": None}
+
+
+def test_sqlite_read_only_test_archivo_corrupto_reporta_error_sin_lanzar():
+    tmp = Path(tempfile.mkdtemp(prefix="atlas_test_sqlro_")) / "corrupto.db"
+    tmp.write_bytes(b"esto no es un archivo sqlite valido")
+
+    result = ddd._sqlite_read_only_test(tmp)
+    assert result["read_test"] == "FAIL"
+    assert result["error"] is not None
+
+
+def test_diagnostics_incluye_filesystem_write_test_y_las_5_bases(monkeypatch):
+    tmp, old = _with_temp_data_dir()
+    try:
+        fake_dbs = {name: Path(tmp) / name for name in ddd._DATABASES_UNDER_DIAGNOSIS}
+        monkeypatch.setattr(ddd, "_DATABASES_UNDER_DIAGNOSIS", fake_dbs)
+
+        info = ddd.diagnostics()
+
+        assert "passed" in info["filesystem_write_test"]
+        assert set(info["databases"].keys()) == set(fake_dbs.keys())
+        for name, entry in info["databases"].items():
+            assert entry["exists"] is False  # ninguna de las 5 existe en el tmp dir
+            assert entry["connect"] == "SKIPPED"
+            assert entry["read_test"] == "SKIPPED"
+    finally:
+        _restore(old)
+
+
 if __name__ == "__main__":
     import traceback
 
