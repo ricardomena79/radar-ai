@@ -252,3 +252,271 @@ def quality_report(market_dates: List[str]) -> Dict[str, Any]:
         "solo_unified_outcome_status": "SIN_EVALUADOR_INDEPENDIENTE" if total_solo_unified else None,
         "por_dia": dias,
     }
+
+
+def _merge_conteo_dict(total: Dict[str, int], nuevo: Dict[str, int]) -> None:
+    """Suma in-place un dict `{clave: conteo}` de UN día dentro del
+    acumulador total -- mismo patrón de merge en cada llamada, para no
+    repetirlo 2 veces (estado PM-percentile / estado PM-acceleration)."""
+    for k, v in nuevo.items():
+        total[k] = total.get(k, 0) + v
+
+
+def quality_report_aggregated(market_dates: List[str]) -> Dict[str, Any]:
+    """Versión de `quality_report()` que procesa UN `market_date` a la vez
+    y NUNCA retiene en memoria el detalle completo (`matched`/
+    `solo_legacy_detalle`/`solo_unified_detalle`, con los snapshots JSON de
+    `shadow_candidate_detection` adentro) de más de un día -- 2026-09-02,
+    autorizado explícitamente, tras un intento real contra producción que
+    devolvió "upstream error" al intentar transportar el detalle completo
+    de todo el período por HTTP. `compare_legacy_vs_unified()` NO se toca
+    -- el matching de 180s, la clasificación Legacy/Unified y el cálculo de
+    cada métrica base son EXACTAMENTE los mismos; lo único que cambia es
+    CUÁNDO se extraen los números chicos que hacen falta y CUÁNDO se
+    descarta el resto.
+
+    Cubre las 10 métricas originales de U3-C3:
+      1-4 (conteos Legacy/Unified/comunes/solo-Unified), 5 (quién detectó
+      primero), 6-8 (hit +20/+50/+100%), 9 (magnitud máxima) -- todas con
+      datos YA disponibles en `candidate_detection`/`candidate_outcome`/
+      `shadow_candidate_detection`, agregadas incrementalmente, MISMA
+      definición matemática que `quality_report()` (6/7/9 literalmente
+      copiadas; 5/8 son extensiones del mismo patrón, ver el mensaje que
+      autorizó este cambio).
+      10 (tiempo al objetivo) -- `candidate_outcome.minutes_to_max`, solo
+      poblado por `eod_report.py` (el cálculo real con velas de 1 min de
+      Tradier); `None` en outcomes "en curso" -- mismo tratamiento que
+      `magnitudes`, nunca se inventa un valor.
+      PM-RVOL -- ver investigación en el docstring del bloque de abajo:
+      solo existe para el lado LEGACY, en sesión premarket. Nunca se
+      calcula para Unified (no existe esa lógica en `unified_detector.py`
+      hoy, y esta función no la crea).
+      Conocimiento vs. baseline -- reutiliza `candidate_registry.shadow_validation_report()`
+      TAL CUAL (ya existente, ya de solo lectura, ya usado por
+      `/api/admin/shadow-validation-report`) -- nunca recalcula
+      `decision_shadow`, nunca toca `atlas_decision_core.py`,
+      `apply_recalibration` sigue en `False`."""
+    total_matched = total_solo_legacy = total_solo_unified = 0
+    total_unified_antes = total_legacy_antes = total_simultaneas = 0
+    diffs_abs: List[float] = []
+    outcomes_evaluables: List[Dict[str, Any]] = []
+    dias_procesados = 0
+    dias_con_error: List[Dict[str, str]] = []
+
+    # PM-RVOL -- investigado antes de implementar (2026-09-02): calculado
+    # HOY solo para el lado LEGACY (`premarket_volume_percentile_at_detection`/
+    # `premarket_volume_acceleration_at_detection`, columnas reales de
+    # `candidate_detection`, pobladas por `candidate_tracker.py`), y SOLO
+    # para detecciones en sesión "premarket" -- `NOT_PREMARKET` en
+    # cualquier otra sesión, por diseño de `candidate_gates.premarket_volume_percentile/
+    # _acceleration()`, no un dato faltante. `unified_detector.py` NUNCA
+    # llama a esas 2 funciones ni las persiste en `shadow_candidate_detection`
+    # -- confirmado leyendo el archivo completo, cero referencias. Por eso
+    # el rol del PM-RVOL se reporta EXCLUSIVAMENTE sobre la población
+    # LEGACY (matched + solo_legacy) -- nunca se inventa un valor para
+    # Unified, se declara `unified_coverage` explícito en el resultado.
+    pm_percentile_por_estado: Dict[str, int] = {}
+    pm_acceleration_por_estado: Dict[str, int] = {}
+    pm_percentiles_validos: List[float] = []
+    pm_acceleraciones_validas: List[float] = []
+    pm_percentile_por_reached20: Dict[str, List[float]] = {"alcanzo_20": [], "no_alcanzo_20": []}
+
+    # Conocimiento vs. baseline -- investigado antes de implementar
+    # (2026-09-02): "baseline" = la decisión REAL (`decision`, de
+    # `priority_classifier.classify_final_priority()`); "conocimiento
+    # aprendido" = `decision_shadow` (LEK, `atlas_decision_core.decide()`
+    # con `learned_evidence`); ambas ya se calculan en cada request real de
+    # `/api/radar-oportunidades`, y CUANDO DIVERGEN
+    # (`shadow_differs=True`) quedan persistidas en `shadow_decision_log`
+    # (Fase 2 de la transición SHADOW->VALIDACIÓN, 2026-08-27) -- write-once
+    # por (ticker, market_date), tabla chica por diseño (solo eventos de
+    # divergencia, no una fila por candidata). `shadow_validation_report()`
+    # (`candidate_registry.py`, ya existente, ya de solo lectura, ya usado
+    # por `/api/admin/shadow-validation-report`) cruza esos eventos contra
+    # `candidate_outcome` YA CERRADO para clasificar cada downgrade de LEK
+    # como correcto/incorrecto/ambiguo -- se reutiliza TAL CUAL, nunca se
+    # recalcula `decision_shadow` ni se activa `apply_recalibration`.
+    sv_total_eventos = sv_con_outcome = sv_pendientes = 0
+    sv_downgrade_correcto = sv_downgrade_incorrecto = sv_ambiguos = 0
+
+    for market_date in market_dates:
+        try:
+            dia = compare_legacy_vs_unified(market_date)
+        except Exception as exc:
+            dias_con_error.append({"market_date": market_date, "error": f"{type(exc).__name__}: {exc}"})
+            continue
+
+        total_matched += dia["detectadas_por_ambos"]
+        total_solo_legacy += dia["solo_legacy"]
+        total_solo_unified += dia["solo_unified"]
+        total_unified_antes += dia["unified_antes_que_legacy"]
+        total_legacy_antes += dia["legacy_antes_que_unified"]
+        total_simultaneas += dia["detecciones_simultaneas"]
+
+        legacy_rows_del_dia: List[Tuple[Dict[str, Any], Optional[Dict[str, Any]]]] = []
+        for m in dia["matched"]:
+            diffs_abs.append(abs(m["diff_seconds"]))
+            if m["outcome"]:
+                outcomes_evaluables.append(m["outcome"])
+            legacy_rows_del_dia.append((m["legacy"], m["outcome"]))
+        for l in dia["solo_legacy_detalle"]:
+            if l["outcome"]:
+                outcomes_evaluables.append(l["outcome"])
+            legacy_rows_del_dia.append((l, l["outcome"]))
+
+        for legacy_row, outcome in legacy_rows_del_dia:
+            estado_pct = legacy_row.get("premarket_volume_percentile_state_at_detection")
+            if estado_pct:
+                pm_percentile_por_estado[estado_pct] = pm_percentile_por_estado.get(estado_pct, 0) + 1
+                if estado_pct == "VALID":
+                    val = legacy_row.get("premarket_volume_percentile_at_detection")
+                    if val is not None:
+                        pm_percentiles_validos.append(val)
+                        if outcome and outcome.get("reached_20") is not None:
+                            bucket = "alcanzo_20" if outcome.get("reached_20") else "no_alcanzo_20"
+                            pm_percentile_por_reached20[bucket].append(val)
+
+            estado_acc = legacy_row.get("premarket_volume_acceleration_state_at_detection")
+            if estado_acc:
+                pm_acceleration_por_estado[estado_acc] = pm_acceleration_por_estado.get(estado_acc, 0) + 1
+                if estado_acc == "VALID":
+                    val = legacy_row.get("premarket_volume_acceleration_at_detection")
+                    if val is not None:
+                        pm_acceleraciones_validas.append(val)
+
+        sv = reg.shadow_validation_report(market_date)
+        sv_total_eventos += sv["total_eventos_shadow_differs"]
+        sv_con_outcome += sv["con_outcome_final"]
+        sv_pendientes += sv["pendientes"]
+        sv_downgrade_correcto += sv["downgrade_correcto"]
+        sv_downgrade_incorrecto += sv["downgrade_incorrecto"]
+        sv_ambiguos += sv["ambiguos"]
+
+        dias_procesados += 1
+        del dia, legacy_rows_del_dia  # libera el detalle completo de ESTE día antes del próximo
+
+    total_legacy = total_matched + total_solo_legacy
+    total_unified = total_matched + total_solo_unified
+    muestra_total = total_matched + total_solo_legacy + total_solo_unified
+    recall_relativo_unified = (total_matched / total_legacy) if total_legacy else None
+    tasa_deteccion_compartida = (total_matched / muestra_total) if muestra_total else None
+
+    n_con_outcome = len(outcomes_evaluables)
+    pct_reached_20 = (
+        sum(1 for o in outcomes_evaluables if o.get("reached_20")) / n_con_outcome * 100
+        if n_con_outcome else None
+    )
+    pct_reached_50 = (
+        sum(1 for o in outcomes_evaluables if o.get("reached_50")) / n_con_outcome * 100
+        if n_con_outcome else None
+    )
+    pct_reached_100 = (
+        sum(1 for o in outcomes_evaluables if o.get("reached_100")) / n_con_outcome * 100
+        if n_con_outcome else None
+    )
+    magnitudes = [o.get("max_return_after_detection_pct") for o in outcomes_evaluables
+                  if o.get("max_return_after_detection_pct") is not None]
+    tiempos_a_objetivo = [o.get("minutes_to_max") for o in outcomes_evaluables
+                           if o.get("minutes_to_max") is not None]
+
+    pm_rvol_disponible = bool(pm_percentiles_validos) or bool(pm_acceleraciones_validas)
+    pm_rvol = {
+        "unavailable": not pm_rvol_disponible,
+        "reason": (
+            None if pm_rvol_disponible else
+            "sin detecciones LEGACY con PM-RVOL VALID en el rango -- puede ser que "
+            "ninguna detección haya ocurrido en sesión premarket, o que no haya "
+            "alcanzado el piso de universo/historial que exige candidate_gates.py"
+        ),
+        "unified_coverage": (
+            "no disponible -- unified_detector.py no calcula ni persiste PM-RVOL hoy"
+        ),
+        "percentile_conteo_por_estado": pm_percentile_por_estado,
+        "percentile_promedio": statistics.mean(pm_percentiles_validos) if pm_percentiles_validos else None,
+        "percentile_mediana": statistics.median(pm_percentiles_validos) if pm_percentiles_validos else None,
+        "percentile_promedio_alcanzo_20": (
+            statistics.mean(pm_percentile_por_reached20["alcanzo_20"])
+            if pm_percentile_por_reached20["alcanzo_20"] else None
+        ),
+        "percentile_promedio_no_alcanzo_20": (
+            statistics.mean(pm_percentile_por_reached20["no_alcanzo_20"])
+            if pm_percentile_por_reached20["no_alcanzo_20"] else None
+        ),
+        "acceleration_conteo_por_estado": pm_acceleration_por_estado,
+        "acceleration_promedio": statistics.mean(pm_acceleraciones_validas) if pm_acceleraciones_validas else None,
+        "acceleration_mediana": statistics.median(pm_acceleraciones_validas) if pm_acceleraciones_validas else None,
+    }
+
+    sv_n_evaluables_tasa = sv_downgrade_correcto + sv_downgrade_incorrecto
+    sv_tasa_acierto_pct = (
+        round(100 * sv_downgrade_correcto / sv_n_evaluables_tasa, 1) if sv_n_evaluables_tasa else None
+    )
+    sv_wilson_ci = (
+        reg.wilson_confidence_interval(sv_downgrade_correcto, sv_n_evaluables_tasa)
+        if sv_n_evaluables_tasa else None
+    )
+    conocimiento_vs_baseline = {
+        "unavailable": sv_total_eventos == 0,
+        "reason": (
+            None if sv_total_eventos > 0 else
+            "sin eventos de shadow_differs=True registrados en el rango -- LEK "
+            "(decision_shadow) coincidió siempre con la decisión real, o no hubo "
+            "candidatas evaluadas por atlas_decision_core.decide() en este período"
+        ),
+        "total_eventos_shadow_differs": sv_total_eventos,
+        "con_outcome_final": sv_con_outcome,
+        "pendientes": sv_pendientes,
+        "downgrade_correcto": sv_downgrade_correcto,
+        "downgrade_incorrecto": sv_downgrade_incorrecto,
+        "ambiguos": sv_ambiguos,
+        "n_evaluables_tasa": sv_n_evaluables_tasa,
+        "tasa_acierto_pct": sv_tasa_acierto_pct,
+        "wilson_ci": list(sv_wilson_ci) if sv_wilson_ci else None,
+        "nota_metodologica": (
+            "downgrade_correcto = LEK habria sido mas cauteloso y el resultado real "
+            "le dio la razon (candidate_outcome.category == 'falsa_senal'); "
+            "downgrade_incorrecto = la candidata SI era buena "
+            "(mejor_oportunidad/buena_oportunidad) y LEK la habria rebajado sin "
+            "motivo real. apply_recalibration sigue en False -- este numero es "
+            "puramente observacional, nunca cambio ninguna decision real."
+        ),
+    }
+
+    return {
+        "market_dates": market_dates,
+        "dias_procesados": dias_procesados,
+        "dias_con_error": dias_con_error,
+        "match_window_seconds": MATCH_WINDOW_SECONDS,
+        "total_legacy": total_legacy,
+        "total_unified": total_unified,
+        "detectadas_por_ambos": total_matched,
+        "solo_legacy": total_solo_legacy,
+        "solo_unified": total_solo_unified,
+        "quien_detecto_primero": {
+            "unified_antes_que_legacy": total_unified_antes,
+            "legacy_antes_que_unified": total_legacy_antes,
+            "simultaneas": total_simultaneas,
+            "diferencia_tiempo_promedio_segundos": statistics.mean(diffs_abs) if diffs_abs else None,
+            "diferencia_tiempo_mediana_segundos": statistics.median(diffs_abs) if diffs_abs else None,
+        },
+        "recall_relativo_unified": recall_relativo_unified,
+        "tasa_deteccion_compartida": tasa_deteccion_compartida,
+        "muestra_total": muestra_total,
+        "estado_validacion_muestra": reg.precision_validation_state(muestra_total),
+        "outcome_n_evaluable": n_con_outcome,
+        "outcome_pct_reached_20": pct_reached_20,
+        "outcome_pct_reached_50": pct_reached_50,
+        "outcome_pct_reached_100": pct_reached_100,
+        "outcome_magnitud_maxima_promedio": statistics.mean(magnitudes) if magnitudes else None,
+        "outcome_magnitud_maxima_mediana": statistics.median(magnitudes) if magnitudes else None,
+        "outcome_tiempo_a_objetivo_promedio_minutos": (
+            statistics.mean(tiempos_a_objetivo) if tiempos_a_objetivo else None
+        ),
+        "outcome_tiempo_a_objetivo_mediano_minutos": (
+            statistics.median(tiempos_a_objetivo) if tiempos_a_objetivo else None
+        ),
+        "outcome_tiempo_a_objetivo_n": len(tiempos_a_objetivo),
+        "solo_unified_outcome_status": "SIN_EVALUADOR_INDEPENDIENTE" if total_solo_unified else None,
+        "pm_rvol": pm_rvol,
+        "conocimiento_vs_baseline": conocimiento_vs_baseline,
+    }

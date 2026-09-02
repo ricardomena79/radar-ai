@@ -52,7 +52,7 @@ def test_con_token_permite_y_devuelve_reporte(monkeypatch):
     os.environ["ATLAS_ADMIN_TOKEN"] = "secreto-real"
     monkeypatch.setattr(mh, "market_date", lambda now=None: "2026-09-02")
     monkeypatch.setattr(sreg, "list_shadow_market_dates", lambda: ["2026-08-27"])
-    monkeypatch.setattr(dc, "quality_report", lambda market_dates: {"muestra_total": 0, "market_dates": market_dates})
+    monkeypatch.setattr(dc, "quality_report_aggregated", lambda market_dates: {"muestra_total": 0, "market_dates": market_dates})
     try:
         r = _client().get("/api/admin/u3c3-quality-report?token=secreto-real")
         assert r.status_code == 200
@@ -77,7 +77,7 @@ def test_query_params_no_alteran_el_rango(monkeypatch):
         capturado["market_dates"] = market_dates
         return {"muestra_total": 0}
 
-    monkeypatch.setattr(dc, "quality_report", _fake_quality_report)
+    monkeypatch.setattr(dc, "quality_report_aggregated", _fake_quality_report)
     try:
         r = _client().get(
             "/api/admin/u3c3-quality-report?token=secreto-real"
@@ -102,7 +102,7 @@ def test_body_no_altera_el_rango(monkeypatch):
         capturado["market_dates"] = market_dates
         return {"muestra_total": 0}
 
-    monkeypatch.setattr(dc, "quality_report", _fake_quality_report)
+    monkeypatch.setattr(dc, "quality_report_aggregated", _fake_quality_report)
     try:
         r = _client().get(
             "/api/admin/u3c3-quality-report?token=secreto-real",
@@ -127,7 +127,7 @@ def test_rango_inferior_fijo_excluye_fechas_anteriores_a_u3(monkeypatch):
         capturado["md"] = market_dates
         return {}
 
-    monkeypatch.setattr(dc, "quality_report", _fake_quality_report)
+    monkeypatch.setattr(dc, "quality_report_aggregated", _fake_quality_report)
     os.environ["ATLAS_ADMIN_TOKEN"] = "secreto-real"
     try:
         r = _client().get("/api/admin/u3c3-quality-report?token=secreto-real")
@@ -148,7 +148,7 @@ def test_fechas_posteriores_a_hoy_quedan_fuera(monkeypatch):
         capturado["md"] = market_dates
         return {}
 
-    monkeypatch.setattr(dc, "quality_report", _fake_quality_report)
+    monkeypatch.setattr(dc, "quality_report_aggregated", _fake_quality_report)
     os.environ["ATLAS_ADMIN_TOKEN"] = "secreto-real"
     try:
         r = _client().get("/api/admin/u3c3-quality-report?token=secreto-real")
@@ -162,7 +162,7 @@ def test_sin_fechas_shadow_en_el_rango_respuesta_controlada(monkeypatch):
     monkeypatch.setattr(mh, "market_date", lambda now=None: "2026-09-02")
     monkeypatch.setattr(sreg, "list_shadow_market_dates", lambda: [])
     llamado = []
-    monkeypatch.setattr(dc, "quality_report", lambda market_dates: llamado.append(market_dates))
+    monkeypatch.setattr(dc, "quality_report_aggregated", lambda market_dates: llamado.append(market_dates))
     os.environ["ATLAS_ADMIN_TOKEN"] = "secreto-real"
     try:
         r = _client().get("/api/admin/u3c3-quality-report?token=secreto-real")

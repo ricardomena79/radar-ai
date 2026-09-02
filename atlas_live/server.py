@@ -1316,8 +1316,16 @@ def api_admin_u3c3_quality_report():
     `shadow_detector_registry.list_shadow_market_dates()` (única fuente
     real), acotado a `[U3_DEPLOY_MARKET_DATE, hoy]` -- nunca una fecha
     recibida del cliente. Delega en
-    `detector_comparison.quality_report()`, que a su vez solo ejecuta
-    `SELECT` -- nunca escribe en ninguna SQLite, nunca toca
+    `detector_comparison.quality_report_aggregated()` (2026-09-02 --
+    reemplaza a `quality_report()`, que un intento real contra producción
+    demostró que no transporta bien un período de varios días por HTTP:
+    devuelve el detalle completo de `matched`/`solo_legacy_detalle`/
+    `solo_unified_detalle` con los snapshots JSON de
+    `shadow_candidate_detection` adentro, potencialmente del orden de la
+    base completa -- ~2 GB). La versión agregada procesa un `market_date`
+    a la vez y solo retiene contadores/listas de números pequeños,
+    devolviendo una respuesta de unos pocos KB. Solo ejecuta `SELECT` --
+    nunca escribe en ninguna SQLite, nunca toca
     `shadow_candidate_detection`/`candidate_observation`, nunca activa
     `apply_recalibration` ni influye en ninguna decisión real de Atlas."""
     if not _admin_token_ok():
@@ -1338,7 +1346,7 @@ def api_admin_u3c3_quality_report():
             "hoy": hoy,
         }), 200
 
-    reporte = dc.quality_report(market_dates)
+    reporte = dc.quality_report_aggregated(market_dates)
     reporte["u3c3_window"] = {
         "u3_deploy_date": U3_DEPLOY_MARKET_DATE,
         "hoy": hoy,
