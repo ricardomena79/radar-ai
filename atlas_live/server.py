@@ -1355,6 +1355,36 @@ def api_admin_u3c3_quality_report():
     return jsonify(reporte)
 
 
+@app.route("/api/admin/u3c3-exclusive-diagnostics")
+def api_admin_u3c3_exclusive_diagnostics():
+    """Diagnóstico temporal de SOLO LECTURA (2026-09-02, autorizado
+    explícitamente) sobre las ~3,1M detecciones exclusivas de Unified que
+    encontró la auditoría U3-C3 -- volumen/distribución por ticker/día,
+    distribución por puerta, características de los 7.329 solo_legacy,
+    timing de matched, cobertura estructural de `candidate_outcome`
+    (nunca evaluación de resultado), y una aproximación de "episodios"
+    (agrupamiento por gaps de 30/60/180/300s, declarada explícitamente
+    como mezcla matched+solo_unified -- ver
+    `u3c3_exclusive_diagnostics.episode_grouping()`).
+
+    Módulo aislado (`atlas_live/radar/u3c3_exclusive_diagnostics.py`),
+    nunca importado por `detector_comparison.py` ni por ningún flujo real
+    -- retirable con un solo commit. Sin parámetros (ni query ni body) --
+    las 4 fechas están hardcodeadas en el módulo
+    (`DIAGNOSTIC_MARKET_DATES`), nunca aceptadas del cliente. Cada consulta
+    propia de este módulo abre su conexión en modo read-only REAL de
+    SQLite (`file:...?mode=ro` + `PRAGMA query_only=ON`) -- un intento de
+    escritura falla a nivel del motor. Nunca carga las filas crudas de
+    `shadow_candidate_detection` -- todo corre como agregación SQL
+    (GROUP BY/COUNT/LAG sobre ventana) dentro de SQLite."""
+    if not _admin_token_ok():
+        return jsonify({"error": "no autorizado"}), 403
+
+    from atlas_live.radar import u3c3_exclusive_diagnostics as u3d
+
+    return jsonify(u3d.full_report())
+
+
 @app.route("/api/admin/generate-experience-knowledge", methods=["POST"])
 def api_admin_generate_experience_knowledge():
     """Recálculo MANUAL del conocimiento propio de Atlas (2026-08-25, Fase
