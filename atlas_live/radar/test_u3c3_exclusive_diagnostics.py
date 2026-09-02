@@ -442,17 +442,138 @@ def test_run_stage_sin_excepcion_no_registra_nada_y_devuelve_el_resultado(capfd)
 
 
 def test_full_report_etapa_b4_b5_combinada_en_el_marcador_si_falla(monkeypatch, capfd):
+    """2026-09-02, corrección: `full_report()` ya NO relanza la excepción
+    -- la atrapa y devuelve un dict con `ok=False`. El marcador en stderr
+    (vía `_run_stage()`, sin cambios) sigue apareciendo igual."""
     def _falla(market_dates):
         raise RuntimeError("fallo sintetico en B4/B5")
 
     monkeypatch.setattr(u3d, "_compute_solo_legacy_and_timing", _falla)
 
-    import pytest
-    with pytest.raises(RuntimeError):
-        u3d.full_report(market_dates=("2026-08-26",))
+    resultado = u3d.full_report(market_dates=("2026-08-26",))
+
+    assert resultado["ok"] is False
+    assert resultado["etapa_fallida"] == "B4_B5"
+    assert resultado["tipo_excepcion"] == "RuntimeError"
+    assert resultado["mensaje"] == "fallo sintetico en B4/B5"
 
     captured = capfd.readouterr()
     assert "[U3C3_DIAGNOSTIC_EXCEPTION] etapa=B4_B5" in captured.err
+
+
+# --- Corrección 2026-09-02: full_report() estructurado (ok/etapa_fallida) --
+
+def test_full_report_falla_en_b1_detiene_ahi_y_no_corre_las_siguientes(monkeypatch):
+    _fresh()
+    try:
+        llamadas = []
+
+        def _spy_ok(nombre):
+            def _fn(market_dates):
+                llamadas.append(nombre)
+                return {}
+            return _fn
+
+        def _falla(market_dates):
+            llamadas.append("B1")
+            raise sqlite3.OperationalError("unable to open database file")
+
+        monkeypatch.setattr(u3d, "volume_and_distribution", _falla)
+        monkeypatch.setattr(u3d, "gates_distribution", _spy_ok("B3"))
+        monkeypatch.setattr(u3d, "_compute_solo_legacy_and_timing", lambda market_dates: (llamadas.append("B4_B5") or ({}, {})))
+        monkeypatch.setattr(u3d, "structural_outcome_coverage", _spy_ok("B6"))
+        monkeypatch.setattr(u3d, "episode_grouping", _spy_ok("B7"))
+
+        resultado = u3d.full_report(market_dates=("2026-08-26",))
+
+        assert resultado["ok"] is False
+        assert resultado["etapa_fallida"] == "B1"
+        assert resultado["tipo_excepcion"] == "OperationalError"
+        assert resultado["etapas_completadas"] == []
+        assert resultado["nota"] == "Diagnostico detenido. No se ejecutaron etapas posteriores."
+        assert llamadas == ["B1"]  # B3/B4_B5/B6/B7 NUNCA se llamaron
+    finally:
+        _restore()
+
+
+def test_full_report_falla_en_b7_deja_b1_b3_b4b5_b6_completadas(monkeypatch):
+    _fresh()
+    try:
+        def _ok(market_dates):
+            return {}
+
+        def _ok_par(market_dates):
+            return {}, {}
+
+        def _falla(market_dates):
+            raise RuntimeError("fallo sintetico en B7")
+
+        monkeypatch.setattr(u3d, "volume_and_distribution", _ok)
+        monkeypatch.setattr(u3d, "gates_distribution", _ok)
+        monkeypatch.setattr(u3d, "_compute_solo_legacy_and_timing", _ok_par)
+        monkeypatch.setattr(u3d, "structural_outcome_coverage", _ok)
+        monkeypatch.setattr(u3d, "episode_grouping", _falla)
+
+        resultado = u3d.full_report(market_dates=("2026-08-26",))
+
+        assert resultado["ok"] is False
+        assert resultado["etapa_fallida"] == "B7"
+        assert resultado["etapas_completadas"] == ["B1", "B3", "B4_B5", "B6"]
+    finally:
+        _restore()
+
+
+def test_full_report_exitoso_devuelve_ok_true_y_las_5_etapas():
+    _fresh()
+    try:
+        _shadow("AAA", "2026-08-26", "2026-08-26T14:00:00+00:00")
+        _detect("BBB", "2026-08-26", "2026-08-26T14:00:00+00:00")
+
+        resultado = u3d.full_report(market_dates=("2026-08-26",))
+
+        assert resultado["ok"] is True
+        assert resultado["etapas_completadas"] == ["B1", "B3", "B4_B5", "B6", "B7"]
+        assert "etapa_fallida" not in resultado
+        for clave in (
+            "b1_volumen_y_distribucion", "b3_distribucion_por_gate",
+            "b4_solo_legacy_caracteristicas", "b5_timing_matched",
+            "b6_cobertura_estructural_outcome", "b7_episodios_shadow_unified_aproximado",
+        ):
+            assert clave in resultado
+    finally:
+        _restore()
+
+
+def test_full_report_fallo_nunca_incluye_traceback_en_la_respuesta(monkeypatch):
+    def _falla(market_dates):
+        raise RuntimeError("fallo con detalle sensible")
+
+    monkeypatch.setattr(u3d, "volume_and_distribution", _falla)
+
+    resultado = u3d.full_report(market_dates=("2026-08-26",))
+
+    import json
+    como_texto = json.dumps(resultado)
+    assert "Traceback" not in como_texto
+    assert "traceback" not in como_texto
+    assert "File \"" not in como_texto
+    assert "u3c3_exclusive_diagnostics.py" not in como_texto
+
+
+def test_sanitize_message_reemplaza_rutas_conocidas_y_trunca():
+    _fresh()
+    try:
+        ruta_real = str(sreg.DB_PATH)
+        mensaje = f"unable to open database file: {ruta_real}"
+        saneado = u3d._sanitize_message(mensaje)
+        assert ruta_real not in saneado
+        assert sreg.DB_PATH.name in saneado
+
+        largo = "x" * 1000
+        assert len(u3d._sanitize_message(largo)) <= 300 + len("... (truncado)")
+        assert u3d._sanitize_message(largo).endswith("... (truncado)")
+    finally:
+        _restore()
 
 
 if __name__ == "__main__":

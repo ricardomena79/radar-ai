@@ -1376,13 +1376,24 @@ def api_admin_u3c3_exclusive_diagnostics():
     SQLite (`file:...?mode=ro` + `PRAGMA query_only=ON`) -- un intento de
     escritura falla a nivel del motor. Nunca carga las filas crudas de
     `shadow_candidate_detection` -- todo corre como agregación SQL
-    (GROUP BY/COUNT/LAG sobre ventana) dentro de SQLite."""
+    (GROUP BY/COUNT) o por grupo chico (B.7) dentro de SQLite.
+
+    Diagnóstico estructurado (2026-09-02, autorizado explícitamente, tras
+    2 HTTP 500 reales sin poder ver el traceback en Railway):
+    `full_report()` ya no deja que una excepción se propague hasta Flask
+    -- la atrapa, arma un body chico (`ok`, `etapa_fallida`,
+    `tipo_excepcion`, `mensaje` saneado -- nunca traceback/rutas/
+    credenciales/datos de tablas, ver `_sanitize_message()`) y
+    `etapas_completadas`. El traceback completo sigue escribiéndose a
+    stderr vía `_run_stage()` (marcador `[U3C3_DIAGNOSTIC_EXCEPTION]`),
+    solo que ya no es la única forma de saber qué pasó."""
     if not _admin_token_ok():
         return jsonify({"error": "no autorizado"}), 403
 
     from atlas_live.radar import u3c3_exclusive_diagnostics as u3d
 
-    return jsonify(u3d.full_report())
+    resultado = u3d.full_report()
+    return jsonify(resultado), (200 if resultado.get("ok") else 500)
 
 
 @app.route("/api/admin/generate-experience-knowledge", methods=["POST"])

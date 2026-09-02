@@ -44,12 +44,42 @@ def test_sin_token_rechaza():
             os.environ["ATLAS_ADMIN_TOKEN"] = old
 
 
-def test_con_token_devuelve_el_reporte(monkeypatch):
+def test_con_token_y_ok_true_devuelve_200(monkeypatch):
     os.environ["ATLAS_ADMIN_TOKEN"] = "secreto-real"
-    monkeypatch.setattr(u3d, "full_report", lambda: {"market_dates": list(u3d.DIAGNOSTIC_MARKET_DATES)})
+    monkeypatch.setattr(
+        u3d, "full_report",
+        lambda: {"ok": True, "market_dates": list(u3d.DIAGNOSTIC_MARKET_DATES), "etapas_completadas": ["B1"]},
+    )
     try:
         r = _client().get("/api/admin/u3c3-exclusive-diagnostics?token=secreto-real")
         assert r.status_code == 200
-        assert r.get_json()["market_dates"] == ["2026-08-26", "2026-08-27", "2026-08-28", "2026-08-31"]
+        body = r.get_json()
+        assert body["ok"] is True
+        assert body["market_dates"] == ["2026-08-26", "2026-08-27", "2026-08-28", "2026-08-31"]
+    finally:
+        del os.environ["ATLAS_ADMIN_TOKEN"]
+
+
+def test_con_token_y_ok_false_devuelve_500(monkeypatch):
+    """2026-09-02: si `full_report()` reporta un fallo estructurado
+    (`ok=False`), el endpoint debe devolver 500 igual que antes -- pero
+    ahora con un body JSON chico (`etapa_fallida`/`tipo_excepcion`/
+    `mensaje`) en vez de la página HTML genérica de Flask."""
+    os.environ["ATLAS_ADMIN_TOKEN"] = "secreto-real"
+    monkeypatch.setattr(
+        u3d, "full_report",
+        lambda: {
+            "ok": False, "etapa_fallida": "B7", "tipo_excepcion": "RuntimeError",
+            "mensaje": "fallo sintetico", "etapas_completadas": ["B1", "B3", "B4_B5", "B6"],
+            "nota": "Diagnostico detenido. No se ejecutaron etapas posteriores.",
+        },
+    )
+    try:
+        r = _client().get("/api/admin/u3c3-exclusive-diagnostics?token=secreto-real")
+        assert r.status_code == 500
+        body = r.get_json()
+        assert body["ok"] is False
+        assert body["etapa_fallida"] == "B7"
+        assert body["etapas_completadas"] == ["B1", "B3", "B4_B5", "B6"]
     finally:
         del os.environ["ATLAS_ADMIN_TOKEN"]

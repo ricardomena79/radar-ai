@@ -492,15 +492,76 @@ def _run_stage(etapa: str, fn: Callable[..., Any], *args: Any) -> Any:
         raise
 
 
+def _sanitize_message(mensaje: str, max_len: int = 300) -> str:
+    """Nunca traceback, nunca rutas absolutas del servidor, nunca datos de
+    tablas -- reemplaza las 2 rutas de DB conocidas por su nombre de
+    archivo solamente (un `sqlite3.OperationalError` suele incluir la ruta
+    completa en el mensaje, ej. "unable to open database file"), y trunca
+    a `max_len` caracteres (defensa adicional por si el mensaje de la
+    excepción, por algún motivo, resultara inesperadamente largo)."""
+    saneado = mensaje
+    for path in (sreg.DB_PATH, reg.DB_PATH):
+        try:
+            saneado = saneado.replace(str(Path(path).resolve()), Path(path).name)
+            saneado = saneado.replace(str(path), Path(path).name)
+        except Exception:
+            pass
+    if len(saneado) > max_len:
+        saneado = saneado[:max_len] + "... (truncado)"
+    return saneado
+
+
 def full_report(market_dates: Sequence[str] = DIAGNOSTIC_MARKET_DATES) -> Dict[str, Any]:
+    """Corre las 5 etapas en orden, vía `_run_stage()` (sin cambios -- sigue
+    logueando el traceback completo a stderr si algo falla). A diferencia
+    del diseño anterior, esta función YA NO deja que la excepción se
+    propague hasta Flask -- la atrapa acá, arma una respuesta CHICA y
+    controlada (`ok=False`, `etapa_fallida`, `tipo_excepcion`, `mensaje`
+    saneado, `etapas_completadas`) y la devuelve como dict normal -- el
+    endpoint decide el status HTTP (200/500) según `ok`. Con éxito
+    completo, `ok=True` y `etapas_completadas` lista las 5 etapas -- la
+    única forma de "progreso" que se ofrece (sin polling, sin proceso en
+    background): saber, en la respuesta final, hasta dónde se llegó.
+
+    La lista de etapas (nombre, clave en la respuesta -- `None` si la etapa
+    llena más de una clave, ver B4_B5 abajo -- función a ejecutar) se arma
+    DENTRO de la función, no como constante de módulo: así cada nombre de
+    función (`volume_and_distribution`, etc.) se resuelve dinámicamente en
+    el namespace del módulo en cada llamada, igual que hacía el código
+    anterior línea por línea -- necesario para que un test pueda
+    monkeypatchear, por ejemplo, `u3c3_exclusive_diagnostics._compute_solo_legacy_and_timing`
+    y que `full_report()` efectivamente use el reemplazo (una tupla de
+    módulo capturaría la función original una sola vez, en el import, y
+    ningún monkeypatch posterior la afectaría)."""
     resultado: Dict[str, Any] = {"market_dates": list(market_dates)}
-    resultado["b1_volumen_y_distribucion"] = _run_stage("B1", volume_and_distribution, market_dates)
-    resultado["b3_distribucion_por_gate"] = _run_stage("B3", gates_distribution, market_dates)
+    etapas_completadas: List[str] = []
 
-    b4, b5 = _run_stage("B4_B5", _compute_solo_legacy_and_timing, market_dates)
-    resultado["b4_solo_legacy_caracteristicas"] = b4
-    resultado["b5_timing_matched"] = b5
+    stages: Tuple[Tuple[str, Any, Callable[..., Any]], ...] = (
+        ("B1", "b1_volumen_y_distribucion", volume_and_distribution),
+        ("B3", "b3_distribucion_por_gate", gates_distribution),
+        ("B4_B5", None, _compute_solo_legacy_and_timing),
+        ("B6", "b6_cobertura_estructural_outcome", structural_outcome_coverage),
+        ("B7", "b7_episodios_shadow_unified_aproximado", episode_grouping),
+    )
 
-    resultado["b6_cobertura_estructural_outcome"] = _run_stage("B6", structural_outcome_coverage, market_dates)
-    resultado["b7_episodios_shadow_unified_aproximado"] = _run_stage("B7", episode_grouping, market_dates)
+    for etapa, clave, fn in stages:
+        try:
+            valor = _run_stage(etapa, fn, market_dates)
+        except BaseException as exc:
+            resultado["ok"] = False
+            resultado["etapa_fallida"] = etapa
+            resultado["tipo_excepcion"] = type(exc).__name__
+            resultado["mensaje"] = _sanitize_message(str(exc))
+            resultado["etapas_completadas"] = etapas_completadas
+            resultado["nota"] = "Diagnostico detenido. No se ejecutaron etapas posteriores."
+            return resultado
+
+        if etapa == "B4_B5":
+            resultado["b4_solo_legacy_caracteristicas"], resultado["b5_timing_matched"] = valor
+        else:
+            resultado[clave] = valor
+        etapas_completadas.append(etapa)
+
+    resultado["ok"] = True
+    resultado["etapas_completadas"] = etapas_completadas
     return resultado
