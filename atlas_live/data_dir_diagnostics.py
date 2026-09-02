@@ -62,6 +62,21 @@ _RADAR_CANDIDATES_TABLE_NAMES = (
     "shadow_decision_log",
 )
 
+# Los ÚNICOS 3 nombres de archivo que `delete_reconstructible_universe_cache()`
+# puede borrar (2026-09-02, autorizado explícitamente, alivio del incidente
+# de espacio en /data) -- hardcodeados, nunca aceptan un valor externo/del
+# request. Cada uno es 100% reconstruible: `fetch_broad_universe_meta()`
+# (`atlas_live/market_study/universe.py`) los re-descarga y re-escribe solos
+# en cuanto falten -- se llama en CADA sweep del radar
+# (`atlas_live/radar/radar_worker.py`), así que el próximo barrido después
+# de borrar ya los recrea. Nunca incluye ninguna `.db`/`.db-wal`/`.db-shm`
+# ni `persistence_marker.json`.
+_RECONSTRUCTIBLE_CACHE_FILENAMES = (
+    "broad_universe.json",
+    "broad_universe_meta.json",
+    "broad_universe_meta_version.txt",
+)
+
 
 def _data_dir_path() -> Path:
     return data_dir(Path(__file__).parent)
@@ -119,6 +134,44 @@ def filesystem_write_test() -> Dict[str, Any]:
                 tmp_path.unlink()
         except OSError:
             pass  # el cleanup nunca debe convertirse en una causa nueva de fallo
+
+
+def delete_reconstructible_universe_cache() -> Dict[str, Any]:
+    """Borra ÚNICAMENTE los 3 archivos de `_RECONSTRUCTIBLE_CACHE_FILENAMES`
+    (2026-09-02, autorizado explícitamente, alivio del incidente de espacio
+    en `/data`) -- sin parámetros, sin aceptar ningún path/nombre externo,
+    sin wildcard/glob. Para cada nombre: se construye la ruta como
+    `_data_dir_path() / filename` (nunca a partir de un valor recibido), se
+    verifica explícitamente que el resultado sea exactamente ese nombre
+    dentro de ese directorio (nunca fuera de él, nunca otro archivo), se
+    informa tamaño/existencia ANTES de intentar borrar, y solo entonces se
+    llama a `Path.unlink()` -- nunca `shutil.rmtree`, nunca un glob, nunca
+    itera el directorio. Un archivo ya ausente no es un error -- se informa
+    `existed_before=False`, `deleted=False`, sin intentar nada."""
+    dd = _data_dir_path()
+    archivos: Dict[str, Any] = {}
+    total_bytes_freed = 0
+    for filename in _RECONSTRUCTIBLE_CACHE_FILENAMES:
+        path = dd / filename
+        assert path.name == filename and path.parent == dd, "ruta fuera del contrato hardcodeado"
+        existed_before = path.exists()
+        size_bytes_before = path.stat().st_size if existed_before else 0
+        deleted = False
+        error = None
+        if existed_before:
+            try:
+                path.unlink()
+                deleted = True
+                total_bytes_freed += size_bytes_before
+            except OSError as exc:
+                error = f"{type(exc).__name__}: {exc}"
+        archivos[filename] = {
+            "existed_before": existed_before,
+            "size_bytes_before": size_bytes_before,
+            "deleted": deleted,
+            "error": error,
+        }
+    return {"files": archivos, "total_bytes_freed": total_bytes_freed}
 
 
 def _file_stat_info(path: Path) -> Dict[str, Any]:

@@ -268,6 +268,69 @@ def test_diagnostics_incluye_disk_usage_e_inventario_y_conteos(monkeypatch):
         _restore(old)
 
 
+def test_delete_reconstructible_cache_borra_solo_los_3_archivos_y_nada_mas():
+    tmp, old = _with_temp_data_dir()
+    try:
+        dd = Path(tmp)
+        # Los 3 archivos objetivo, con contenido real.
+        (dd / "broad_universe.json").write_bytes(b'["AAPL","MSFT"]')
+        (dd / "broad_universe_meta.json").write_bytes(b'{"AAPL":{"type":"EQUITY"}}' * 100)
+        (dd / "broad_universe_meta_version.txt").write_bytes(b"2026-08-20-ads-no-es-preferred")
+        # Archivos que NUNCA deben tocarse, aunque convivan en el mismo directorio.
+        (dd / "persistence_marker.json").write_bytes(b'{"marker_id":"abc"}')
+        (dd / "radar_candidates.db").write_bytes(b"fake-sqlite-bytes")
+        (dd / "radar_candidates.db-wal").write_bytes(b"fake-wal-bytes")
+        (dd / "radar_candidates.db-shm").write_bytes(b"fake-shm-bytes")
+        (dd / "broad_universe_meta.json.bak").write_bytes(b"no debe tocarse")
+
+        result = ddd.delete_reconstructible_universe_cache()
+
+        for filename in ddd._RECONSTRUCTIBLE_CACHE_FILENAMES:
+            assert result["files"][filename]["existed_before"] is True
+            assert result["files"][filename]["deleted"] is True
+            assert result["files"][filename]["size_bytes_before"] > 0
+            assert not (dd / filename).exists()
+        assert result["total_bytes_freed"] > 0
+
+        # Nada más se tocó -- verificación real contra el filesystem, no
+        # solo contra el valor de retorno.
+        assert (dd / "persistence_marker.json").exists()
+        assert (dd / "radar_candidates.db").exists()
+        assert (dd / "radar_candidates.db-wal").exists()
+        assert (dd / "radar_candidates.db-shm").exists()
+        assert (dd / "broad_universe_meta.json.bak").exists()
+    finally:
+        _restore(old)
+
+
+def test_delete_reconstructible_cache_archivo_ausente_no_es_error():
+    tmp, old = _with_temp_data_dir()
+    try:
+        result = ddd.delete_reconstructible_universe_cache()
+        for filename in ddd._RECONSTRUCTIBLE_CACHE_FILENAMES:
+            assert result["files"][filename] == {
+                "existed_before": False, "size_bytes_before": 0, "deleted": False, "error": None,
+            }
+        assert result["total_bytes_freed"] == 0
+    finally:
+        _restore(old)
+
+
+def test_delete_reconstructible_cache_no_acepta_ningun_parametro():
+    import inspect
+
+    sig = inspect.signature(ddd.delete_reconstructible_universe_cache)
+    assert len(sig.parameters) == 0
+
+
+def test_delete_reconstructible_cache_lista_de_nombres_es_exactamente_esos_3():
+    assert ddd._RECONSTRUCTIBLE_CACHE_FILENAMES == (
+        "broad_universe.json",
+        "broad_universe_meta.json",
+        "broad_universe_meta_version.txt",
+    )
+
+
 def test_diagnostics_incluye_filesystem_write_test_y_las_5_bases(monkeypatch):
     tmp, old = _with_temp_data_dir()
     try:

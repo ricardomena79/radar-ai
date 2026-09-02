@@ -1525,6 +1525,26 @@ def api_admin_write_persistence_marker():
     return jsonify(ddd.write_marker_once())
 
 
+@app.route("/api/admin/delete-reconstructible-universe-cache", methods=["POST"])
+def api_admin_delete_reconstructible_universe_cache():
+    """Endpoint administrativo MÍNIMO Y DE UN SOLO PROPÓSITO (2026-09-02,
+    autorizado explícitamente, alivio del incidente de espacio en `/data`):
+    borra ÚNICAMENTE los 3 archivos de caché reconstruible de
+    `broad_universe` (`atlas_live/market_study/universe.py`) bajo
+    `ATLAS_DATA_DIR` -- nombres hardcodeados en
+    `data_dir_diagnostics._RECONSTRUCTIBLE_CACHE_FILENAMES`, este endpoint
+    nunca lee ningún path/nombre del request (ni query params ni body).
+    Nunca toca ninguna `.db`/`.db-wal`/`.db-shm` ni `persistence_marker.json`
+    -- ver `delete_reconstructible_universe_cache()` para el contrato
+    completo. Nunca escribe SQL, nunca cambia schema/PRAGMA."""
+    if not _admin_token_ok():
+        return jsonify({"error": "no autorizado"}), 403
+
+    from atlas_live import data_dir_diagnostics as ddd
+
+    return jsonify(ddd.delete_reconstructible_universe_cache())
+
+
 @app.route("/api/signals")
 def api_signals():
     """Historial de señales registradas (validación en vivo). Solo lectura,

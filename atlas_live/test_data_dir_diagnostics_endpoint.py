@@ -79,6 +79,61 @@ def test_marker_con_token_dispara_write_marker_once():
         del os.environ["ATLAS_ADMIN_TOKEN"]
 
 
+def test_delete_cache_sin_token_rechaza():
+    old = os.environ.pop("ATLAS_ADMIN_TOKEN", None)
+    try:
+        r = _client().post("/api/admin/delete-reconstructible-universe-cache")
+        assert r.status_code == 403
+    finally:
+        if old is not None:
+            os.environ["ATLAS_ADMIN_TOKEN"] = old
+
+
+def test_delete_cache_con_token_devuelve_resultado_real():
+    os.environ["ATLAS_ADMIN_TOKEN"] = "secreto-real"
+    orig = ddd.delete_reconstructible_universe_cache
+    ddd.delete_reconstructible_universe_cache = lambda: {
+        "files": {
+            "broad_universe.json": {"existed_before": True, "size_bytes_before": 123, "deleted": True, "error": None},
+        },
+        "total_bytes_freed": 123,
+    }
+    try:
+        r = _client().post("/api/admin/delete-reconstructible-universe-cache?token=secreto-real")
+        assert r.status_code == 200
+        assert r.get_json()["total_bytes_freed"] == 123
+    finally:
+        ddd.delete_reconstructible_universe_cache = orig
+        del os.environ["ATLAS_ADMIN_TOKEN"]
+
+
+def test_delete_cache_ignora_cualquier_path_enviado_por_el_cliente():
+    """El endpoint nunca lee ningún path/nombre del request -- confirma que
+    intentar inyectar una ruta arbitraria (query param, JSON body) no tiene
+    ningún efecto: `delete_reconstructible_universe_cache()` real se llama
+    SIN argumentos, sin importar qué venga en el request."""
+    os.environ["ATLAS_ADMIN_TOKEN"] = "secreto-real"
+    calls = []
+    orig = ddd.delete_reconstructible_universe_cache
+
+    def _spy():
+        calls.append("called")
+        return {"files": {}, "total_bytes_freed": 0}
+
+    ddd.delete_reconstructible_universe_cache = _spy
+    try:
+        r = _client().post(
+            "/api/admin/delete-reconstructible-universe-cache?token=secreto-real"
+            "&path=/data/radar_candidates.db&filename=../../etc/passwd",
+            json={"path": "/data/memory_store.db", "filenames": ["*.db"]},
+        )
+        assert r.status_code == 200
+        assert calls == ["called"]  # se llamó exactamente una vez, sin argumentos
+    finally:
+        ddd.delete_reconstructible_universe_cache = orig
+        del os.environ["ATLAS_ADMIN_TOKEN"]
+
+
 if __name__ == "__main__":
     import traceback
 
