@@ -184,6 +184,90 @@ def test_sqlite_read_only_test_archivo_corrupto_reporta_error_sin_lanzar():
     assert result["error"] is not None
 
 
+def test_disk_usage_info_reporta_total_used_free():
+    tmp, old = _with_temp_data_dir()
+    try:
+        info = ddd.disk_usage_info(Path(tmp))
+        assert info["total_bytes"] > 0
+        assert info["used_bytes"] >= 0
+        assert info["free_bytes"] >= 0
+    finally:
+        _restore(old)
+
+
+def test_directory_inventory_lista_archivos_por_tamano_descendente():
+    tmp = Path(tempfile.mkdtemp(prefix="atlas_test_inventory_"))
+    (tmp / "chico.txt").write_bytes(b"x" * 10)
+    (tmp / "grande.txt").write_bytes(b"y" * 1000)
+    sub = tmp / "subdir"
+    sub.mkdir()
+    (sub / "mediano.txt").write_bytes(b"z" * 100)
+
+    result = ddd.directory_inventory(tmp)
+    assert result["total_files_found"] == 3
+    assert result["total_accounted_bytes"] == 1110
+    sizes = [e["size_bytes"] for e in result["entries"]]
+    assert sizes == sorted(sizes, reverse=True)
+    assert result["entries"][0]["path"] == "grande.txt"
+    assert any(e["path"] == os.path.join("subdir", "mediano.txt") for e in result["entries"])
+
+
+def test_directory_inventory_directorio_vacio():
+    tmp = Path(tempfile.mkdtemp(prefix="atlas_test_inventory_empty_"))
+    result = ddd.directory_inventory(tmp)
+    assert result["entries"] == []
+    assert result["total_files_found"] == 0
+    assert result["total_accounted_bytes"] == 0
+
+
+def test_radar_candidates_table_counts_archivo_inexistente():
+    tmp = Path(tempfile.mkdtemp(prefix="atlas_test_counts_")) / "no_existe.db"
+    result = ddd.radar_candidates_table_counts(tmp)
+    assert result == {"skipped": "archivo no existe"}
+    assert not tmp.exists()
+
+
+def test_radar_candidates_table_counts_db_real_con_schema():
+    import sqlite3
+
+    from atlas_live.radar.candidate_registry import _SCHEMA
+
+    tmp = Path(tempfile.mkdtemp(prefix="atlas_test_counts_")) / "real.db"
+    conn = sqlite3.connect(str(tmp))
+    conn.executescript(_SCHEMA)
+    conn.execute(
+        "INSERT INTO candidate_detection (ticker, market_date, session, detected_at, sweep_id, "
+        "price_at_detection, change_pct_at_detection, volume_at_detection, average_volume_at_detection, "
+        "relative_volume_at_detection, dollar_volume_at_detection, gates_fired, created_at) "
+        "VALUES ('AAA','2026-09-02','regular','2026-09-02T10:00:00Z','s1',10.0,5.0,1000,200,5.0,10000.0,'[]','2026-09-02T10:00:00Z')"
+    )
+    conn.commit()
+    conn.close()
+
+    result = ddd.radar_candidates_table_counts(tmp)
+    assert result["candidate_detection"] == 1
+    assert result["candidate_observation"] == 0
+    assert result["candidate_intraday_metrics"] == 0
+    for table in ddd._RADAR_CANDIDATES_TABLE_NAMES:
+        assert table in result
+
+
+def test_diagnostics_incluye_disk_usage_e_inventario_y_conteos(monkeypatch):
+    tmp, old = _with_temp_data_dir()
+    try:
+        fake_dbs = {name: Path(tmp) / name for name in ddd._DATABASES_UNDER_DIAGNOSIS}
+        monkeypatch.setattr(ddd, "_DATABASES_UNDER_DIAGNOSIS", fake_dbs)
+        monkeypatch.setattr(ddd, "RADAR_CANDIDATES_DB_PATH", fake_dbs["radar_candidates.db"])
+
+        info = ddd.diagnostics()
+
+        assert "total_bytes" in info["disk_usage"]
+        assert "entries" in info["directory_inventory"]
+        assert info["radar_candidates_table_counts"] == {"skipped": "archivo no existe"}
+    finally:
+        _restore(old)
+
+
 def test_diagnostics_incluye_filesystem_write_test_y_las_5_bases(monkeypatch):
     tmp, old = _with_temp_data_dir()
     try:

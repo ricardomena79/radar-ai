@@ -15,11 +15,12 @@ datos existente, no abre esa base para escritura.
 
 import json
 import os
+import shutil
 import sqlite3
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from atlas.config.config import data_dir
 from atlas_live.catalyst.catalyst_registry import DB_PATH as CATALYST_EVENTS_DB_PATH
@@ -43,6 +44,23 @@ _DATABASES_UNDER_DIAGNOSIS = {
     "prediction_journal.db": PREDICTION_JOURNAL_DB_PATH,
     "historical_reference.db": HISTORICAL_REFERENCE_DB_PATH,
 }
+
+# Nombres reales de las 10 tablas de radar_candidates.db (2026-09-01,
+# copiados de `_SCHEMA` en candidate_registry.py -- lista fija, nunca
+# construida a partir de un valor externo, para no arriesgar ningún tipo
+# de inyección en el `SELECT COUNT(*)` de solo lectura de más abajo).
+_RADAR_CANDIDATES_TABLE_NAMES = (
+    "candidate_detection",
+    "candidate_observation",
+    "candidate_intraday_metrics",
+    "candidate_outcome",
+    "radar_meta",
+    "alert_stage_log",
+    "daily_summary",
+    "missed_mover",
+    "magnitud_prediction",
+    "shadow_decision_log",
+)
 
 
 def _data_dir_path() -> Path:
@@ -159,6 +177,100 @@ def _sqlite_read_only_test(path: Path) -> Dict[str, Any]:
                 pass
 
 
+def disk_usage_info(path: Path) -> Dict[str, Any]:
+    """Equivalente de `df -h`/`df -i` sobre el filesystem que contiene
+    `path`, con librerías estándar de Python -- sin `subprocess`, sin
+    shell. `shutil.disk_usage()` funciona en cualquier plataforma;
+    `os.statvfs()` (conteo de inodos) es exclusivo de POSIX -- en Linux
+    (producción real) siempre está disponible; en Windows (este entorno
+    de desarrollo) no existe, así que se reporta explícitamente en vez de
+    fallar."""
+    info: Dict[str, Any] = {}
+    try:
+        usage = shutil.disk_usage(str(path))
+        info["total_bytes"] = usage.total
+        info["used_bytes"] = usage.used
+        info["free_bytes"] = usage.free
+    except OSError as exc:
+        info["disk_usage_error"] = f"{type(exc).__name__}: {exc}"
+    statvfs = getattr(os, "statvfs", None)
+    if statvfs is None:
+        info["inode_info_unavailable"] = "os.statvfs no existe en esta plataforma"
+    else:
+        try:
+            vfs = statvfs(str(path))
+            info["inodes_total"] = vfs.f_files
+            info["inodes_free"] = vfs.f_ffree
+            info["inodes_available"] = vfs.f_favail
+        except OSError as exc:
+            info["inode_info_unavailable"] = f"{type(exc).__name__}: {exc}"
+    return info
+
+
+def directory_inventory(path: Path, top_n: int = 50) -> Dict[str, Any]:
+    """Equivalente de `du -h` -- recorre `path` con `os.walk` (nunca abre
+    ningún archivo, solo `stat`) y devuelve las `top_n` entradas más
+    grandes, ordenadas descendente, más el total de bytes contabilizados y
+    la cantidad total de archivos encontrados. Recursivo, así que también
+    cubre cualquier subdirectorio (caches, exports, etc.) bajo
+    `ATLAS_DATA_DIR`, no solo el nivel superior."""
+    entries: List[Dict[str, Any]] = []
+    total_accounted_bytes = 0
+    try:
+        for root, _dirs, files in os.walk(path):
+            for fname in files:
+                fpath = Path(root) / fname
+                try:
+                    size = fpath.stat().st_size
+                except OSError:
+                    continue
+                total_accounted_bytes += size
+                try:
+                    rel = str(fpath.relative_to(path))
+                except ValueError:
+                    rel = str(fpath)
+                entries.append({"path": rel, "size_bytes": size})
+    except OSError as exc:
+        return {"error": f"{type(exc).__name__}: {exc}", "entries": [], "total_accounted_bytes": 0}
+    entries.sort(key=lambda e: e["size_bytes"], reverse=True)
+    return {
+        "entries": entries[:top_n],
+        "total_files_found": len(entries),
+        "total_accounted_bytes": total_accounted_bytes,
+    }
+
+
+def radar_candidates_table_counts(path: Path) -> Dict[str, Any]:
+    """`SELECT COUNT(*)` de solo lectura por cada tabla conocida de
+    `radar_candidates.db` (2026-09-01) -- ayuda a identificar qué tabla
+    concentra el crecimiento, sin `dbstat` (extensión opcional de SQLite,
+    no garantizada) y sin abrir la base para escritura. Lista de tablas
+    fija (`_RADAR_CANDIDATES_TABLE_NAMES`), nunca construida a partir de
+    un valor externo."""
+    if not path.exists():
+        return {"skipped": "archivo no existe"}
+    counts: Dict[str, Any] = {}
+    conn = None
+    try:
+        conn = sqlite3.connect(str(path), timeout=3)
+        conn.execute("PRAGMA query_only=ON")
+        for table in _RADAR_CANDIDATES_TABLE_NAMES:
+            try:
+                row = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()  # nosec: nombre fijo, no externo
+                counts[table] = row[0] if row else None
+            except Exception as exc:
+                counts[table] = f"error: {type(exc).__name__}: {exc}"
+    except Exception as exc:
+        return {"error": f"{type(exc).__name__}: {exc}"}
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    return counts
+
+
 def diagnostics() -> Dict[str, Any]:
     """Todo lo necesario para confirmar, desde afuera, donde esta
     escribiendo realmente este proceso -- sin adivinar nada por tipo de
@@ -204,4 +316,7 @@ def diagnostics() -> Dict[str, Any]:
         "persistence_marker": marker_info,
         "filesystem_write_test": filesystem_write_test(),
         "databases": databases,
+        "disk_usage": disk_usage_info(dd),
+        "directory_inventory": directory_inventory(dd),
+        "radar_candidates_table_counts": radar_candidates_table_counts(RADAR_CANDIDATES_DB_PATH),
     }
