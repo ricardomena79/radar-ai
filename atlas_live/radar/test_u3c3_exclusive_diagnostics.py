@@ -149,7 +149,7 @@ def test_episode_grouping_gaps_conocidos_da_resultado_esperado():
 
         r = u3d.episode_grouping(market_dates=("2026-08-26",), windows_seconds=(30, 60, 180, 300))
         assert r["filas_totales_en_la_ventana"] == 6
-        ep = r["episodios_shadow_unified_aproximado_por_ventana"]
+        ep = r["episodios_shadow_unified_aproximados"]
         assert ep["ventana_30s"] == 5
         assert ep["ventana_60s"] == 4
         assert ep["ventana_180s"] == 3
@@ -168,7 +168,7 @@ def test_episode_grouping_particiona_por_ticker_y_por_dia():
         _shadow("AAA", "2026-08-26", "2026-08-26T14:00:00+00:00")
         _shadow("BBB", "2026-08-26", "2026-08-26T14:00:05+00:00")
         r = u3d.episode_grouping(market_dates=("2026-08-26",), windows_seconds=(30,))
-        assert r["episodios_shadow_unified_aproximado_por_ventana"]["ventana_30s"] == 2
+        assert r["episodios_shadow_unified_aproximados"]["ventana_30s"] == 2
     finally:
         _restore()
 
@@ -266,6 +266,193 @@ def test_full_report_no_modifica_ningun_dato():
 
 def test_diagnostic_market_dates_son_las_4_fechas_reales_de_u3c3():
     assert u3d.DIAGNOSTIC_MARKET_DATES == ("2026-08-26", "2026-08-27", "2026-08-28", "2026-08-31")
+
+
+# --- Corrección 2026-09-02 (tras el 500 real): B.4/B.5 comparten 1 pasada --
+
+def test_b4_b5_comparten_una_sola_ejecucion_de_compare_legacy_vs_unified_por_dia(monkeypatch):
+    """Antes del fix: 2 funciones × 4 días = 8 llamadas. Después: 1 vez por
+    día = 4 llamadas totales, sin importar que se pidan ambos B.4 y B.5."""
+    _fresh()
+    try:
+        _detect("SOLOLEG", "2026-08-26", "2026-08-26T14:00:00+00:00")
+        _detect("MATCH", "2026-08-27", "2026-08-27T14:00:00+00:00")
+        _shadow("MATCH", "2026-08-27", "2026-08-27T14:00:30+00:00")
+
+        from atlas_live.radar import detector_comparison as dc
+        llamadas = []
+        original = dc.compare_legacy_vs_unified
+
+        def _contador(market_date):
+            llamadas.append(market_date)
+            return original(market_date)
+
+        monkeypatch.setattr(dc, "compare_legacy_vs_unified", _contador)
+
+        b4, b5 = u3d._compute_solo_legacy_and_timing(market_dates=("2026-08-26", "2026-08-27"))
+
+        assert llamadas == ["2026-08-26", "2026-08-27"]  # 1 por día, 2 total -- nunca 4
+        assert b4["total_solo_legacy"] == 1
+        assert b5["n_matched_total"] == 1
+    finally:
+        _restore()
+
+
+def test_full_report_usa_la_pasada_combinada_no_las_funciones_standalone(monkeypatch):
+    """`full_report()` debe llamar a `_compute_solo_legacy_and_timing()`
+    directamente, no a `solo_legacy_characteristics()`/
+    `matched_timing_percentiles()` por separado (que volverían a duplicar
+    el trabajo)."""
+    _fresh()
+    try:
+        _shadow("AAA", "2026-08-26", "2026-08-26T14:00:00+00:00")
+        llamados = {"combinada": 0, "standalone_b4": 0, "standalone_b5": 0}
+        orig_combinada = u3d._compute_solo_legacy_and_timing
+        orig_b4 = u3d.solo_legacy_characteristics
+        orig_b5 = u3d.matched_timing_percentiles
+
+        def _spy_combinada(market_dates=u3d.DIAGNOSTIC_MARKET_DATES):
+            llamados["combinada"] += 1
+            return orig_combinada(market_dates)
+
+        def _spy_b4(market_dates=u3d.DIAGNOSTIC_MARKET_DATES):
+            llamados["standalone_b4"] += 1
+            return orig_b4(market_dates)
+
+        def _spy_b5(market_dates=u3d.DIAGNOSTIC_MARKET_DATES):
+            llamados["standalone_b5"] += 1
+            return orig_b5(market_dates)
+
+        monkeypatch.setattr(u3d, "_compute_solo_legacy_and_timing", _spy_combinada)
+        monkeypatch.setattr(u3d, "solo_legacy_characteristics", _spy_b4)
+        monkeypatch.setattr(u3d, "matched_timing_percentiles", _spy_b5)
+
+        u3d.full_report(market_dates=("2026-08-26",))
+
+        assert llamados["combinada"] == 1
+        assert llamados["standalone_b4"] == 0
+        assert llamados["standalone_b5"] == 0
+    finally:
+        _restore()
+
+
+# --- Corrección 2026-09-02: B.7 por grupo, sin LAG() global -----------------
+
+def test_episode_grouping_no_acumula_todos_los_timestamps_simultaneamente(monkeypatch):
+    """Instrumenta `_count_episodes_for_group` para registrar el tamaño de
+    CADA grupo procesado -- confirma que nunca se le pasa más que los
+    timestamps de UN ticker/día a la vez (nunca el total de filas)."""
+    _fresh()
+    try:
+        for i in range(5):
+            _shadow(f"T{i}", "2026-08-26", f"2026-08-26T14:0{i}:00+00:00")
+        # Un ticker con varias filas -- el grupo más grande tiene 3, nunca 7 (el total).
+        for i in range(3):
+            _shadow("BUSY", "2026-08-26", f"2026-08-26T15:0{i}:00+00:00")
+
+        tamanos_vistos = []
+        original = u3d._count_episodes_for_group
+
+        def _spy(detected_ats, windows_seconds):
+            tamanos_vistos.append(len(detected_ats))
+            return original(detected_ats, windows_seconds)
+
+        monkeypatch.setattr(u3d, "_count_episodes_for_group", _spy)
+
+        r = u3d.episode_grouping(market_dates=("2026-08-26",), windows_seconds=(30,))
+
+        assert r["filas_totales_en_la_ventana"] == 8
+        assert r["n_grupos_ticker_dia_procesados"] == 6  # 5 tickers de 1 fila + BUSY de 3
+        assert max(tamanos_vistos) == 3  # nunca las 8 filas juntas
+        assert sum(tamanos_vistos) == 8  # la suma de los grupos sí cubre el total
+    finally:
+        _restore()
+
+
+def test_episode_grouping_equivalente_al_calculo_ingenuo_con_varios_tickers_y_dias():
+    """El método por grupo (streaming) debe dar EXACTAMENTE el mismo
+    resultado que un cálculo ingenuo (traer todo, ordenar por completo,
+    gaps-and-islands sobre la lista completa) -- probado con varios
+    tickers en varios días, gaps mezclados."""
+    _fresh()
+    try:
+        datos = [
+            ("AAA", "2026-08-26", "2026-08-26T14:00:00+00:00"),
+            ("AAA", "2026-08-26", "2026-08-26T14:00:20+00:00"),   # gap 20s
+            ("AAA", "2026-08-26", "2026-08-26T14:05:00+00:00"),   # gap 280s
+            ("BBB", "2026-08-26", "2026-08-26T09:00:00+00:00"),
+            ("BBB", "2026-08-26", "2026-08-26T09:01:00+00:00"),   # gap 60s
+            ("AAA", "2026-08-27", "2026-08-27T10:00:00+00:00"),   # otro día, mismo ticker -- grupo distinto
+            ("CCC", "2026-08-27", "2026-08-27T11:00:00+00:00"),
+            ("CCC", "2026-08-27", "2026-08-27T11:10:00+00:00"),   # gap 600s
+        ]
+        for ticker, market_date, ts in datos:
+            _shadow(ticker, market_date, ts)
+
+        windows = (30, 60, 180, 300)
+        r = u3d.episode_grouping(market_dates=("2026-08-26", "2026-08-27"), windows_seconds=windows)
+
+        # Cálculo ingenuo, independiente, sobre los mismos datos crudos.
+        from collections import defaultdict
+        from datetime import datetime as _dt
+
+        por_grupo = defaultdict(list)
+        for ticker, market_date, ts in datos:
+            por_grupo[(ticker, market_date)].append(_dt.fromisoformat(ts))
+
+        esperado = {w: 0 for w in windows}
+        for grupo, timestamps in por_grupo.items():
+            timestamps.sort()
+            anterior = None
+            for t in timestamps:
+                for w in windows:
+                    if anterior is None or (t - anterior).total_seconds() > w:
+                        esperado[w] += 1
+                anterior = t
+
+        obtenido = r["episodios_shadow_unified_aproximados"]
+        for w in windows:
+            assert obtenido[f"ventana_{w}s"] == esperado[w], f"ventana {w}s: {obtenido[f'ventana_{w}s']} != {esperado[w]}"
+    finally:
+        _restore()
+
+
+# --- Instrumentación de excepciones (2026-09-02) ----------------------------
+
+def test_run_stage_registra_marcador_y_relanza(capfd):
+    def _falla():
+        raise RuntimeError("fallo sintetico de prueba")
+
+    import pytest
+    with pytest.raises(RuntimeError):
+        u3d._run_stage("B7", _falla)
+
+    captured = capfd.readouterr()
+    assert "[U3C3_DIAGNOSTIC_EXCEPTION] etapa=B7" in captured.err
+    assert "RuntimeError" in captured.err
+    assert "fallo sintetico de prueba" in captured.err
+    assert "Traceback (most recent call last)" in captured.err
+
+
+def test_run_stage_sin_excepcion_no_registra_nada_y_devuelve_el_resultado(capfd):
+    resultado = u3d._run_stage("B1", lambda: {"ok": True})
+    assert resultado == {"ok": True}
+    captured = capfd.readouterr()
+    assert "U3C3_DIAGNOSTIC_EXCEPTION" not in captured.err
+
+
+def test_full_report_etapa_b4_b5_combinada_en_el_marcador_si_falla(monkeypatch, capfd):
+    def _falla(market_dates):
+        raise RuntimeError("fallo sintetico en B4/B5")
+
+    monkeypatch.setattr(u3d, "_compute_solo_legacy_and_timing", _falla)
+
+    import pytest
+    with pytest.raises(RuntimeError):
+        u3d.full_report(market_dates=("2026-08-26",))
+
+    captured = capfd.readouterr()
+    assert "[U3C3_DIAGNOSTIC_EXCEPTION] etapa=B4_B5" in captured.err
 
 
 if __name__ == "__main__":

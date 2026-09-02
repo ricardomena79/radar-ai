@@ -25,14 +25,31 @@ tests estructurales ya existentes (`test_I_J_nunca_escribe_en_tablas_reales`,
 declara esta distinción explícitamente, no se oculta.
 
 Ninguna función carga las filas crudas de `shadow_candidate_detection` --
-todo lo pesado corre como agregación SQL (`GROUP BY`/`COUNT`/`LAG` sobre
-ventana) dentro de SQLite; a Python solo llegan resultados ya reducidos
-(cientos de filas como mucho, nunca millones)."""
+todo lo pesado corre como agregación SQL (`GROUP BY`/`COUNT` en B.1/B.3, o
+por grupo chico en B.7, ver más abajo) dentro de SQLite; a Python solo
+llegan resultados ya reducidos (cientos de filas como mucho, nunca
+millones).
+
+CORRECCIÓN 2026-09-02 (tras un HTTP 500 real en producción, autorizada
+explícitamente, sin haber vuelto a ejecutar el endpoint para diagnosticarlo):
+diagnóstico por código encontró 2 problemas de eficiencia reales --
+B.4/B.5 llamaban a `compare_legacy_vs_unified()` 8 veces (2 funciones × 4
+días), cada una recargando y re-deserializando el día COMPLETO de
+`shadow_candidate_detection` desde cero; y B.7 ordenaba las 3,1M+ filas
+completas con `LAG()` CUATRO veces (una por ventana), sin índice que cubra
+`detected_at`, con riesgo real de volcar a un archivo temporal en disco
+(los ~5,3 MB libres en `/data` en ese momento). Ambos corregidos en esta
+misma revisión -- ver `_compute_solo_legacy_and_timing()` y
+`episode_grouping()`."""
+
+import statistics
+import sys
+import traceback
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Sequence, Tuple
 
 import sqlite3
-import statistics
-from pathlib import Path
-from typing import Any, Dict, List, Sequence, Tuple
 
 from atlas_live.radar import candidate_registry as reg
 from atlas_live.radar import detector_comparison as dc
@@ -174,40 +191,74 @@ def gates_distribution(market_dates: Sequence[str] = DIAGNOSTIC_MARKET_DATES) ->
 # --------------------------------------------------------------------------
 # B.7 -- Episodios (aproximación declarada: matched + solo_unified mezclados)
 # --------------------------------------------------------------------------
+#
+# CORREGIDO 2026-09-02 (tras el 500 real): la versión anterior ordenaba las
+# 3,1M+ filas completas con LAG() CUATRO veces (una por ventana) -- sin
+# índice que cubra `detected_at`, riesgo real de volcar a un archivo
+# temporal en disco. Rediseño por streaming/particionado, exactamente como
+# se autorizó: (1) `SELECT DISTINCT ticker, market_date` -- una consulta
+# chica (miles de pares, no millones); (2) por cada par, `SELECT detected_at
+# ... WHERE ticker=? AND market_date=? ORDER BY detected_at` -- usa el
+# índice `idx_shadow_ticker_date` para el filtro, y el ORDER BY es sobre un
+# grupo YA chico (los detected_at de un ticker en un día -- decenas o
+# cientos, nunca millones), trivial de ordenar sin archivo temporal; (3)
+# gaps-and-islands en Python sobre esa lista chica, calculando las 4
+# ventanas en un solo recorrido -- se libera antes del siguiente grupo,
+# nunca se retienen los timestamps de todos los tickers simultáneamente.
+
+
+def _count_episodes_for_group(
+    detected_ats_ordenados: List[str], windows_seconds: Sequence[int],
+) -> Dict[int, int]:
+    """Gaps-and-islands puro sobre los `detected_at` YA ordenados de UN
+    grupo (ticker, market_date) -- misma semántica exacta que el `LAG()`
+    original: cada fila se compara contra la fila INMEDIATAMENTE anterior
+    (no contra el inicio del episodio actual), para cada ventana a la vez
+    en un solo recorrido de la lista."""
+    conteos = {w: 0 for w in windows_seconds}
+    anterior = None
+    for ts in detected_ats_ordenados:
+        actual = datetime.fromisoformat(ts)
+        for w in windows_seconds:
+            if anterior is None or (actual - anterior).total_seconds() > w:
+                conteos[w] += 1
+        anterior = actual
+    return conteos
+
 
 def episode_grouping(
     market_dates: Sequence[str] = DIAGNOSTIC_MARKET_DATES,
     windows_seconds: Sequence[int] = _EPISODE_WINDOWS_SECONDS,
 ) -> Dict[str, Any]:
     ph = _placeholders(market_dates)
+    totales_por_ventana: Dict[int, int] = {w: 0 for w in windows_seconds}
+
     with _ro_connect(sreg.DB_PATH) as conn:
         total = conn.execute(
             f"SELECT COUNT(*) AS n FROM shadow_candidate_detection WHERE market_date IN ({ph})",
             tuple(market_dates),
         ).fetchone()["n"]
 
-        por_ventana: Dict[str, int] = {}
-        for ventana in windows_seconds:
-            row = conn.execute(
-                f"""
-                WITH ordenado AS (
-                    SELECT ticker, market_date, detected_at,
-                           LAG(detected_at) OVER (
-                               PARTITION BY ticker, market_date ORDER BY detected_at
-                           ) AS prev_detected_at
-                    FROM shadow_candidate_detection
-                    WHERE market_date IN ({ph})
-                )
-                SELECT SUM(
-                    CASE WHEN prev_detected_at IS NULL
-                              OR (julianday(detected_at) - julianday(prev_detected_at)) * 86400.0 > ?
-                         THEN 1 ELSE 0 END
-                ) AS episodios
-                FROM ordenado
-                """,
-                (*market_dates, ventana),
-            ).fetchone()
-            por_ventana[f"ventana_{ventana}s"] = row["episodios"] or 0
+        pares = [
+            (r["ticker"], r["market_date"])
+            for r in conn.execute(
+                f"SELECT DISTINCT ticker, market_date FROM shadow_candidate_detection "
+                f"WHERE market_date IN ({ph})",
+                tuple(market_dates),
+            ).fetchall()
+        ]
+
+        for ticker, market_date in pares:
+            filas_grupo = conn.execute(
+                "SELECT detected_at FROM shadow_candidate_detection "
+                "WHERE ticker=? AND market_date=? ORDER BY detected_at",
+                (ticker, market_date),
+            ).fetchall()
+            detected_ats = [r["detected_at"] for r in filas_grupo]
+            conteos_grupo = _count_episodes_for_group(detected_ats, windows_seconds)
+            for w in windows_seconds:
+                totales_por_ventana[w] += conteos_grupo[w]
+            del filas_grupo, detected_ats  # libera antes del siguiente grupo
 
     return {
         "nota_metodologica": (
@@ -217,27 +268,40 @@ def episode_grouping(
             "solo_unified'. matched es aproximadamente 0.57% del total Unified en "
             "esta muestra (17.650 de 3.112.489, segun el reporte U3-C3 ya "
             "ejecutado) -- sesgo marginal y declarado, aceptado para evitar "
-            "retener ~3M tuplas en memoria Python. Metodo: gaps-and-islands via "
-            "LAG() por (ticker, market_date) ordenado por detected_at -- una fila "
-            "arranca un episodio NUEVO si no tiene fila anterior del mismo ticker/"
-            "dia, o si el gap respecto a la anterior excede el umbral."
+            "retener ~3M tuplas en memoria Python. Metodo: gaps-and-islands POR "
+            "GRUPO (ticker, market_date), streaming -- nunca un LAG() global "
+            "sobre la tabla completa (ver correccion 2026-09-02 en el docstring "
+            "del modulo). Una fila arranca un episodio NUEVO si no tiene fila "
+            "anterior del mismo ticker/dia, o si el gap respecto a la anterior "
+            "excede el umbral."
         ),
         "filas_totales_en_la_ventana": total,
-        "episodios_shadow_unified_aproximado_por_ventana": por_ventana,
+        "n_grupos_ticker_dia_procesados": len(pares),
+        "episodios_shadow_unified_aproximados": {
+            f"ventana_{w}s": totales_por_ventana[w] for w in windows_seconds
+        },
     }
 
 
 # --------------------------------------------------------------------------
-# B.4 -- Características de los solo_legacy (7.329 casos)
+# B.4 (solo_legacy) + B.5 (timing de matched) -- UNA sola pasada por día
 # --------------------------------------------------------------------------
+#
+# CORREGIDO 2026-09-02 (tras el 500 real): el diseño anterior tenía
+# `solo_legacy_characteristics()` y `matched_timing_percentiles()` como 2
+# funciones independientes, cada una llamando a
+# `compare_legacy_vs_unified()` una vez por día -- 8 llamadas totales, cada
+# una recargando y re-deserializando el día COMPLETO de
+# `shadow_candidate_detection` desde cero (2 `json.loads()` por fila).
+# `_compute_solo_legacy_and_timing()` la llama UNA sola vez por día (4
+# total) y alimenta ambos acumuladores desde el mismo `dia`, que se
+# descarta antes de pasar al día siguiente -- mismo patrón de
+# `quality_report_aggregated()`. `compare_legacy_vs_unified()` en sí NO se
+# toca.
 
-def solo_legacy_characteristics(market_dates: Sequence[str] = DIAGNOSTIC_MARKET_DATES) -> Dict[str, Any]:
-    """Reutiliza `detector_comparison.compare_legacy_vs_unified()` día por
-    día -- ya construida, ya probada, puramente SELECT (confirmado por
-    tests estructurales existentes). Solo extrae `solo_legacy_detalle` de
-    cada día y descarta el resto (`matched`/`solo_unified_detalle`, con los
-    snapshots shadow adentro) antes de pasar al día siguiente -- mismo
-    patrón de `quality_report_aggregated()`."""
+def _compute_solo_legacy_and_timing(
+    market_dates: Sequence[str] = DIAGNOSTIC_MARKET_DATES,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     total = 0
     por_sesion: Dict[str, int] = {}
     por_hora_utc: Dict[int, int] = {}
@@ -247,8 +311,14 @@ def solo_legacy_characteristics(market_dates: Sequence[str] = DIAGNOSTIC_MARKET_
     con_gate_simple_solamente = 0
     sin_ninguna_puerta_registrada = 0
 
+    legacy_antes: List[float] = []
+    unified_antes: List[float] = []
+    simultaneas = 0
+    todos_abs: List[float] = []
+
     for market_date in market_dates:
-        dia = dc.compare_legacy_vs_unified(market_date)
+        dia = dc.compare_legacy_vs_unified(market_date)  # UNA vez por día, no 2
+
         for l in dia["solo_legacy_detalle"]:
             total += 1
             sesion = l.get("session") or "desconocida"
@@ -279,11 +349,22 @@ def solo_legacy_characteristics(market_dates: Sequence[str] = DIAGNOSTIC_MARKET_
                 con_gate_simple_solamente += 1
             else:
                 sin_ninguna_puerta_registrada += 1
-        del dia
+
+        for m in dia["matched"]:
+            diff = m["diff_seconds"]
+            todos_abs.append(abs(diff))
+            if diff > 0:
+                legacy_antes.append(diff)
+            elif diff < 0:
+                unified_antes.append(abs(diff))
+            else:
+                simultaneas += 1
+
+        del dia  # libera matched/solo_legacy_detalle/solo_unified_detalle de ESTE día
 
     top_tickers = sorted(por_ticker.items(), key=lambda kv: -kv[1])[:20]
 
-    return {
+    b4 = {
         "total_solo_legacy": total,
         "por_sesion": por_sesion,
         "por_hora_utc": dict(sorted(por_hora_utc.items())),
@@ -304,38 +385,32 @@ def solo_legacy_characteristics(market_dates: Sequence[str] = DIAGNOSTIC_MARKET_
         },
     }
 
-
-# --------------------------------------------------------------------------
-# B.5 -- Timing de matched (Legacy antes / Unified antes / simultáneas)
-# --------------------------------------------------------------------------
-
-def matched_timing_percentiles(market_dates: Sequence[str] = DIAGNOSTIC_MARKET_DATES) -> Dict[str, Any]:
-    legacy_antes: List[float] = []
-    unified_antes: List[float] = []
-    simultaneas = 0
-    todos_abs: List[float] = []
-
-    for market_date in market_dates:
-        dia = dc.compare_legacy_vs_unified(market_date)
-        for m in dia["matched"]:
-            diff = m["diff_seconds"]
-            todos_abs.append(abs(diff))
-            if diff > 0:
-                legacy_antes.append(diff)
-            elif diff < 0:
-                unified_antes.append(abs(diff))
-            else:
-                simultaneas += 1
-        del dia
-
     percentiles = (0.25, 0.5, 0.75, 0.9, 0.95, 0.99)
-    return {
+    b5 = {
         "n_matched_total": len(todos_abs),
         "legacy_antes_que_unified": _stats(legacy_antes, percentiles=percentiles),
         "unified_antes_que_legacy": _stats(unified_antes, percentiles=percentiles),
         "simultaneas": simultaneas,
         "diferencia_absoluta_todos": _stats(todos_abs, percentiles=percentiles),
     }
+
+    return b4, b5
+
+
+def solo_legacy_characteristics(market_dates: Sequence[str] = DIAGNOSTIC_MARKET_DATES) -> Dict[str, Any]:
+    """B.4 en solitario (para tests/uso puntual) -- internamente corre la
+    misma pasada combinada que B.5; `full_report()` NO llama a esta función
+    -- llama a `_compute_solo_legacy_and_timing()` directamente una sola
+    vez y usa ambas mitades, para no duplicar el trabajo."""
+    b4, _ = _compute_solo_legacy_and_timing(market_dates)
+    return b4
+
+
+def matched_timing_percentiles(market_dates: Sequence[str] = DIAGNOSTIC_MARKET_DATES) -> Dict[str, Any]:
+    """B.5 en solitario (para tests/uso puntual) -- ver nota de
+    `solo_legacy_characteristics()`."""
+    _, b5 = _compute_solo_legacy_and_timing(market_dates)
+    return b5
 
 
 # --------------------------------------------------------------------------
@@ -387,14 +462,45 @@ def structural_outcome_coverage(market_dates: Sequence[str] = DIAGNOSTIC_MARKET_
 # --------------------------------------------------------------------------
 # Orquestador -- informe compacto completo
 # --------------------------------------------------------------------------
+#
+# Instrumentación mínima (2026-09-02, tras el 500 real): cada etapa corre
+# envuelta en `_run_stage()` -- si lanza una excepción, se registra un
+# marcador buscable `[U3C3_DIAGNOSTIC_EXCEPTION] etapa=...` + traceback
+# completo a stderr, y la excepción se RELANZA de inmediato -- nunca
+# cambia el comportamiento HTTP normal del endpoint (sigue siendo 500, sin
+# traceback expuesto al cliente), mismo patrón ya usado en
+# `/api/memory-engine`. B.4 y B.5 comparten una sola etapa ("B4_B5") desde
+# que se combinaron en `_compute_solo_legacy_and_timing()`.
+
+
+def _run_stage(etapa: str, fn: Callable[..., Any], *args: Any) -> Any:
+    try:
+        return fn(*args)
+    except BaseException as exc:
+        try:
+            tb_text = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        except Exception:
+            tb_text = "traceback no disponible"
+        try:
+            print(
+                f"[U3C3_DIAGNOSTIC_EXCEPTION] etapa={etapa} {datetime.now(timezone.utc).isoformat()} "
+                f"tipo={type(exc).__name__} mensaje={exc}\n{tb_text}",
+                file=sys.stderr, flush=True,
+            )
+        except Exception:
+            pass  # el registro de un error NUNCA puede convertirse en una causa nueva de fallo
+        raise
+
 
 def full_report(market_dates: Sequence[str] = DIAGNOSTIC_MARKET_DATES) -> Dict[str, Any]:
-    return {
-        "market_dates": list(market_dates),
-        "b1_volumen_y_distribucion": volume_and_distribution(market_dates),
-        "b3_distribucion_por_gate": gates_distribution(market_dates),
-        "b4_solo_legacy_caracteristicas": solo_legacy_characteristics(market_dates),
-        "b5_timing_matched": matched_timing_percentiles(market_dates),
-        "b6_cobertura_estructural_outcome": structural_outcome_coverage(market_dates),
-        "b7_episodios_shadow_unified_aproximado": episode_grouping(market_dates),
-    }
+    resultado: Dict[str, Any] = {"market_dates": list(market_dates)}
+    resultado["b1_volumen_y_distribucion"] = _run_stage("B1", volume_and_distribution, market_dates)
+    resultado["b3_distribucion_por_gate"] = _run_stage("B3", gates_distribution, market_dates)
+
+    b4, b5 = _run_stage("B4_B5", _compute_solo_legacy_and_timing, market_dates)
+    resultado["b4_solo_legacy_caracteristicas"] = b4
+    resultado["b5_timing_matched"] = b5
+
+    resultado["b6_cobertura_estructural_outcome"] = _run_stage("B6", structural_outcome_coverage, market_dates)
+    resultado["b7_episodios_shadow_unified_aproximado"] = _run_stage("B7", episode_grouping, market_dates)
+    return resultado
