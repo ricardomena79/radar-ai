@@ -1300,6 +1300,53 @@ def api_admin_unified_detector_shadow():
     })
 
 
+# Fecha de deploy de U3 (commit c091d0c, 2026-08-26) -- constante
+# hardcodeada, NUNCA aceptada desde el cliente. Antes de esta fecha
+# `shadow_candidate_detection` no puede tener ninguna fila (el detector no
+# existía), así que es el único límite inferior válido para U3-C3.
+U3_DEPLOY_MARKET_DATE = "2026-08-26"
+
+
+@app.route("/api/admin/u3c3-quality-report")
+def api_admin_u3c3_quality_report():
+    """Auditoría U3-C3 -- Legacy vs Unified (2026-09-02, autorizado
+    explícitamente). Solo lectura, protegido por `_admin_token_ok()` igual
+    que el resto de `/api/admin/*`. NO acepta ningún query param ni body --
+    el rango de fechas se calcula enteramente server-side, a partir de
+    `shadow_detector_registry.list_shadow_market_dates()` (única fuente
+    real), acotado a `[U3_DEPLOY_MARKET_DATE, hoy]` -- nunca una fecha
+    recibida del cliente. Delega en
+    `detector_comparison.quality_report()`, que a su vez solo ejecuta
+    `SELECT` -- nunca escribe en ninguna SQLite, nunca toca
+    `shadow_candidate_detection`/`candidate_observation`, nunca activa
+    `apply_recalibration` ni influye en ninguna decisión real de Atlas."""
+    if not _admin_token_ok():
+        return jsonify({"error": "no autorizado"}), 403
+
+    from atlas_live.memory import market_hours as _mh_u3c3
+    from atlas_live.radar import detector_comparison as dc
+    from atlas_live.radar import shadow_detector_registry as sreg
+
+    hoy = _mh_u3c3.market_date()
+    fechas_shadow = sreg.list_shadow_market_dates()
+    market_dates = sorted(d for d in fechas_shadow if U3_DEPLOY_MARKET_DATE <= d <= hoy)
+
+    if not market_dates:
+        return jsonify({
+            "error": "sin datos shadow en el rango U3-C3",
+            "u3_deploy_date": U3_DEPLOY_MARKET_DATE,
+            "hoy": hoy,
+        }), 200
+
+    reporte = dc.quality_report(market_dates)
+    reporte["u3c3_window"] = {
+        "u3_deploy_date": U3_DEPLOY_MARKET_DATE,
+        "hoy": hoy,
+        "market_dates_usados": market_dates,
+    }
+    return jsonify(reporte)
+
+
 @app.route("/api/admin/generate-experience-knowledge", methods=["POST"])
 def api_admin_generate_experience_knowledge():
     """Recálculo MANUAL del conocimiento propio de Atlas (2026-08-25, Fase

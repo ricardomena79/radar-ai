@@ -126,3 +126,16 @@ def count_shadow_detections(market_date: str) -> int:
             "SELECT COUNT(*) AS n FROM shadow_candidate_detection WHERE market_date = ?", (market_date,)
         ).fetchone()
     return row["n"] if row else 0
+
+
+def list_shadow_market_dates() -> List[str]:
+    """Todas las fechas (`market_date`) distintas con al menos una
+    detección shadow registrada, ordenadas ascendente (2026-09-02,
+    autorizado explícitamente, para U3-C3) -- `SELECT DISTINCT` puro, sin
+    ningún parámetro externo. Única fuente real para acotar el rango de
+    fechas de la auditoría -- nunca se inventa ni se asume un rango."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT market_date FROM shadow_candidate_detection ORDER BY market_date"
+        ).fetchall()
+    return [r["market_date"] for r in rows]
