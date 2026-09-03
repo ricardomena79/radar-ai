@@ -1771,6 +1771,32 @@ def api_admin_data_dir_full_inventory():
     return jsonify(resultado), (200 if resultado.get("ok") else 500)
 
 
+@app.route("/api/admin/radar-worker-status")
+def api_admin_radar_worker_status():
+    """Diagnóstico read-only del hilo de radar_worker (2026-09-03,
+    autorizado explícitamente) -- determina si el hilo actual sigue vivo,
+    mismo patrón ya usado en /api/admin/catalyst-worker-status y
+    /api/admin/shadow-detector-status (thread_alive vía _thread.is_alive()).
+    NO modifica el comportamiento de radar_worker, NO agrega recuperación
+    ni watchdog -- exclusivamente lectura de su estado interno + el mismo
+    radar_status() ya público via /api/radar-universo, reunidos en un solo
+    lugar. Protegido con ATLAS_ADMIN_TOKEN, mismo patrón que el resto de
+    /api/admin/*."""
+    if not _admin_token_ok():
+        return jsonify({"error": "no autorizado"}), 403
+
+    from atlas_live.radar import candidate_registry as radar_registry
+    from atlas_live.radar import radar_worker as rw
+
+    return jsonify({
+        "thread_exists": rw._thread is not None,
+        "thread_alive": rw._thread.is_alive() if rw._thread is not None else False,
+        "stop_requested": rw._stop.is_set(),
+        "radar_enabled": rw.RADAR_ENABLED,
+        "radar_status": radar_registry.radar_status(),
+    })
+
+
 @app.route("/api/admin/data-dir-diagnostics/marker", methods=["POST"])
 def api_admin_write_persistence_marker():
     """Escribe el marcador de persistencia UNA SOLA VEZ (nunca lo
