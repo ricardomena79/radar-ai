@@ -72,6 +72,38 @@ def test_reporte_ok_sin_snapshots_no_rompe():
         _restore()
 
 
+# --- corrección 2026-09-02 -- Tribunal ante DB inexistente ------------------
+
+def test_db_inexistente_tribunal_no_la_crea_y_responde_sin_excepcion():
+    """Reproduce el escenario real de producción (disk I/O error): la DB de
+    snapshots todavía no existe (ningún /api/radar-oportunidades corrió
+    todavía) -- el Tribunal debe responder ok=True, n_snapshots=0, sin
+    lanzar, y sin crear el archivo por el solo hecho de ser consultado."""
+    _fresh()
+    try:
+        assert dkr._db_exists() is False
+        rep = tribunal.full_tribunal_report(market_date="2026-08-24")
+        assert rep["ok"] is True
+        assert rep["error"] is None
+        assert rep["n_snapshots"] == 0
+        assert rep["eventos"] == []
+        assert dkr._db_exists() is False  # el Tribunal NUNCA la creó
+    finally:
+        _restore()
+
+
+def test_db_existente_tribunal_lee_correctamente_tras_la_correccion():
+    _fresh()
+    try:
+        _snapshot(decision="VIGILAR", decision_shadow="PREPARACION", shadow_differs=True)
+        _outcome(category="mejor_oportunidad")
+        rep = tribunal.full_tribunal_report(market_date="2026-08-24")
+        assert rep["ok"] is True
+        assert rep["n_snapshots"] == 1
+    finally:
+        _restore()
+
+
 def test_decision_real_nunca_es_la_shadow_siempre_la_baseline():
     _fresh()
     try:

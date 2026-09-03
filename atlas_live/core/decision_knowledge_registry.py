@@ -93,11 +93,40 @@ CREATE INDEX IF NOT EXISTS idx_dks_condition ON decision_knowledge_snapshot(dire
 
 
 def _connect() -> sqlite3.Connection:
+    """Lectura-escritura -- USAR SOLO desde `record_decision_knowledge_snapshot()`
+    (la única función que necesita crear el archivo/schema y escribir).
+    Las funciones de lectura (`list_snapshots`/`get_snapshots_for`/
+    `latest_snapshot_for`) usan `_ro_connect()` en su lugar -- ver más
+    abajo, corrección 2026-09-02 tras un `disk I/O error` real en
+    producción: el Tribunal (conceptualmente solo lectura) heredaba este
+    `_connect()` de escritura, que intenta `PRAGMA journal_mode=WAL` +
+    `CREATE TABLE/INDEX IF NOT EXISTS` en CADA llamada -- con el disco
+    lleno, eso fallaba antes de llegar a ejecutar ningún `SELECT`."""
     conn = sqlite3.connect(DB_PATH, timeout=15)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=15000")
     conn.executescript(_SCHEMA)  # CREATE TABLE/INDEX IF NOT EXISTS -- nunca DROP, nunca recrea
+    return conn
+
+
+def _db_exists() -> bool:
+    return Path(DB_PATH).exists()
+
+
+def _ro_connect() -> sqlite3.Connection:
+    """Conexión read-only REAL de SQLite (mismo mecanismo ya verificado
+    empíricamente en `raw_data_consolidation.py`/`u3c3_exclusive_diagnostics.py`
+    que bloquea escrituras a nivel del motor): `mode=ro` + `PRAGMA
+    query_only=ON`. NUNCA `PRAGMA journal_mode=WAL`, NUNCA
+    `executescript(_SCHEMA)`, NUNCA crea el archivo si no existe --
+    `sqlite3.connect(..., mode=ro)` lanza `OperationalError: unable to
+    open database file` en ese caso, por eso SIEMPRE se llama detrás de
+    `_db_exists()` (ver las 3 funciones de lectura de abajo), nunca sola."""
+    uri = Path(DB_PATH).resolve().as_uri() + "?mode=ro"
+    conn = sqlite3.connect(uri, uri=True, timeout=15)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA query_only=ON")
     return conn
 
 
@@ -197,9 +226,15 @@ def record_decision_knowledge_snapshot(
 
 
 def get_snapshots_for(ticker: str, market_date: str) -> List[Dict[str, Any]]:
-    """Solo lectura -- todas las transiciones registradas ese día para esa
-    candidata, en orden cronológico."""
-    with _connect() as conn:
+    """Solo lectura REAL (`_ro_connect()`) -- todas las transiciones
+    registradas ese día para esa candidata, en orden cronológico. Si
+    `decision_knowledge_snapshot.db` todavía no existe (ningún
+    `record_decision_knowledge_snapshot()` corrió todavía), devuelve `[]`
+    sin intentar abrir ni crear nada -- el Tribunal nunca crea
+    infraestructura de persistencia por el solo hecho de ser consultado."""
+    if not _db_exists():
+        return []
+    with _ro_connect() as conn:
         rows = conn.execute(
             """SELECT * FROM decision_knowledge_snapshot
                WHERE ticker=? AND market_date=? ORDER BY id ASC""",
@@ -209,7 +244,12 @@ def get_snapshots_for(ticker: str, market_date: str) -> List[Dict[str, Any]]:
 
 
 def latest_snapshot_for(ticker: str, market_date: str) -> Optional[Dict[str, Any]]:
-    with _connect() as conn:
+    """Solo lectura REAL -- `None` tanto si no hay ninguna fila para esa
+    candidata como si la DB todavía no existe (mismo criterio que
+    `get_snapshots_for`, nunca crea nada)."""
+    if not _db_exists():
+        return None
+    with _ro_connect() as conn:
         row = _last_snapshot(conn, ticker, market_date)
     return _row(row) if row is not None else None
 
@@ -220,9 +260,14 @@ def list_snapshots(
     timing_deteccion: Optional[str] = None,
     limit: int = 5000,
 ) -> List[Dict[str, Any]]:
-    """Solo lectura, paginado con un límite explícito -- nunca una carga
-    sin acotar (mismo criterio ya usado en todo el proyecto para evitar
-    cargas grandes en memoria)."""
+    """Solo lectura REAL, paginado con un límite explícito -- nunca una
+    carga sin acotar (mismo criterio ya usado en todo el proyecto para
+    evitar cargas grandes en memoria). Si la DB todavía no existe, `[]`
+    sin abrir ni crear nada -- es la función que llama el Tribunal
+    (`decision_outcome_tribunal.py::full_tribunal_report()`), tiene que
+    poder responder "sin snapshots todavía" sin ningún efecto colateral."""
+    if not _db_exists():
+        return []
     query = "SELECT * FROM decision_knowledge_snapshot WHERE 1=1"
     params: List[Any] = []
     if market_date is not None:
@@ -236,6 +281,6 @@ def list_snapshots(
         params.append(timing_deteccion)
     query += " ORDER BY id ASC LIMIT ?"
     params.append(limit)
-    with _connect() as conn:
+    with _ro_connect() as conn:
         rows = conn.execute(query, params).fetchall()
     return [_row(r) for r in rows]

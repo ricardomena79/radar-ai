@@ -269,3 +269,110 @@ def test_modulo_nunca_pasa_apply_recalibration_true():
 def test_firma_record_no_expone_apply_recalibration_true_por_defecto():
     firma = inspect.signature(dkr.record_decision_knowledge_snapshot)
     assert firma.parameters["apply_recalibration_active"].default is False
+
+
+# --- corrección 2026-09-02 -- lecturas read-only reales, DB inexistente ----
+
+def test_db_inexistente_list_snapshots_devuelve_vacio_sin_crear_archivo():
+    _fresh()
+    try:
+        assert dkr._db_exists() is False
+        assert dkr.list_snapshots() == []
+        assert dkr._db_exists() is False  # sigue sin existir -- nunca se creó
+    finally:
+        _restore()
+
+
+def test_db_inexistente_get_snapshots_for_devuelve_vacio_sin_crear_archivo():
+    _fresh()
+    try:
+        assert dkr.get_snapshots_for("AAA", "2026-08-24") == []
+        assert dkr._db_exists() is False
+    finally:
+        _restore()
+
+
+def test_db_inexistente_latest_snapshot_for_devuelve_none_sin_crear_archivo():
+    _fresh()
+    try:
+        assert dkr.latest_snapshot_for("AAA", "2026-08-24") is None
+        assert dkr._db_exists() is False
+    finally:
+        _restore()
+
+
+def test_db_existente_las_3_funciones_de_lectura_leen_correctamente():
+    _fresh()
+    try:
+        _record(ticker="AAA", market_date="2026-08-24")
+        assert dkr._db_exists() is True
+        assert len(dkr.list_snapshots()) == 1
+        assert len(dkr.get_snapshots_for("AAA", "2026-08-24")) == 1
+        assert dkr.latest_snapshot_for("AAA", "2026-08-24")["decision"] == "VIGILAR"
+    finally:
+        _restore()
+
+
+def test_record_sigue_pudiendo_escribir_normalmente_tras_la_correccion():
+    _fresh()
+    try:
+        assert dkr._db_exists() is False
+        assert _record() is True  # crea el archivo + escribe -- vía _connect(), sin cambios
+        assert dkr._db_exists() is True
+        assert dkr.latest_snapshot_for("AAA", "2026-08-24") is not None
+    finally:
+        _restore()
+
+
+def test_consultas_repetidas_no_modifican_tamano_ni_filas_ni_wal_ni_shm():
+    _fresh()
+    try:
+        _record()
+        wal = Path(str(dkr.DB_PATH) + "-wal")
+        shm = Path(str(dkr.DB_PATH) + "-shm")
+        tamano_antes = dkr.DB_PATH.stat().st_size
+        wal_existia_antes = wal.exists()
+        shm_existia_antes = shm.exists()
+        with dkr._connect() as conn:
+            filas_antes = conn.execute("SELECT COUNT(*) FROM decision_knowledge_snapshot").fetchone()[0]
+
+        for _ in range(20):
+            dkr.list_snapshots()
+            dkr.get_snapshots_for("AAA", "2026-08-24")
+            dkr.latest_snapshot_for("AAA", "2026-08-24")
+
+        tamano_despues = dkr.DB_PATH.stat().st_size
+        assert tamano_despues == tamano_antes
+        assert wal.exists() == wal_existia_antes
+        assert shm.exists() == shm_existia_antes
+        with dkr._connect() as conn:
+            filas_despues = conn.execute("SELECT COUNT(*) FROM decision_knowledge_snapshot").fetchone()[0]
+        assert filas_despues == filas_antes
+    finally:
+        _restore()
+
+
+def test_funciones_de_lectura_nunca_contienen_escritura_alguna_escaneo_estatico():
+    for func in (dkr.list_snapshots, dkr.get_snapshots_for, dkr.latest_snapshot_for):
+        fuente = inspect.getsource(func)
+        fuente_upper = fuente.upper()
+        assert "JOURNAL_MODE=WAL" not in fuente_upper.replace(" ", "")
+        assert "CREATE TABLE" not in fuente_upper
+        assert "CREATE INDEX" not in fuente_upper
+        assert "INSERT" not in fuente_upper
+        assert "UPDATE" not in fuente_upper
+        assert "DELETE" not in fuente_upper
+        assert "VACUUM" not in fuente_upper
+        assert "CHECKPOINT" not in fuente_upper
+        assert "_ro_connect" in fuente or "_db_exists" in fuente  # deben usar el camino read-only
+
+
+def test_ro_connect_usa_mode_ro_y_query_only():
+    fuente = inspect.getsource(dkr._ro_connect)
+    assert "mode=ro" in fuente
+    assert 'conn.execute("PRAGMA query_only=ON")' in fuente
+    # busca la INVOCACIÓN real (conn.execute("PRAGMA journal_mode...), no la
+    # mención en el docstring que explica por qué NO se usa -- mismo criterio
+    # ya aplicado en Hito 2 para evitar falsos positivos de escaneo de texto.
+    assert 'conn.execute("PRAGMA journal_mode' not in fuente
+    assert "conn.executescript" not in fuente
