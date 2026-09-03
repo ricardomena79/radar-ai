@@ -1793,6 +1793,14 @@ def api_admin_radar_worker_status():
     stack que el intérprete ya mantiene internamente. No agrega ningún
     mecanismo de recuperación -- puramente diagnóstico.
 
+    `ultimo_error_at`/`ultimo_error_etapa`/`ultimo_error_tipo` (2026-09-03,
+    autorizado explícitamente, Fase 3): ya se persisten en `radar_meta`
+    vía `_record_error()`, pero `radar_status()` los descarta (solo
+    expone `ultimo_error`, sin su timestamp ni su etapa de origen). Se
+    leen acá directamente de `get_meta()` (misma fuente de verdad ya
+    existente, sin duplicarla) -- puramente de lectura, no agrega ningún
+    campo nuevo a `radar_meta`, no escribe nada.
+
     Protegido con ATLAS_ADMIN_TOKEN, mismo patrón que el resto de
     /api/admin/*."""
     if not _admin_token_ok():
@@ -1808,6 +1816,8 @@ def api_admin_radar_worker_status():
         if frame is not None:
             stack_summary = "".join(traceback.format_stack(frame))
 
+    meta = radar_registry.get_meta()
+
     return jsonify({
         "thread_exists": rw._thread is not None,
         "thread_alive": rw._thread.is_alive() if rw._thread is not None else False,
@@ -1815,6 +1825,9 @@ def api_admin_radar_worker_status():
         "lock_locked": rw._lock.locked(),
         "thread_ident": thread_ident,
         "stack_summary": stack_summary,
+        "ultimo_error_at": meta.get("ultimo_error_at"),
+        "ultimo_error_etapa": meta.get("ultimo_error_etapa"),
+        "ultimo_error_tipo": meta.get("ultimo_error_tipo"),
         "radar_enabled": rw.RADAR_ENABLED,
         "radar_status": radar_registry.radar_status(),
     })

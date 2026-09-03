@@ -242,6 +242,80 @@ def _funcion_donde_el_hilo_de_prueba_queda_esperando(ev):
     ev.wait()
 
 
+def test_endpoint_expone_ultimo_error_at_etapa_tipo_desde_get_meta(monkeypatch):
+    """Confirma que los 3 campos nuevos vienen de get_meta() (la misma
+    fuente de verdad ya existente, sin duplicarla) -- se controla vía
+    monkeypatch, sin escribir absolutamente nada en ninguna DB real."""
+    os.environ["ATLAS_ADMIN_TOKEN"] = "secreto-real"
+    fake_meta = {
+        "ultimo_error_at": "2026-08-31T12:59:03.079349+00:00",
+        "ultimo_error_etapa": "run_sweep_once",
+        "ultimo_error_tipo": "OperationalError",
+        "state": "ERROR",
+    }
+    monkeypatch.setattr(radar_registry, "get_meta", lambda: fake_meta)
+    try:
+        r = _client().get("/api/admin/radar-worker-status?token=secreto-real")
+        assert r.status_code == 200
+        body = r.get_json()
+        assert body["ultimo_error_at"] == "2026-08-31T12:59:03.079349+00:00"
+        assert body["ultimo_error_etapa"] == "run_sweep_once"
+        assert body["ultimo_error_tipo"] == "OperationalError"
+    finally:
+        del os.environ["ATLAS_ADMIN_TOKEN"]
+        _restore_thread_state()
+
+
+def test_endpoint_campos_de_error_ausentes_cuando_meta_no_los_tiene(monkeypatch):
+    os.environ["ATLAS_ADMIN_TOKEN"] = "secreto-real"
+    monkeypatch.setattr(radar_registry, "get_meta", lambda: {})
+    try:
+        r = _client().get("/api/admin/radar-worker-status?token=secreto-real")
+        assert r.status_code == 200
+        body = r.get_json()
+        assert body["ultimo_error_at"] is None
+        assert body["ultimo_error_etapa"] is None
+        assert body["ultimo_error_tipo"] is None
+    finally:
+        del os.environ["ATLAS_ADMIN_TOKEN"]
+        _restore_thread_state()
+
+
+def test_endpoint_nunca_escribe_metadata_llama_set_meta(monkeypatch):
+    """Verifica que ningún dato persistido se modifica -- si el endpoint
+    alguna vez llamara a set_meta() (la función de escritura real de
+    radar_meta), este test lo detectaría de inmediato."""
+    os.environ["ATLAS_ADMIN_TOKEN"] = "secreto-real"
+
+    def _boom(*a, **k):
+        raise AssertionError("el endpoint de diagnóstico NUNCA debe escribir metadata")
+
+    monkeypatch.setattr(radar_registry, "set_meta", _boom)
+    try:
+        r = _client().get("/api/admin/radar-worker-status?token=secreto-real")
+        assert r.status_code == 200
+    finally:
+        del os.environ["ATLAS_ADMIN_TOKEN"]
+        _restore_thread_state()
+
+
+def test_endpoint_error_at_etapa_tipo_coinciden_con_get_meta_real():
+    """Sin monkeypatch -- confirma contra el get_meta() real (mismo
+    criterio que test_endpoint_incluye_radar_status_real ya existente)."""
+    os.environ["ATLAS_ADMIN_TOKEN"] = "secreto-real"
+    try:
+        meta_real = radar_registry.get_meta()
+        r = _client().get("/api/admin/radar-worker-status?token=secreto-real")
+        assert r.status_code == 200
+        body = r.get_json()
+        assert body["ultimo_error_at"] == meta_real.get("ultimo_error_at")
+        assert body["ultimo_error_etapa"] == meta_real.get("ultimo_error_etapa")
+        assert body["ultimo_error_tipo"] == meta_real.get("ultimo_error_tipo")
+    finally:
+        del os.environ["ATLAS_ADMIN_TOKEN"]
+        _restore_thread_state()
+
+
 def test_stack_summary_muestra_la_funcion_real_donde_esta_el_hilo():
     """Confirma que sys._current_frames()+traceback.format_stack() captura
     el stack del hilo CORRECTO -- no un placeholder ni el stack del hilo
