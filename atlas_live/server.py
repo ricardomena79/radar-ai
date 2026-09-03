@@ -1396,6 +1396,71 @@ def api_admin_u3c3_exclusive_diagnostics():
     return jsonify(resultado), (200 if resultado.get("ok") else 500)
 
 
+@app.route("/api/admin/raw-data-consolidation/consolidate", methods=["POST"])
+def api_admin_raw_data_consolidate_block():
+    """Hito 2 -- consolidación de datos crudos (2026-09-02, autorizado
+    explícitamente): corre el ciclo RAW → ANALYSIS → MANIFEST →
+    PERSISTENCE VERIFICATION para UN bloque `(ticker, market_date)`
+    explícitamente indicado por query param -- nunca un lote, nunca
+    "todos los bloques", nunca fechas implícitas. `source_table` limitado
+    a `candidate_observation`/`shadow_candidate_detection` (validado
+    contra `raw_data_consolidation_registry.VALID_SOURCE_TABLES`, un 400
+    si no coincide). `ticker`/`market_date` viajan siempre como parámetros
+    ligados en el SQL interno -- nunca interpolados.
+
+    NUNCA borra ni modifica `candidate_observation`/`candidate_detection`/
+    `candidate_outcome`/`shadow_candidate_detection` -- solo LEE (conexión
+    `mode=ro` + `PRAGMA query_only=ON`, ver `raw_data_consolidation.py`).
+    Escribe ÚNICAMENTE en `raw_data_consolidation.db`, una base nueva y
+    chica, separada. El resultado nunca avanza más allá de `status=
+    "verified"` -- `compaction_authorized`/`compacted` no existen en el
+    vocabulario de este endpoint, quedan para una fase futura separada."""
+    if not _admin_token_ok():
+        return jsonify({"error": "no autorizado"}), 403
+
+    from atlas_live.radar import raw_data_consolidation_pipeline as rdc_pipeline
+    from atlas_live.radar import raw_data_consolidation_registry as rdc_registry
+
+    source_table = request.args.get("source_table", "")
+    ticker = request.args.get("ticker", "")
+    market_date = request.args.get("market_date", "")
+
+    if source_table not in rdc_registry.VALID_SOURCE_TABLES:
+        return jsonify({
+            "error": f"source_table inválida: {source_table!r}",
+            "valores_permitidos": list(rdc_registry.VALID_SOURCE_TABLES),
+        }), 400
+    if not ticker or not market_date:
+        return jsonify({"error": "faltan parámetros obligatorios: ticker y market_date"}), 400
+
+    resultado = rdc_pipeline.consolidate_block(source_table, ticker, market_date)
+    return jsonify(resultado), (200 if resultado.get("ok") else 500)
+
+
+@app.route("/api/admin/raw-data-consolidation/status")
+def api_admin_raw_data_consolidation_status():
+    """Hito 2 -- solo lectura del estado de los manifiestos ya
+    consolidados (2026-09-02, autorizado explícitamente).
+    `?source_table=` opcional para filtrar; sin ese parámetro, devuelve
+    todos los bloques de ambas tablas. Lee únicamente
+    `raw_data_consolidation.db` -- nunca toca `candidate_observation`/
+    `shadow_candidate_detection`."""
+    if not _admin_token_ok():
+        return jsonify({"error": "no autorizado"}), 403
+
+    from atlas_live.radar import raw_data_consolidation_registry as rdc_registry
+
+    source_table = request.args.get("source_table") or None
+    if source_table is not None and source_table not in rdc_registry.VALID_SOURCE_TABLES:
+        return jsonify({
+            "error": f"source_table inválida: {source_table!r}",
+            "valores_permitidos": list(rdc_registry.VALID_SOURCE_TABLES),
+        }), 400
+
+    bloques = rdc_registry.list_blocks(source_table)
+    return jsonify({"source_table_filter": source_table, "n_bloques": len(bloques), "bloques": bloques})
+
+
 @app.route("/api/admin/generate-experience-knowledge", methods=["POST"])
 def api_admin_generate_experience_knowledge():
     """Recálculo MANUAL del conocimiento propio de Atlas (2026-08-25, Fase
