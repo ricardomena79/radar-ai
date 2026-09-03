@@ -1750,6 +1750,27 @@ def api_admin_data_dir_diagnostics():
     return jsonify(ddd.diagnostics())
 
 
+@app.route("/api/admin/data-dir-full-inventory")
+def api_admin_data_dir_full_inventory():
+    """Inventario COMPLETO, read-only, de todos los archivos bajo
+    `ATLAS_DATA_DIR` (2026-09-03, auditoría de espacio de Hito 3.2,
+    autorizado explícitamente) -- endpoint nuevo y separado del existente
+    `/api/admin/data-dir-diagnostics` (que solo devuelve los 50 archivos
+    más grandes). Lista TODOS los archivos (`path`+`size_bytes`),
+    agrupados por extensión, sin recorte. `os.walk`+`Path.stat()`
+    únicamente -- nunca abre el contenido de ningún archivo, nunca ejecuta
+    SQL sobre ningún `.db` encontrado, nunca escribe nada bajo
+    `ATLAS_DATA_DIR`. Protegido con ATLAS_ADMIN_TOKEN, mismo patrón que el
+    resto de `/api/admin/*`."""
+    if not _admin_token_ok():
+        return jsonify({"error": "no autorizado"}), 403
+
+    from atlas_live import data_dir_full_inventory as ddfi
+
+    resultado = ddfi.full_report()
+    return jsonify(resultado), (200 if resultado.get("ok") else 500)
+
+
 @app.route("/api/admin/data-dir-diagnostics/marker", methods=["POST"])
 def api_admin_write_persistence_marker():
     """Escribe el marcador de persistencia UNA SOLA VEZ (nunca lo
