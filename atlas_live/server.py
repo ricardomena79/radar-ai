@@ -732,6 +732,8 @@ def api_radar_oportunidades():
     from atlas_live.core import atlas_decision_core as adc
     from atlas_live.core import decision_composition as dcomp
     from atlas_live.core import decision_knowledge_registry as dk_registry
+    from atlas_live.core import knowledge_eligibility as ke
+    from atlas_live.core import knowledge_eligibility_registry as ker
     from atlas_live.learning import historical_scoring as hsc
     from atlas_live.learning import learned_evidence as le
     from atlas_live.memory import market_hours as _mh
@@ -1024,6 +1026,25 @@ def api_radar_oportunidades():
                 direction=o.get("direction"), timing_deteccion=o.get("timing_deteccion_hoy"),
                 core_methodology_version=atlas_decision.methodology_version,
                 apply_recalibration_active=False,
+            )
+        except Exception:
+            pass
+
+        # Hito 3, Fase 3.3 (2026-09-03, autorizado explícitamente en Plan
+        # Mode): elegibilidad de la condición (direction, timing_deteccion)
+        # que ya representa `o["learned_evidence"]` -- puramente auditoría,
+        # nunca influye `estado_final` (ya fijado arriba) ni activa
+        # `apply_recalibration` (no aparece en ningún punto de este
+        # bloque). Se registra por CONDICIÓN, no por ticker -- múltiples
+        # candidatas que comparten (direction, timing_deteccion) producen
+        # el mismo resultado y el registro transition-only ya lo deduplica.
+        # Protegido con su propio try/except: un fallo acá nunca puede
+        # romper la respuesta del endpoint.
+        try:
+            eligibilidad = ke.classify_eligibility(o["learned_evidence"], market_date)
+            ker.record_eligibility_snapshot(
+                direction=o.get("direction"), timing_deteccion=o.get("timing_deteccion_hoy"),
+                evaluated_as_of=market_date, eligibility_result=eligibilidad,
             )
         except Exception:
             pass
@@ -1509,6 +1530,34 @@ def api_admin_decision_knowledge_tribunal():
 
     resultado = tribunal.full_tribunal_report(
         market_date=market_date, direction=direction, timing_deteccion=timing_deteccion, limit=limit,
+    )
+    return jsonify(resultado), (200 if resultado.get("ok") else 500)
+
+
+@app.route("/api/admin/knowledge-eligibility-report")
+def api_admin_knowledge_eligibility_report():
+    """Hito 3, Fase 3.3 -- elegibilidad de conocimiento (2026-09-03,
+    autorizado explícitamente en Plan Mode): responde, para cada condición
+    (direction, timing_deteccion, methodology_version) evaluada, si su
+    `learned_evidence` es NO_ELEGIBLE/INSUFICIENTE/ELEGIBLE y por qué --
+    ver `atlas_live/core/knowledge_eligibility.py`. Puramente de LECTURA
+    sobre el registro de auditoría (`knowledge_eligibility_registry.py`),
+    nunca modifica ninguna decisión real, nunca activa
+    `apply_recalibration` (ese flag no aparece en ningún punto de este
+    módulo ni del registro). `?evaluated_as_of=`/`?eligibility_state=`
+    opcionales para acotar el reporte. Protegido con ATLAS_ADMIN_TOKEN,
+    mismo patrón que el resto de `/api/admin/*`."""
+    if not _admin_token_ok():
+        return jsonify({"error": "no autorizado"}), 403
+
+    from atlas_live.core import knowledge_eligibility_registry as ker
+
+    evaluated_as_of = request.args.get("evaluated_as_of") or None
+    eligibility_state = request.args.get("eligibility_state") or None
+    limit = request.args.get("limit", default=5000, type=int)
+
+    resultado = ker.full_eligibility_report(
+        evaluated_as_of=evaluated_as_of, eligibility_state=eligibility_state, limit=limit,
     )
     return jsonify(resultado), (200 if resultado.get("ok") else 500)
 
