@@ -1513,6 +1513,31 @@ def api_admin_decision_knowledge_tribunal():
     return jsonify(resultado), (200 if resultado.get("ok") else 500)
 
 
+@app.route("/api/admin/candidate-observation-diagnostics")
+def api_admin_candidate_observation_diagnostics():
+    """Diagnóstico read-only de `candidate_observation`/`radar_candidates.db`
+    (2026-09-03, auditoría de espacio previa a una eventual compactación,
+    autorizado explícitamente): `page_size`/`page_count`/`freelist_count`/
+    `auto_vacuum`/`journal_mode`, tamaño físico exacto del archivo (+
+    `-wal`/`-shm` si existen), `COUNT(*)` de `candidate_observation`, y la
+    distribución de filas por bloque `(ticker, market_date)` (min/max/
+    mediana/percentiles/top-20/bottom-20), con el `EXPLAIN QUERY PLAN`
+    real incluido como evidencia de si se usa el índice existente.
+
+    PURAMENTE DE LECTURA -- conexión `mode=ro` + `PRAGMA query_only=ON`
+    (`candidate_observation_diagnostics.py`), NUNCA `CREATE`/`INSERT`/
+    `UPDATE`/`DELETE`/`VACUUM`/checkpoint. No compacta ni autoriza
+    compactación de nada -- eso sigue sin implementarse. Protegido con
+    ATLAS_ADMIN_TOKEN, mismo patrón que el resto de `/api/admin/*`."""
+    if not _admin_token_ok():
+        return jsonify({"error": "no autorizado"}), 403
+
+    from atlas_live.radar import candidate_observation_diagnostics as cod
+
+    resultado = cod.full_report()
+    return jsonify(resultado), (200 if resultado.get("ok") else 500)
+
+
 @app.route("/api/admin/generate-experience-knowledge", methods=["POST"])
 def api_admin_generate_experience_knowledge():
     """Recálculo MANUAL del conocimiento propio de Atlas (2026-08-25, Fase
