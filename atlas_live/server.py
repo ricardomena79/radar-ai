@@ -731,6 +731,7 @@ def api_radar_oportunidades():
 
     from atlas_live.core import atlas_decision_core as adc
     from atlas_live.core import decision_composition as dcomp
+    from atlas_live.core import decision_knowledge_registry as dk_registry
     from atlas_live.learning import historical_scoring as hsc
     from atlas_live.learning import learned_evidence as le
     from atlas_live.memory import market_hours as _mh
@@ -1002,6 +1003,30 @@ def api_radar_oportunidades():
                 )
             except Exception:
                 pass
+
+        # Hito 3, Fase 3.0/3.1 (2026-09-03, autorizado explícitamente):
+        # snapshot inmutable de decisión+conocimiento, SIEMPRE (no solo
+        # cuando difiere -- a diferencia de shadow_decision_log de arriba,
+        # que es una alerta ligera SOLO de divergencias). Transition-only
+        # (ver decision_knowledge_registry.py), nunca cambia estado_final ni
+        # ninguna decisión real -- apply_recalibration_active=False siempre
+        # en esta fase, no hay ninguna vía de configuración que lo cambie.
+        # Protegido con su propio try/except: un fallo acá nunca puede
+        # romper la respuesta del endpoint.
+        try:
+            dk_registry.record_decision_knowledge_snapshot(
+                ticker=o["ticker"], market_date=market_date,
+                decision_timestamp=atlas_decision.decision_timestamp.isoformat(),
+                decision=atlas_decision.decision,
+                decision_shadow=shadow_decision.decision_shadow,
+                shadow_differs=shadow_decision.shadow_differs,
+                learned_evidence=o["learned_evidence"],
+                direction=o.get("direction"), timing_deteccion=o.get("timing_deteccion_hoy"),
+                core_methodology_version=atlas_decision.methodology_version,
+                apply_recalibration_active=False,
+            )
+        except Exception:
+            pass
 
     conteos: dict = {}
     conteos_estado_final: dict = {}
@@ -1459,6 +1484,33 @@ def api_admin_raw_data_consolidation_status():
 
     bloques = rdc_registry.list_blocks(source_table)
     return jsonify({"source_table_filter": source_table, "n_bloques": len(bloques), "bloques": bloques})
+
+
+@app.route("/api/admin/decision-knowledge-tribunal")
+def api_admin_decision_knowledge_tribunal():
+    """Hito 3, Fase 3.2 -- Tribunal de comparación offline (2026-09-03,
+    autorizado explícitamente): decisión baseline vs decision_shadow vs
+    outcome real, agregado por condición, sobre el snapshot inmutable de
+    Fase 3.0/3.1. Puramente de LECTURA -- nunca modifica ninguna decisión
+    real, nunca activa `apply_recalibration`, nunca declara que Atlas está
+    aprendiendo (ver `decision_outcome_tribunal.NOTA_ALCANCE` en la propia
+    respuesta). `?market_date=`/`?direction=`/`?timing_deteccion=`
+    opcionales para acotar el reporte. Protegido con ATLAS_ADMIN_TOKEN,
+    mismo patrón que el resto de `/api/admin/*`."""
+    if not _admin_token_ok():
+        return jsonify({"error": "no autorizado"}), 403
+
+    from atlas_live.core import decision_outcome_tribunal as tribunal
+
+    market_date = request.args.get("market_date") or None
+    direction = request.args.get("direction") or None
+    timing_deteccion = request.args.get("timing_deteccion") or None
+    limit = request.args.get("limit", default=5000, type=int)
+
+    resultado = tribunal.full_tribunal_report(
+        market_date=market_date, direction=direction, timing_deteccion=timing_deteccion, limit=limit,
+    )
+    return jsonify(resultado), (200 if resultado.get("ok") else 500)
 
 
 @app.route("/api/admin/generate-experience-knowledge", methods=["POST"])
