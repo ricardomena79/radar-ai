@@ -1780,7 +1780,20 @@ def api_admin_radar_worker_status():
     NO modifica el comportamiento de radar_worker, NO agrega recuperación
     ni watchdog -- exclusivamente lectura de su estado interno + el mismo
     radar_status() ya público via /api/radar-universo, reunidos en un solo
-    lugar. Protegido con ATLAS_ADMIN_TOKEN, mismo patrón que el resto de
+    lugar.
+
+    `lock_locked`/`thread_ident`/`stack_summary` (2026-09-03, autorizado
+    explícitamente, Fase 2 -- localizar el bloqueo exacto tras confirmar
+    thread_alive=True sin progreso): `_lock.locked()` es un método
+    read-only estándar de `threading.Lock`, sin efectos secundarios.
+    `sys._current_frames()` + `traceback.format_stack()` son mecanismos
+    ESTÁNDAR de la librería estándar de Python, explícitamente pensados
+    para depurar hilos colgados -- nunca pausan, interrumpen ni modifican
+    el hilo inspeccionado, solo leen una instantánea de los punteros de
+    stack que el intérprete ya mantiene internamente. No agrega ningún
+    mecanismo de recuperación -- puramente diagnóstico.
+
+    Protegido con ATLAS_ADMIN_TOKEN, mismo patrón que el resto de
     /api/admin/*."""
     if not _admin_token_ok():
         return jsonify({"error": "no autorizado"}), 403
@@ -1788,10 +1801,20 @@ def api_admin_radar_worker_status():
     from atlas_live.radar import candidate_registry as radar_registry
     from atlas_live.radar import radar_worker as rw
 
+    thread_ident = rw._thread.ident if rw._thread is not None else None
+    stack_summary = None
+    if thread_ident is not None:
+        frame = sys._current_frames().get(thread_ident)
+        if frame is not None:
+            stack_summary = "".join(traceback.format_stack(frame))
+
     return jsonify({
         "thread_exists": rw._thread is not None,
         "thread_alive": rw._thread.is_alive() if rw._thread is not None else False,
         "stop_requested": rw._stop.is_set(),
+        "lock_locked": rw._lock.locked(),
+        "thread_ident": thread_ident,
+        "stack_summary": stack_summary,
         "radar_enabled": rw.RADAR_ENABLED,
         "radar_status": radar_registry.radar_status(),
     })

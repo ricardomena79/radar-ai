@@ -7,6 +7,7 @@ de `study_worker`/`catalyst_worker`/`radar_worker`/`market_view`/
 
 import os
 import threading
+import time
 
 import atlas_live.backtest.seed_import as _si
 import atlas_live.catalyst.catalyst_worker as _cw
@@ -157,4 +158,108 @@ def test_endpoint_incluye_radar_status_real():
         assert body["radar_status"] == radar_registry.radar_status()
     finally:
         del os.environ["ATLAS_ADMIN_TOKEN"]
+        _restore_thread_state()
+
+
+# --- lock_locked / thread_ident / stack_summary (Fase 2, 2026-09-03) -------
+
+def test_endpoint_thread_none_campos_nuevos_en_estado_vacio():
+    os.environ["ATLAS_ADMIN_TOKEN"] = "secreto-real"
+    rw._thread = None
+    rw._stop.clear()
+    try:
+        r = _client().get("/api/admin/radar-worker-status?token=secreto-real")
+        assert r.status_code == 200
+        body = r.get_json()
+        assert body["lock_locked"] is False
+        assert body["thread_ident"] is None
+        assert body["stack_summary"] is None
+    finally:
+        del os.environ["ATLAS_ADMIN_TOKEN"]
+        _restore_thread_state()
+
+
+def test_lock_locked_true_cuando_el_lock_esta_tomado():
+    os.environ["ATLAS_ADMIN_TOKEN"] = "secreto-real"
+    ev = threading.Event()
+
+    def _hold_lock():
+        rw._lock.acquire()
+        try:
+            ev.wait()
+        finally:
+            rw._lock.release()
+
+    t = threading.Thread(target=_hold_lock, daemon=True)
+    t.start()
+    deadline = time.time() + 2
+    while not rw._lock.locked() and time.time() < deadline:  # espera acotada a que el hilo tome el lock
+        time.sleep(0.005)
+    assert rw._lock.locked() is True  # confirma que el setup del test funcionó antes de seguir
+    rw._thread = t
+    try:
+        r = _client().get("/api/admin/radar-worker-status?token=secreto-real")
+        assert r.status_code == 200
+        body = r.get_json()
+        assert body["lock_locked"] is True
+    finally:
+        ev.set()
+        t.join(timeout=2)
+        del os.environ["ATLAS_ADMIN_TOKEN"]
+        _restore_thread_state()
+
+
+def test_lock_locked_false_cuando_el_lock_esta_libre():
+    os.environ["ATLAS_ADMIN_TOKEN"] = "secreto-real"
+    assert rw._lock.locked() is False
+    try:
+        r = _client().get("/api/admin/radar-worker-status?token=secreto-real")
+        assert r.status_code == 200
+        assert r.get_json()["lock_locked"] is False
+    finally:
+        del os.environ["ATLAS_ADMIN_TOKEN"]
+        _restore_thread_state()
+
+
+def test_thread_ident_coincide_con_el_hilo_real():
+    os.environ["ATLAS_ADMIN_TOKEN"] = "secreto-real"
+    ev = threading.Event()
+    t = threading.Thread(target=ev.wait, daemon=True)
+    t.start()
+    rw._thread = t
+    try:
+        r = _client().get("/api/admin/radar-worker-status?token=secreto-real")
+        assert r.status_code == 200
+        assert r.get_json()["thread_ident"] == t.ident
+    finally:
+        ev.set()
+        t.join(timeout=2)
+        del os.environ["ATLAS_ADMIN_TOKEN"]
+        _restore_thread_state()
+
+
+def _funcion_donde_el_hilo_de_prueba_queda_esperando(ev):
+    ev.wait()
+
+
+def test_stack_summary_muestra_la_funcion_real_donde_esta_el_hilo():
+    """Confirma que sys._current_frames()+traceback.format_stack() captura
+    el stack del hilo CORRECTO -- no un placeholder ni el stack del hilo
+    principal que atiende el request."""
+    os.environ["ATLAS_ADMIN_TOKEN"] = "secreto-real"
+    ev = threading.Event()
+    t = threading.Thread(target=_funcion_donde_el_hilo_de_prueba_queda_esperando, args=(ev,), daemon=True)
+    t.start()
+    rw._thread = t
+    try:
+        r = _client().get("/api/admin/radar-worker-status?token=secreto-real")
+        assert r.status_code == 200
+        stack = r.get_json()["stack_summary"]
+        assert stack is not None
+        assert "_funcion_donde_el_hilo_de_prueba_queda_esperando" in stack
+    finally:
+        ev.set()
+        t.join(timeout=2)
+        del os.environ["ATLAS_ADMIN_TOKEN"]
+        _restore_thread_state()
         _restore_thread_state()
