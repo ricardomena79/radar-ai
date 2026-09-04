@@ -734,6 +734,8 @@ def api_radar_oportunidades():
     from atlas_live.core import decision_knowledge_registry as dk_registry
     from atlas_live.core import knowledge_eligibility as ke
     from atlas_live.core import knowledge_eligibility_registry as ker
+    from atlas_live.core import shadow_observation as so
+    from atlas_live.core import shadow_observation_registry as sor
     from atlas_live.learning import historical_scoring as hsc
     from atlas_live.learning import learned_evidence as le
     from atlas_live.memory import market_hours as _mh
@@ -1045,6 +1047,39 @@ def api_radar_oportunidades():
             ker.record_eligibility_snapshot(
                 direction=o.get("direction"), timing_deteccion=o.get("timing_deteccion_hoy"),
                 evaluated_as_of=market_date, eligibility_result=eligibilidad,
+            )
+        except Exception:
+            pass
+
+        # Hito 3, Fase 3.4 (2026-09-03, autorizado explícitamente en Plan
+        # Mode): observación shadow -- si el conocimiento hubiese sido
+        # utilizado, ¿qué habría hecho Atlas, y ese conocimiento era
+        # elegible según el veredicto que 3.3 ACABA de escribir (o
+        # confirmar) arriba, en esta misma iteración? Nunca recalcula la
+        # elegibilidad -- consulta el veredicto real vía
+        # `ker.latest_eligibility_for()` (función de 3.3, sin modificar).
+        # Solo se registra cuando `shadow_differs=True` (mismo gate que ya
+        # usa `shadow_decision_log`, preexistente) -- puramente auditoría,
+        # nunca influye `estado_final` (ya fijado arriba) ni activa
+        # `apply_recalibration`. Protegido con su propio try/except: un
+        # fallo acá nunca puede romper la respuesta del endpoint.
+        try:
+            veredicto_3_3 = ker.latest_eligibility_for(
+                o.get("direction"), o.get("timing_deteccion_hoy"), atlas_decision.methodology_version,
+            )
+            observacion = so.classify_shadow_observation(
+                decision=atlas_decision.decision, decision_shadow=shadow_decision.decision_shadow,
+                shadow_differs=shadow_decision.shadow_differs,
+                eligibility_state=(veredicto_3_3 or {}).get("eligibility_state"),
+                computed_as_of=(o["learned_evidence"] or {}).get("computed_as_of"),
+                market_date=market_date,
+            )
+            sor.record_shadow_observation(
+                ticker=o["ticker"], market_date=market_date,
+                decision_timestamp=atlas_decision.decision_timestamp.isoformat(),
+                direction=o.get("direction"), timing_deteccion=o.get("timing_deteccion_hoy"),
+                core_methodology_version=atlas_decision.methodology_version,
+                observation=observacion, learned_evidence=o["learned_evidence"],
             )
         except Exception:
             pass
@@ -1558,6 +1593,36 @@ def api_admin_knowledge_eligibility_report():
 
     resultado = ker.full_eligibility_report(
         evaluated_as_of=evaluated_as_of, eligibility_state=eligibility_state, limit=limit,
+    )
+    return jsonify(resultado), (200 if resultado.get("ok") else 500)
+
+
+@app.route("/api/admin/shadow-observation-report")
+def api_admin_shadow_observation_report():
+    """Hito 3, Fase 3.4 -- observación shadow (2026-09-03, autorizado
+    explícitamente en Plan Mode): para cada caso donde `decision_shadow`
+    difirió de la decisión real (`shadow_differs=True`), registra si el
+    conocimiento que respaldó esa divergencia era ELEGIBLE/INSUFICIENTE/
+    NO_ELEGIBLE (veredicto real de Fase 3.3, nunca recalculado) y permite
+    evaluar después, contra el mismo `candidate_outcome`, cómo le habría
+    ido a Atlas bajo shadow comparado con lo que hizo realmente bajo
+    baseline -- ver `atlas_live/core/shadow_observation_registry.py`.
+    Puramente de LECTURA, nunca modifica ninguna decisión real, nunca
+    activa `apply_recalibration`, nunca promueve una observación a
+    decisión ejecutada. `?market_date=`/`?eligibility_state=` opcionales
+    para acotar el reporte. Protegido con ATLAS_ADMIN_TOKEN, mismo patrón
+    que el resto de `/api/admin/*`."""
+    if not _admin_token_ok():
+        return jsonify({"error": "no autorizado"}), 403
+
+    from atlas_live.core import shadow_observation_registry as sor
+
+    market_date = request.args.get("market_date") or None
+    eligibility_state = request.args.get("eligibility_state") or None
+    limit = request.args.get("limit", default=5000, type=int)
+
+    resultado = sor.full_shadow_observation_report(
+        market_date=market_date, eligibility_state=eligibility_state, limit=limit,
     )
     return jsonify(resultado), (200 if resultado.get("ok") else 500)
 
