@@ -729,6 +729,8 @@ def api_radar_oportunidades():
     cambia `estado_final`, ver `atlas_live/core/atlas_decision_core.py`."""
     from datetime import datetime, timezone
 
+    from atlas_live.core import activation_gate as ag
+    from atlas_live.core import activation_registry as areg
     from atlas_live.core import atlas_decision_core as adc
     from atlas_live.core import decision_composition as dcomp
     from atlas_live.core import decision_knowledge_registry as dk_registry
@@ -1081,6 +1083,56 @@ def api_radar_oportunidades():
                 core_methodology_version=atlas_decision.methodology_version,
                 observation=observacion, learned_evidence=o["learned_evidence"],
             )
+        except Exception:
+            pass
+
+        # Hito 3, Fase 3.5 (2026-09-03, autorizado explícitamente en Plan
+        # Mode, decisión funcional confirmada por el usuario): activación
+        # controlada -- ÚNICO punto de todo el repo donde
+        # `apply_recalibration=True` se pasa de verdad a `adc.decide()`,
+        # y SOLO dentro del `if gate["activation_state"] == "ACTIVADO":`
+        # de abajo. Corte inmediato si el mecanismo no está
+        # `ON_CONTROLADO` (el default es `"OFF"`, fail-safe absoluto --
+        # ver `activation_registry.get_mechanism_state()`): cero cómputo,
+        # cero escritura mientras esté apagado. `decision_controlada`
+        # (el resultado de esa tercera llamada) NUNCA se asigna a
+        # `o[...]` -- no participa de la respuesta HTTP real, no influye
+        # `o["estado_final"]` (ya fijado arriba) ni `o["decision_shadow"]`
+        # (Fase 3.4, tampoco tocado acá). Reutiliza `veredicto_3_3` ya
+        # consultado arriba para el bloque de 3.4 -- mismo veredicto real
+        # de Fase 3.3, nunca recalculado. Protegido con su propio
+        # try/except: cualquier error -- incluida la propia llamada con
+        # `apply_recalibration=True` -- termina en nada activado, nada
+        # persistido (fail-safe explícito, pedido por el usuario).
+        try:
+            mechanism_state = areg.get_mechanism_state()
+            if mechanism_state == "ON_CONTROLADO":
+                is_revoked = areg.is_revoked(
+                    o.get("direction"), o.get("timing_deteccion_hoy"), atlas_decision.methodology_version,
+                )
+                eligibility_state_35 = (veredicto_3_3 or {}).get("eligibility_state")
+                gate = ag.classify_activation(
+                    mechanism_state=mechanism_state, eligibility_state=eligibility_state_35,
+                    is_revoked=is_revoked,
+                    computed_as_of=(o["learned_evidence"] or {}).get("computed_as_of"),
+                    market_date=market_date,
+                )
+                decision_controlada = None
+                if gate["activation_state"] == "ACTIVADO":
+                    controlada = adc.decide(
+                        candidate_snapshot, features, scores, evidence,
+                        learned_evidence=o["learned_evidence"], apply_recalibration=True,
+                    )
+                    decision_controlada = controlada.decision
+                areg.record_activation_state(
+                    ticker=o["ticker"], market_date=market_date,
+                    decision_timestamp=atlas_decision.decision_timestamp.isoformat(),
+                    direction=o.get("direction"), timing_deteccion=o.get("timing_deteccion_hoy"),
+                    core_methodology_version=atlas_decision.methodology_version,
+                    mechanism_state=mechanism_state, eligibility_state=eligibility_state_35,
+                    gate=gate, decision_controlada=decision_controlada,
+                    learned_evidence=o["learned_evidence"],
+                )
         except Exception:
             pass
 
@@ -1623,6 +1675,90 @@ def api_admin_shadow_observation_report():
 
     resultado = sor.full_shadow_observation_report(
         market_date=market_date, eligibility_state=eligibility_state, limit=limit,
+    )
+    return jsonify(resultado), (200 if resultado.get("ok") else 500)
+
+
+@app.route("/api/admin/activation-mechanism-state", methods=["GET", "POST"])
+def api_admin_activation_mechanism_state():
+    """Hito 3, Fase 3.5 -- interruptor maestro de activación controlada
+    (2026-09-03, autorizado explícitamente en Plan Mode, decisión
+    funcional confirmada por el usuario: ejercer `apply_recalibration=True`
+    de forma real y aislada). `GET` lee el estado actual (`"OFF"` por
+    defecto, fail-safe absoluto -- ver
+    `activation_registry.get_mechanism_state()`) + historial completo.
+    `POST ?state=ON_CONTROLADO&reason=...` es el ÚNICO punto que puede
+    encenderlo -- rechaza (400) cualquier `state` que no sea exactamente
+    `"OFF"`/`"ON_CONTROLADO"`, o `reason` vacío. Protegido con
+    ATLAS_ADMIN_TOKEN."""
+    if not _admin_token_ok():
+        return jsonify({"error": "no autorizado"}), 403
+
+    from atlas_live.core import activation_registry as areg
+
+    if request.method == "GET":
+        return jsonify({
+            "mechanism_state": areg.get_mechanism_state(),
+            "historial": areg.get_mechanism_history(),
+            "revocaciones": areg.list_revocations(),
+        })
+
+    state = request.args.get("state")
+    reason = request.args.get("reason")
+    try:
+        areg.set_mechanism_state(state, reason)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"ok": True, "mechanism_state": areg.get_mechanism_state()})
+
+
+@app.route("/api/admin/activation-revoke", methods=["POST"])
+def api_admin_activation_revoke():
+    """Hito 3, Fase 3.5 -- revocación inmediata y permanente (2026-09-03,
+    autorizado explícitamente en Plan Mode). `?scope=GLOBAL&reason=...`
+    bloquea cualquier activación futura sin importar la condición;
+    `?scope=CONDICION&direction=...&timing_deteccion=...&methodology_version=...&reason=...`
+    bloquea solo esa condición puntual. Sin mecanismo de "des-revocar" --
+    la revocación gana siempre. Protegido con ATLAS_ADMIN_TOKEN."""
+    if not _admin_token_ok():
+        return jsonify({"error": "no autorizado"}), 403
+
+    from atlas_live.core import activation_registry as areg
+
+    scope = request.args.get("scope")
+    reason = request.args.get("reason")
+    direction = request.args.get("direction") or None
+    timing_deteccion = request.args.get("timing_deteccion") or None
+    methodology_version = request.args.get("methodology_version") or None
+    try:
+        areg.revoke(
+            scope=scope, reason=reason, direction=direction,
+            timing_deteccion=timing_deteccion, methodology_version=methodology_version,
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"ok": True})
+
+
+@app.route("/api/admin/activation-report")
+def api_admin_activation_report():
+    """Hito 3, Fase 3.5 -- reporte offline de activación controlada
+    (2026-09-03, autorizado explícitamente en Plan Mode). Puramente de
+    LECTURA sobre `activation_state_log` -- ver
+    `activation_registry.full_activation_report()`. `?market_date=`/
+    `?activation_state=`/`?limit=` opcionales. Protegido con
+    ATLAS_ADMIN_TOKEN."""
+    if not _admin_token_ok():
+        return jsonify({"error": "no autorizado"}), 403
+
+    from atlas_live.core import activation_registry as areg
+
+    market_date = request.args.get("market_date") or None
+    activation_state = request.args.get("activation_state") or None
+    limit = request.args.get("limit", default=5000, type=int)
+
+    resultado = areg.full_activation_report(
+        market_date=market_date, activation_state=activation_state, limit=limit,
     )
     return jsonify(resultado), (200 if resultado.get("ok") else 500)
 
