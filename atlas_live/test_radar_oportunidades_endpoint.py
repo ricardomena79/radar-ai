@@ -212,7 +212,10 @@ def test_no_llama_a_ningun_proveedor_yahoo_finnhub():
     usan)."""
     import inspect
 
-    src = inspect.getsource(server.api_radar_oportunidades)
+    # 2026-09-03: la lógica real vive en `_api_radar_oportunidades_impl()`
+    # desde el guard de reentrancia -- `api_radar_oportunidades` es ahora
+    # solo el wrapper del lock, revisarlo acá no probaría nada.
+    src = inspect.getsource(server._api_radar_oportunidades_impl)
     assert "get_default_provider(" not in src
     assert "YahooFinance" not in src
     assert "FinnhubProvider" not in src

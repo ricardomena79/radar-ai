@@ -14,6 +14,7 @@ llama a `main()`, solo importa `app`.
 
 import os
 import sys
+import threading
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
@@ -642,8 +643,46 @@ def api_radar_alert_stages():
     })
 
 
+# Guard de reentrancia (2026-09-03, fix operativo post-deploy de Hito 3.5,
+# autorizado explícitamente): el incidente real de este mismo día mostró
+# que dos ejecuciones concurrentes de este endpoint -- cada una recorriendo
+# ~1.500 candidatas, cada una abriendo varias conexiones SQLite por
+# candidata (Fases 3.0/3.3/3.4) -- pueden contender por el mismo archivo en
+# modo WAL (`busy_timeout=15000`) y, en conjunto, agotar los 8 threads de
+# gunicorn, dejando sin capacidad incluso a endpoints simples ajenos
+# (`/api/mercado`). Mismo patrón YA usado en `market_view.py`/
+# `radar_worker.py`/`scan_worker.py`/`unified_detector.py`:
+# `_lock.acquire(blocking=False)` -- si ya hay una ejecución en curso, el
+# segundo request se rechaza de inmediato (429), sin esperar ni un
+# milisegundo y sin consumir un thread por minutos. No modifica baseline,
+# shadow, elegibilidad (3.3) ni activación (3.5) -- es exclusivamente una
+# exclusión mutua alrededor del handler completo, implementada como un
+# wrapper delgado para no tener que reindentar el cuerpo real de la
+# función (que sigue exactamente igual, ahora en
+# `_api_radar_oportunidades_impl()`).
+_oportunidades_lock = threading.Lock()
+
+
 @app.route("/api/radar-oportunidades")
 def api_radar_oportunidades():
+    """Wrapper no-reentrante de `_api_radar_oportunidades_impl()` -- ver el
+    comentario de `_oportunidades_lock` arriba. Si el lock ya está tomado
+    (otra ejecución pesada en curso), devuelve `429` de inmediato con un
+    cuerpo JSON explícito (`"error": "ciclo_ya_en_curso"`) -- nunca espera,
+    nunca reintenta, nunca deja un thread bloqueado. El primer request
+    corre exactamente igual que antes de este cambio."""
+    if not _oportunidades_lock.acquire(blocking=False):
+        return jsonify({
+            "error": "ciclo_ya_en_curso",
+            "motivo": "otro_request_pesado_a_radar_oportunidades_en_ejecucion",
+        }), 429
+    try:
+        return _api_radar_oportunidades_impl()
+    finally:
+        _oportunidades_lock.release()
+
+
+def _api_radar_oportunidades_impl():
     """Oportunidades Detectadas (Fase 6, 2026-08-18; capa de prioridad
     final agregada 2026-08-18, cierre de arquitectura) -- CADA candidata
     que Tradier detectó hoy (`candidate_detection`, nunca se borra), con
