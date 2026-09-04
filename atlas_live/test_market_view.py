@@ -539,11 +539,80 @@ def test_archivos_protegidos_sin_diff():
         "atlas_live/data_fusion/universe_quotes.py",
         "atlas/data/universe/universe.py",
     ]
+    # Hito 3, Fase 3.6 (2026-09-03, autorizado explícitamente): único touch
+    # permitido dentro de "atlas_live/learning" -- el orquestador event-
+    # driven y su propio test. Cualquier OTRO archivo de esa carpeta (o de
+    # cualquiera de los demás protegidos) sigue disparando este guard.
+    excepciones_hito_3_6 = [
+        ":(exclude)atlas_live/learning/live_experience_pipeline.py",
+        ":(exclude)atlas_live/learning/test_live_experience_pipeline.py",
+    ]
     resultado = subprocess.run(
-        ["git", "diff", "--stat", "--"] + protegidos,
+        ["git", "diff", "--stat", "--"] + protegidos + excepciones_hito_3_6,
         capture_output=True, text=True, cwd=".",
     )
     assert resultado.stdout.strip() == "", f"archivos protegidos con diff pendiente: {resultado.stdout}"
+
+
+def test_guard_excepcion_hito_3_6_permite_solo_lo_autorizado_y_detecta_el_resto():
+    """Prueba el MISMO patrón pathspec (`protegidos` + `:(exclude)` de los
+    2 archivos autorizados de Hito 3.6) usado arriba y en
+    `test_shadow_validation.py::test_J_archivos_protegidos_sin_diff`, mismo
+    mecanismo real de git, pero aislado en un repo sintético temporal --
+    así se puede fabricar un cambio NO autorizado sin tocar el repositorio
+    real. Confirma las 2 mitades del requisito: (a) modificar SOLO los 2
+    archivos autorizados de 3.6 -> el guard queda en verde; (b) modificar
+    ADEMÁS cualquier otro archivo de la misma carpeta -> el guard lo
+    detecta -- la excepción no se filtró a "toda la carpeta permitida"."""
+    import subprocess
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+        learning = repo / "atlas_live" / "learning"
+        learning.mkdir(parents=True)
+        autorizado_1 = learning / "live_experience_pipeline.py"
+        autorizado_2 = learning / "test_live_experience_pipeline.py"
+        no_autorizado = learning / "otro_archivo_no_relacionado.py"
+        for f in (autorizado_1, autorizado_2, no_autorizado):
+            f.write_text("# v1\n")
+
+        def _git(*args):
+            subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, check=True)
+
+        _git("init", "-q")
+        _git("config", "user.email", "test@example.com")
+        _git("config", "user.name", "test")
+        _git("add", "-A")
+        _git("commit", "-q", "-m", "baseline")
+
+        protegido = ["atlas_live/learning"]
+        excepciones = [
+            ":(exclude)atlas_live/learning/live_experience_pipeline.py",
+            ":(exclude)atlas_live/learning/test_live_experience_pipeline.py",
+        ]
+
+        # (a) solo los 2 archivos autorizados cambian -> el guard queda en verde
+        autorizado_1.write_text("# v2 -- cambio autorizado de Hito 3.6\n")
+        autorizado_2.write_text("# v2 -- cambio autorizado de Hito 3.6\n")
+        resultado_a = subprocess.run(
+            ["git", "diff", "--stat", "--"] + protegido + excepciones,
+            cwd=repo, capture_output=True, text=True,
+        )
+        assert resultado_a.stdout.strip() == "", (
+            f"la excepción autorizada no debería disparar el guard: {resultado_a.stdout}"
+        )
+
+        # (b) además cambia un archivo NO autorizado -> el guard lo detecta
+        no_autorizado.write_text("# v2 -- NO autorizado\n")
+        resultado_b = subprocess.run(
+            ["git", "diff", "--stat", "--"] + protegido + excepciones,
+            cwd=repo, capture_output=True, text=True,
+        )
+        assert "otro_archivo_no_relacionado.py" in resultado_b.stdout, (
+            f"el guard debería seguir detectando cambios no autorizados: {resultado_b.stdout}"
+        )
 
 
 # --- confirmación real: el universo de Racional EQUITY tiene 1.646 símbolos ---

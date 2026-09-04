@@ -62,6 +62,13 @@ def run_experience_learning_cycle(
         "methodology_version": lek.METHODOLOGY_VERSION,
         "error": None,
     }
+    # Hito 3, Fase 3.6 (2026-09-03, autorizado explícitamente): `tabla` se
+    # inicializa acá, ANTES del try, para que siempre exista en el scope
+    # de la función -- el bloque de evaluación continua de más abajo
+    # (después del try/except, nunca dentro) depende de poder chequear
+    # `if tabla:` sin importar si el ciclo de experiencia falló antes de
+    # calcularla.
+    tabla = []
     try:
         # Una sola lectura de experiencias -- se reutiliza tanto para el
         # conteo reportado como para el cálculo en sí (nunca dos consultas
@@ -85,4 +92,28 @@ def run_experience_learning_cycle(
     except Exception as exc:  # el aprendizaje NUNCA puede tumbar al llamador
         resumen["error"] = f"{type(exc).__name__}: {exc}"
         resumen["ok"] = False
+
+    # Hito 3, Fase 3.6 (2026-09-03, autorizado explícitamente): integración
+    # EVENT-DRIVEN de la evaluación continua de degradación -- se dispara
+    # acá, DESPUÉS del try/except de arriba (nunca dentro), para que un
+    # fallo de 3.6 jamás pueda volver a escribir `resumen["ok"]`/
+    # `resumen["error"]`, que ya pertenecen al resultado real de ESTE
+    # ciclo. Agrega SOLO una clave nueva (`continuous_evaluation`) que
+    # ningún consumidor existente lee hoy -- el hilo del radar y el
+    # endpoint admin que llaman a esta función siguen viendo exactamente
+    # los mismos campos de siempre, sin cambios. `if tabla:` cubre el caso
+    # "sin experiencias válidas hoy" (la función ya retornó arriba con
+    # `tabla=[]`, este bloque simplemente no corre -- nada que evaluar).
+    # `resumen["ok"]` se exige además de `tabla` (corrección post-auditoría,
+    # 2026-09-03): `tabla` puede quedar poblada (líneas 83-87 ya corrieron)
+    # y AUN ASÍ terminar con `ok=False` si `record_experience_knowledge()`
+    # (línea 89) lanza -- sin este guard, 3.6 evaluaría sobre una tabla que
+    # nunca llegó a persistirse como conocimiento real, violando "ciclo
+    # Hito 2 fallido -> 3.6 no debe inventar una evaluación ni revocar".
+    if resumen["ok"] and tabla:
+        try:
+            from atlas_live.core import continuous_evaluation_registry as cer
+            resumen["continuous_evaluation"] = cer.evaluate_conditions_from_experience_table(tabla, as_of_date)
+        except Exception as exc:
+            resumen["continuous_evaluation"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
     return resumen

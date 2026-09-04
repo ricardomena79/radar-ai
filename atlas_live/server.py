@@ -1802,6 +1802,80 @@ def api_admin_activation_report():
     return jsonify(resultado), (200 if resultado.get("ok") else 500)
 
 
+@app.route("/api/admin/continuous-evaluation-run", methods=["POST"])
+def api_admin_continuous_evaluation_run():
+    """Hito 3, Fase 3.6 -- evaluación continua / degradación, camino
+    MANUAL/on-demand (2026-09-03, autorizado explícitamente en Plan Mode,
+    revisión corregida). Con `?direction=&timing_deteccion=&methodology_version=`
+    evalúa esa condición puntual; sin esos 3 parámetros, evalúa TODAS las
+    condiciones actualmente `ELEGIBLE` según Fase 3.3
+    (`continuous_evaluation_registry.list_eligible_conditions()`, lectura
+    pública, sin modificar esa fase). `?auto_revoke=true` es requerido
+    explícitamente para que una evaluación `DEGRADADO` dispare
+    `activation_registry.revoke()` -- por defecto (`auto_revoke=false`)
+    este camino SOLO informa, nunca revoca (a diferencia del camino
+    event-driven, ver `live_experience_pipeline.run_experience_learning_cycle()`,
+    que sí puede revocar automáticamente bajo los mismos guards).
+    Protegido con ATLAS_ADMIN_TOKEN."""
+    if not _admin_token_ok():
+        return jsonify({"error": "no autorizado"}), 403
+
+    from atlas_live.core import continuous_evaluation_registry as cer
+    from atlas_live.memory import market_hours as _mh
+
+    direction = request.args.get("direction") or None
+    timing_deteccion = request.args.get("timing_deteccion") or None
+    methodology_version = request.args.get("methodology_version") or None
+    as_of_date = request.args.get("as_of_date") or _mh.market_date()
+    n_ventana = request.args.get("n_ventana", default=cer.DEFAULT_N_VENTANA, type=int)
+    auto_revoke = (request.args.get("auto_revoke") or "false").strip().lower() == "true"
+
+    if direction and timing_deteccion and methodology_version:
+        condiciones = [(direction, timing_deteccion, methodology_version)]
+    elif direction or timing_deteccion or methodology_version:
+        return jsonify({
+            "error": "parametros_incompletos",
+            "motivo": "direction/timing_deteccion/methodology_version deben pasarse los 3 juntos, o ninguno",
+        }), 400
+    else:
+        condiciones = cer.list_eligible_conditions()
+
+    evaluaciones = [
+        cer.evaluate_condition(
+            direction=d, timing_deteccion=t, methodology_version=m,
+            as_of_date=as_of_date, n_ventana=n_ventana, auto_revoke=auto_revoke,
+        )
+        for d, t, m in condiciones
+    ]
+    return jsonify({
+        "ok": True, "as_of_date": as_of_date, "auto_revoke": auto_revoke,
+        "n_condiciones": len(condiciones), "evaluaciones": evaluaciones,
+    })
+
+
+@app.route("/api/admin/continuous-evaluation-report")
+def api_admin_continuous_evaluation_report():
+    """Hito 3, Fase 3.6 -- reporte offline de evaluación continua
+    (2026-09-03, autorizado explícitamente en Plan Mode). Puramente de
+    LECTURA sobre `continuous_evaluation_log` -- ver
+    `continuous_evaluation_registry.full_continuous_evaluation_report()`.
+    `?market_date=`/`?evaluation_state=`/`?limit=` opcionales. Protegido
+    con ATLAS_ADMIN_TOKEN."""
+    if not _admin_token_ok():
+        return jsonify({"error": "no autorizado"}), 403
+
+    from atlas_live.core import continuous_evaluation_registry as cer
+
+    market_date = request.args.get("market_date") or None
+    evaluation_state = request.args.get("evaluation_state") or None
+    limit = request.args.get("limit", default=5000, type=int)
+
+    resultado = cer.full_continuous_evaluation_report(
+        market_date=market_date, evaluation_state=evaluation_state, limit=limit,
+    )
+    return jsonify(resultado), (200 if resultado.get("ok") else 500)
+
+
 @app.route("/api/admin/candidate-observation-diagnostics")
 def api_admin_candidate_observation_diagnostics():
     """Diagnóstico read-only de `candidate_observation`/`radar_candidates.db`

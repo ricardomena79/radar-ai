@@ -8,6 +8,8 @@ import tempfile
 import uuid as _uuid
 from pathlib import Path
 
+from atlas_live.core import activation_registry as areg
+from atlas_live.core import continuous_evaluation_registry as cer
 from atlas_live.learning import live_experience_knowledge as lek
 from atlas_live.learning import live_experience_pipeline as lep
 from atlas_live.learning import live_experience_scoring as les
@@ -15,6 +17,8 @@ from atlas_live.radar import candidate_registry as reg
 
 _ORIG_REG_DB_PATH = reg.DB_PATH
 _ORIG_LEK_DB_PATH = lek.DB_PATH
+_ORIG_CER_DB_PATH = cer.DB_PATH
+_ORIG_AREG_DB_PATH = areg.DB_PATH
 
 
 def _fresh():
@@ -22,12 +26,22 @@ def _fresh():
     reg._schema_ready_for = None
     les.DB_PATH = reg.DB_PATH
     lek.DB_PATH = Path(tempfile.gettempdir()) / f"atlas_test_pipeline_lek_{_uuid.uuid4().hex}.db"
+    # Hito 3, Fase 3.6 (2026-09-03): desde que `run_experience_learning_cycle()`
+    # dispara el hook event-driven de evaluación continua, CUALQUIER test
+    # de este archivo que siembre experiencias walk-forward-válidas
+    # también ejercita `continuous_evaluation_registry.py`/`activation_registry.py`
+    # -- deben aislarse acá igual que las otras 2 DBs, o los tests
+    # existentes escribirían en las rutas reales de desarrollo.
+    cer.DB_PATH = Path(tempfile.gettempdir()) / f"atlas_test_pipeline_cer_{_uuid.uuid4().hex}.db"
+    areg.DB_PATH = Path(tempfile.gettempdir()) / f"atlas_test_pipeline_areg_{_uuid.uuid4().hex}.db"
 
 
 def _restore():
     reg.DB_PATH = _ORIG_REG_DB_PATH
     les.DB_PATH = _ORIG_REG_DB_PATH
     lek.DB_PATH = _ORIG_LEK_DB_PATH
+    cer.DB_PATH = _ORIG_CER_DB_PATH
+    areg.DB_PATH = _ORIG_AREG_DB_PATH
 
 
 def _seed(ticker, market_date, direction, timing, volatility_14d_pct, max_advance_pct,
@@ -262,6 +276,158 @@ def test_falla_interna_no_se_propaga_resultado_marca_error():
         resumen = lep.run_experience_learning_cycle("2026-08-24")  # NO debe lanzar
         assert resumen["ok"] is False
         assert resumen["error"] is not None
+    finally:
+        _restore()
+
+
+# --- Hito 3, Fase 3.6 (2026-09-03) -- integración event-driven --------------
+
+def test_M_ciclo_real_dispara_continuous_evaluation():
+    _fresh()
+    try:
+        for i in range(5):
+            _seed(f"CE{i}", "2026-08-20", "ALCISTA", "al_comienzo", 5.0 + i, 30.0)
+        resumen = lep.run_experience_learning_cycle("2026-08-24")
+        assert resumen["ok"] is True
+        assert "continuous_evaluation" in resumen
+        assert resumen["continuous_evaluation"]["ok"] is True
+        assert resumen["continuous_evaluation"]["n_condiciones"] >= 1
+    finally:
+        _restore()
+
+
+def test_N_sin_experiencias_no_intenta_continuous_evaluation():
+    _fresh()
+    try:
+        reg.get_meta()
+        resumen = lep.run_experience_learning_cycle("2026-08-24")
+        assert resumen["ok"] is True
+        assert resumen["n_experiencias"] == 0
+        assert "continuous_evaluation" not in resumen  # tabla=[] -> el bloque no corre
+    finally:
+        _restore()
+
+
+def test_O_fallo_de_continuous_evaluation_no_contamina_el_resultado_real_del_ciclo(monkeypatch):
+    """El requisito más importante de la integración: un bug en 3.6 NUNCA
+    puede hacer que el ciclo de experiencia real (Fase 2/3) se reporte
+    como fallido."""
+    _fresh()
+    try:
+        for i in range(5):
+            _seed(f"BOOM{i}", "2026-08-20", "ALCISTA", "al_comienzo", 5.0 + i, 30.0)
+
+        def _falla(tabla, as_of_date):
+            raise RuntimeError("bug simulado en 3.6")
+
+        monkeypatch.setattr(cer, "evaluate_conditions_from_experience_table", _falla)
+        resumen = lep.run_experience_learning_cycle("2026-08-24")
+
+        # El ciclo de experiencia real sigue reportándose exitoso, con sus
+        # cifras reales intactas -- el fallo queda contenido en la clave nueva.
+        assert resumen["ok"] is True
+        assert resumen["n_experiencias"] == 5
+        assert resumen["n_insertadas"] > 0
+        assert resumen["error"] is None
+        assert resumen["continuous_evaluation"]["ok"] is False
+        assert "bug simulado en 3.6" in resumen["continuous_evaluation"]["error"]
+    finally:
+        _restore()
+
+
+def test_P_activation_mechanism_permanece_off_tras_un_ciclo_real():
+    _fresh()
+    try:
+        for i in range(5):
+            _seed(f"OFF{i}", "2026-08-20", "ALCISTA", "al_comienzo", 5.0 + i, 30.0)
+        assert areg.get_mechanism_state() == "OFF"
+        lep.run_experience_learning_cycle("2026-08-24")
+        assert areg.get_mechanism_state() == "OFF"  # el ciclo de experiencia nunca lo enciende
+    finally:
+        _restore()
+
+
+# --- Hito 3, Fase 3.6 (2026-09-03) -- correcciones post-auditoría pre-commit -
+
+def test_Q_fallo_de_continuous_evaluation_no_dispara_revocacion(monkeypatch):
+    """Extiende test_O: además de no contaminar el resultado, un bug en 3.6
+    tampoco puede haber disparado ninguna revocación real -- se verifica
+    contra `activation_registry` real (Fase 3.5), sin mockear esa parte."""
+    _fresh()
+    try:
+        for i in range(5):
+            _seed(f"BOOMREV{i}", "2026-08-20", "ALCISTA", "al_comienzo", 5.0 + i, 30.0)
+
+        def _falla(tabla, as_of_date):
+            raise RuntimeError("bug simulado en 3.6")
+
+        monkeypatch.setattr(cer, "evaluate_conditions_from_experience_table", _falla)
+        resumen = lep.run_experience_learning_cycle("2026-08-24")
+
+        assert resumen["ok"] is True
+        assert resumen["continuous_evaluation"]["ok"] is False
+        assert areg.list_revocations() == []
+        assert areg.is_revoked("ALCISTA", "al_comienzo", lek.METHODOLOGY_VERSION) is False
+    finally:
+        _restore()
+
+
+def test_R_fallo_de_db_de_3_6_no_dispara_revocacion_y_deja_evidencia_auditable():
+    """Simula un fallo real de la DB de 3.6 (ruta inválida/no escribible,
+    mismo patrón ya usado por `test_falla_interna_no_se_propaga...` para la
+    DB de Fase 2) -- confirma: (1) el resultado principal de Hito 2 no se
+    altera; (2) ninguna revocación ocurre; (3) el fallo queda como evidencia
+    auditable dentro del propio `resumen` (el diseño actual no puede
+    persistirlo en `continuous_evaluation_log` -- la escritura ES lo que
+    falla -- pero sí lo devuelve en el dict que consumen el hilo del radar
+    y el endpoint admin)."""
+    _fresh()
+    try:
+        for i in range(5):
+            _seed(f"DBFALLA{i}", "2026-08-20", "ALCISTA", "al_comienzo", 5.0 + i, 30.0)
+        cer.DB_PATH = Path("Z:\\ruta\\que\\no\\existe\\nunca\\continuous_evaluation.db")
+        resumen = lep.run_experience_learning_cycle("2026-08-24")
+
+        assert resumen["ok"] is True
+        assert resumen["n_experiencias"] == 5
+        assert resumen["n_insertadas"] > 0
+        assert resumen["error"] is None
+
+        assert areg.list_revocations() == []
+        assert areg.is_revoked("ALCISTA", "al_comienzo", lek.METHODOLOGY_VERSION) is False
+
+        ce_resultado = resumen["continuous_evaluation"]
+        assert ce_resultado["n_condiciones"] >= 1
+        assert any(
+            ev.get("error") for ev in ce_resultado["evaluaciones"]
+        ), f"se esperaba evidencia del fallo de DB en el resultado: {ce_resultado}"
+    finally:
+        _restore()
+
+
+def test_S_ciclo_hito_2_fallido_no_dispara_continuous_evaluation(monkeypatch):
+    """Corrección post-auditoría (2026-09-03): `record_experience_knowledge()`
+    corre DESPUÉS de que `tabla` ya se calculó (líneas 83-87) -- si lanza,
+    `tabla` queda poblada pero `resumen["ok"]` queda False. Antes de esta
+    corrección, `if tabla:` solo, el hook event-driven se ejecutaba de
+    todos modos sobre una tabla que nunca llegó a persistirse como
+    conocimiento real. El guard corregido es `if resumen["ok"] and tabla:`
+    -- este test prueba que el hook ahora ni siquiera se intenta."""
+    _fresh()
+    try:
+        for i in range(5):
+            _seed(f"CICLOFALLA{i}", "2026-08-20", "ALCISTA", "al_comienzo", 5.0 + i, 30.0)
+
+        def _falla(tabla):
+            raise RuntimeError("fallo simulado en la persistencia de Hito 2")
+
+        monkeypatch.setattr(lek, "record_experience_knowledge", _falla)
+        resumen = lep.run_experience_learning_cycle("2026-08-24")
+
+        assert resumen["ok"] is False
+        assert resumen["error"] is not None
+        assert "continuous_evaluation" not in resumen  # el hook nunca se intentó
+        assert areg.list_revocations() == []
     finally:
         _restore()
 

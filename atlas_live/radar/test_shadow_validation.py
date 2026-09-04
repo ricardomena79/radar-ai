@@ -287,8 +287,16 @@ def test_J_archivos_protegidos_sin_diff():
         "atlas/engine/decision_engine.py",
         "atlas_live/learning",
     ]
+    # Hito 3, Fase 3.6 (2026-09-03, autorizado explícitamente): único touch
+    # permitido dentro de "atlas_live/learning" -- el orquestador event-
+    # driven y su propio test. Cualquier OTRO archivo de esa carpeta (o de
+    # cualquiera de los demás protegidos) sigue disparando este guard.
+    excepciones_hito_3_6 = [
+        ":(exclude)atlas_live/learning/live_experience_pipeline.py",
+        ":(exclude)atlas_live/learning/test_live_experience_pipeline.py",
+    ]
     resultado = subprocess.run(
-        ["git", "diff", "--stat", "--"] + protegidos,
+        ["git", "diff", "--stat", "--"] + protegidos + excepciones_hito_3_6,
         capture_output=True, text=True, cwd=".",
     )
     assert resultado.stdout.strip() == "", f"archivos protegidos con diff pendiente: {resultado.stdout}"
