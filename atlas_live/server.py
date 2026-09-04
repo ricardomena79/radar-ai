@@ -1335,6 +1335,22 @@ def api_flujo_sectorial():
     return jsonify(snapshot)
 
 
+@app.route("/api/aprendizaje-seguridad-resumen")
+def api_aprendizaje_seguridad_resumen():
+    """Hito 4, Fase 4.3 (2026-09-04, autorizado explícitamente en Plan
+    Mode) -- resumen agregado SEGURO del estado de las 4 capas de Hito 3
+    (elegibilidad/shadow observation/activación/evaluación continua), SIN
+    token -- resuelve la limitación repetida en la auditoría de cierre de
+    Hito 3 ("no verificable sin ATLAS_ADMIN_TOKEN"). Expone únicamente
+    conteos agregados (ver `learning_safety_summary.build_safety_summary()`)
+    -- NUNCA el detalle por ticker/condición (Wilson/baseline reales), que
+    sigue exclusivamente detrás de los 4 endpoints admin ya existentes.
+    Nunca lanza."""
+    from atlas_live.core import learning_safety_summary as lss
+
+    return jsonify(lss.build_safety_summary())
+
+
 @app.route("/api/learning-maturity")
 def api_learning_maturity():
     """Aprendizaje en Vivo + Madurez (2026-08-15, ver
@@ -1873,6 +1889,26 @@ def api_admin_continuous_evaluation_report():
     resultado = cer.full_continuous_evaluation_report(
         market_date=market_date, evaluation_state=evaluation_state, limit=limit,
     )
+    return jsonify(resultado), (200 if resultado.get("ok") else 500)
+
+
+@app.route("/api/admin/hito3-integrity-check")
+def api_admin_hito3_integrity_check():
+    """Hito 4, Fase 4.2 -- autodiagnóstico de integridad de Hito 3
+    (2026-09-04, autorizado explícitamente en Plan Mode). Automatiza los
+    checks estáticos ya hechos a mano en cada auditoría de Hito 3 (AST de
+    `apply_recalibration=True`, ausencia de auto-unrevoke/DELETE de
+    evidencia, ausencia de vocabulario financiero, presencia de
+    walk-forward en los 6 módulos) -- ver
+    `atlas_live.core.hito3_integrity_check.run_all_checks()`. Puramente
+    de LECTURA sobre el código fuente en disco (`ast`/`tokenize`), nunca
+    una DB, nunca la red. Protegido con ATLAS_ADMIN_TOKEN."""
+    if not _admin_token_ok():
+        return jsonify({"error": "no autorizado"}), 403
+
+    from atlas_live.core import hito3_integrity_check as hic
+
+    resultado = hic.run_all_checks()
     return jsonify(resultado), (200 if resultado.get("ok") else 500)
 
 

@@ -1758,6 +1758,7 @@ let _alertStages = null;
 let _stageCardFilter = null;  // etapa clickeada en los cuadros de arriba (2026-08-20), o null = todas
 let _flujoSectorial = null;
 let _catalystEvents = null;
+let _seguridadAprendizaje = null;
 
 async function fetchAlertStages() {
   try {
@@ -2086,6 +2087,75 @@ function renderFlujoSectorial() {
     </tr>`).join("")}</tbody>`;
 }
 
+// Hito 4, Fase 4.4 (2026-09-04, autorizado explícitamente en Plan Mode) --
+// panel de solo lectura sobre /api/aprendizaje-seguridad-resumen (sin
+// token, solo conteos agregados -- ver learning_safety_summary.py).
+async function fetchSeguridadAprendizaje() {
+  try {
+    const res = await fetch("/api/aprendizaje-seguridad-resumen");
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    _seguridadAprendizaje = await res.json();
+  } catch (err) {
+    console.error("fetchSeguridadAprendizaje:", err);
+    _seguridadAprendizaje = null;
+  }
+  renderSeguridadAprendizaje();
+}
+
+function _renderConteosTable(elId, conteos, emptyMsg) {
+  const tableEl = document.getElementById(elId);
+  if (!tableEl) return;
+  const entradas = Object.entries(conteos || {});
+  if (!entradas.length) {
+    tableEl.innerHTML = `<tbody><tr><td class="empty-state">${emptyMsg}</td></tr></tbody>`;
+    return;
+  }
+  tableEl.innerHTML = `
+    <thead><tr><th>Estado</th><th style="text-align:right">Conteo</th></tr></thead>
+    <tbody>${entradas.map(([estado, n]) => `<tr><td>${estado}</td><td style="text-align:right">${n}</td></tr>`).join("")}</tbody>`;
+}
+
+function renderSeguridadAprendizaje() {
+  const mecanismoEl = document.getElementById("seguridad-aprendizaje-mecanismo");
+  if (!mecanismoEl) return;
+  if (!_seguridadAprendizaje) {
+    mecanismoEl.innerHTML = `<span class="empty-state">No disponible.</span>`;
+    ["eligibilidad", "shadow", "activacion", "continua"].forEach(id =>
+      _renderConteosTable("seguridad-aprendizaje-" + id + "-table", {}, "No disponible."));
+    return;
+  }
+  const s = _seguridadAprendizaje;
+  const mecanismoOn = s.activation_mechanism_state === "ON_CONTROLADO";
+  mecanismoEl.innerHTML = `Mecanismo de activación: <b style="color:${mecanismoOn ? "var(--amber)" : "var(--green)"}">`
+    + `${mecanismoOn ? "🟡 ON_CONTROLADO" : "🟢 OFF"}</b>`
+    + (s.generated_at ? ` <span class="dim" style="font-size:12px">· Actualizado: ${fmtTimeSec(s.generated_at)} ET</span>` : "");
+
+  const elig = s.eligibilidad || {};
+  _renderConteosTable("seguridad-aprendizaje-eligibilidad-table", elig.conteos_por_estado,
+    "Sin evaluaciones de elegibilidad todavía.");
+
+  const shadow = s.shadow_observation || {};
+  const universo = shadow.universo_conocimiento_conteos || {};
+  _renderConteosTable("seguridad-aprendizaje-shadow-table", {
+    "Observaciones registradas (shadow_differs=True)": shadow.n_observaciones ?? 0,
+    "A · sin conocimiento elegible": universo.A_sin_elegible ?? 0,
+    "B · elegible, sin divergencia": universo.B_elegible_sin_divergencia ?? 0,
+    "C · elegible, con divergencia": universo.C_elegible_con_divergencia ?? 0,
+  }, "Sin observaciones todavía.");
+
+  const activ = s.activacion || {};
+  _renderConteosTable("seguridad-aprendizaje-activacion-table", {
+    ...(activ.conteos_por_estado || {}),
+    "Revocaciones registradas (histórico, nunca se deshacen)": activ.n_revocaciones_registradas ?? 0,
+  }, "Sin evaluaciones de activación todavía.");
+
+  const cont = s.evaluacion_continua || {};
+  _renderConteosTable("seguridad-aprendizaje-continua-table", {
+    ...(cont.conteos_por_estado || {}),
+    "Revocaciones disparadas por degradación": cont.n_revocaciones_disparadas ?? 0,
+  }, "Sin evaluaciones continuas todavía.");
+}
+
 // Event Status (2026-08-24, Segunda Fase -- "CUÁNDO es el evento", separado
 // de Trading Status "hay evidencia real para actuar HOY").
 const EVENT_STATUS_STYLE = {
@@ -2238,6 +2308,7 @@ function startPanelStatusPolling() {
   fetchEvolution();
   fetchLearningMaturity();  // alimenta la barra superior (renderTopbarLearning) + Aprendizaje en Vivo + Madurez
   fetchHistoricalReference();  // Base Histórica de Referencia, siempre separada
+  fetchSeguridadAprendizaje();  // Hito 4, Fase 4.4
   setInterval(fetchMemoryEngine, PANEL_STATUS_POLL_MS);
   setInterval(fetchPredictionJournal, PANEL_STATUS_POLL_MS);
   setInterval(fetchExitJournal, PANEL_STATUS_POLL_MS);
@@ -2254,6 +2325,7 @@ function startPanelStatusPolling() {
   setInterval(fetchAlertStages, PRICE_POLL_MS);
   setInterval(fetchFlujoSectorial, PRICE_POLL_MS);
   setInterval(fetchCatalystEvents, PANEL_STATUS_POLL_MS);
+  setInterval(fetchSeguridadAprendizaje, PANEL_STATUS_POLL_MS);  // Hito 4, Fase 4.4
 }
 
 /* 📸 Guardar Estado del Día -- aprobado el 2026-08-02, último elemento

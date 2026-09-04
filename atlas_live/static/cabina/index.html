@@ -62,6 +62,7 @@
     <button class="nav-item" data-view="catalizadores">🔥 Catalizadores</button>
     <button class="nav-item" data-view="radar-completo">📊 Radar Completo</button>
     <button class="nav-item" data-view="mission-control">⚙ Mission Control</button>
+    <button class="nav-item" data-view="seguridad-aprendizaje">🛡️ Seguridad del Aprendizaje</button>
     <button class="nav-item" data-view="config">🔧 Configuración</button>
   </nav>
 
@@ -344,6 +345,22 @@
       </header>
       <div id="radar-completo-stats" class="dim" style="font-size:12px;margin-bottom:10px"></div>
       <div class="table-wrap"><table class="data-table" id="radar-completo-table"></table></div>
+    </section>
+
+    <!-- ---------- 10b. SEGURIDAD DEL APRENDIZAJE (Hito 4, Fase 4.4) ---------- -->
+    <section class="view" id="view-seguridad-aprendizaje">
+      <header class="view-header"><h1>🛡️ Seguridad del Aprendizaje</h1>
+        <div class="header-meta">Estado agregado y de solo lectura de las 4 capas de seguridad del conocimiento de Atlas (Hito 3): elegibilidad, observación shadow, activación controlada y evaluación continua/revocación. Sin token -- solo conteos agregados, nunca el detalle por condición (eso sigue solo en los endpoints admin). Mientras el mecanismo esté OFF, ninguna de estas capas puede influir ninguna decisión real.</div>
+      </header>
+      <div id="seguridad-aprendizaje-mecanismo" class="learning-headline"></div>
+      <h2 class="section-title" style="margin-top:16px">3.3 · Elegibilidad de conocimiento</h2>
+      <div class="table-wrap"><table class="data-table" id="seguridad-aprendizaje-eligibilidad-table"></table></div>
+      <h2 class="section-title" style="margin-top:16px">3.4 · Observación shadow</h2>
+      <div class="table-wrap"><table class="data-table" id="seguridad-aprendizaje-shadow-table"></table></div>
+      <h2 class="section-title" style="margin-top:16px">3.5 · Activación controlada</h2>
+      <div class="table-wrap"><table class="data-table" id="seguridad-aprendizaje-activacion-table"></table></div>
+      <h2 class="section-title" style="margin-top:16px">3.6 · Evaluación continua / revocación</h2>
+      <div class="table-wrap"><table class="data-table" id="seguridad-aprendizaje-continua-table"></table></div>
     </section>
 
     <!-- ---------- 11. MISSION CONTROL ---------- -->
