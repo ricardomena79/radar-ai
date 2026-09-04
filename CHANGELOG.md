@@ -1,5 +1,7 @@
 # Changelog
 
+> **⚠️ Nota de vigencia (Hito 5, Fase 5.4, 2026-09-04)**: este documento no se actualiza desde antes del 2026-08-17 -- no incluye Hito 3 (Fases 3.0-3.6, cerrado y auditado) ni Hito 4 (Fases 4.1-4.4, cerrado y auditado -- localmente, sin commit/push/deploy todavía, a diferencia de Hito 3 que sí está commiteado y pusheado a esta rama). Para el historial completo y actual, ver `git log` y `.claude/plans/ethereal-mixing-anchor.md`.
+
 Registro cronológico de cambios importantes en Atlas. Reconstruido a partir del historial real de `git log` y del estado real de archivos del repositorio -- no contiene entradas especulativas.
 
 ## [Sin commit] - 2026-08-01 (sesión en curso)

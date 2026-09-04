@@ -1,5 +1,9 @@
 # ATLAS_STATUS.md
 
+> **⚠️ Nota de vigencia (Hito 5, Fase 5.4, 2026-09-04)**: este documento no se actualiza desde antes del 2026-08-17 -- no refleja Hito 3 (Fases 3.0-3.6, sistema de aprendizaje-seguro: elegibilidad, activación controlada, evaluación continua/revocación, cerrado y auditado) ni Hito 4 (Fases 4.1-4.4, observabilidad/paneles, cerrado y auditado -- localmente, sin commit/push/deploy todavía, a diferencia de Hito 3 que sí está commiteado y pusheado a esta rama). Para el estado real, ver el código y `.claude/plans/ethereal-mixing-anchor.md`.
+>
+> **Punto abierto señalado en esta pasada (sin tocar, a la espera de confirmación del usuario)**: `GET /api/learning-status` (`atlas_live/memory/learning_status.py`) parece un endpoint muerto -- devuelve un stub antiguo ("Learning Store no implementado todavía") que ya no alimenta ninguna parte real de la Cabina (el topbar de confianza usa `/api/learning-maturity` en su lugar, sistema real construido después). No se eliminó ni se modificó -- requiere autorización aparte.
+
 Estado actual del proyecto, snapshot -- no reemplaza `ATLAS_ROADMAP.md` (hoja de ruta completa) ni `DECISION_LOG.md` (historial de decisiones); apunta a ellos para el detalle. Última actualización: 2026-08-07, canal rápido (Plan A + Plan B) e indicadores de frescura del dato implementados.
 
 ---

@@ -1,5 +1,7 @@
 # ATLAS_BOOTSTRAP.md
 
+> **⚠️ Nota de vigencia (Hito 5, Fase 5.4, 2026-09-04)**: este documento no se actualiza desde antes del 2026-08-17 -- no refleja Hito 3 (Fases 3.0-3.6, sistema de aprendizaje-seguro: elegibilidad, activación controlada, evaluación continua/revocación, cerrado y auditado) ni Hito 4 (Fases 4.1-4.4, observabilidad/paneles, cerrado y auditado -- localmente, sin commit/push/deploy todavía, a diferencia de Hito 3 que sí está commiteado y pusheado a esta rama). Para incorporarse al estado real del proyecto, leer el código y `.claude/plans/ethereal-mixing-anchor.md` antes que este documento.
+
 **Documento de arranque oficial del proyecto Atlas.** Su propósito es que cualquier IA (u operador humano) pueda incorporarse a este proyecto y continuar el trabajo inmediatamente, sin necesidad de leer conversaciones anteriores.
 
 Es un **documento vivo**: debe actualizarse después de cada entregable importante o decisión permanente. Si algo aquí contradice el estado real del código o de los documentos fuente listados en la sección 13, el código y esos documentos tienen prioridad -- corrígelo aquí.

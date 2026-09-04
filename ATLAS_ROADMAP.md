@@ -1,5 +1,7 @@
 # ATLAS_ROADMAP.md
 
+> **⚠️ Nota de vigencia (Hito 5, Fase 5.4, 2026-09-04)**: este documento no se actualiza desde antes del 2026-08-17 -- no refleja Hito 3 (Fases 3.0-3.6, sistema de aprendizaje-seguro: elegibilidad, activación controlada, evaluación continua/revocación, cerrado y auditado) ni Hito 4 (Fases 4.1-4.4, observabilidad/paneles, cerrado y auditado -- localmente, sin commit/push/deploy todavía, a diferencia de Hito 3 que sí está commiteado y pusheado a esta rama). Para el estado real, ver el código y `.claude/plans/ethereal-mixing-anchor.md`.
+
 Plan maestro del proyecto. Sujeto a [ATLAS_CONSTITUTION.md](ATLAS_CONSTITUTION.md): ninguna fase de este roadmap puede justificarse si no responde a la pregunta oficial ("¿este cambio mejora la capacidad de Atlas para detectar antes las acciones explosivas?").
 
 Estado registrado al 2026-08-01, verificado contra el código real del repositorio (no aspiracional).

@@ -1,5 +1,7 @@
 # DECISION_LOG.md
 
+> **⚠️ Nota de vigencia (Hito 5, Fase 5.4, 2026-09-04)**: este documento no se actualiza desde antes del 2026-08-17 -- no registra las decisiones de Hito 3 (Fases 3.0-3.6, cerrado y auditado) ni Hito 4 (Fases 4.1-4.4, cerrado y auditado -- localmente, sin commit/push/deploy todavía, a diferencia de Hito 3 que sí está commiteado y pusheado a esta rama). El historial detallado de esas decisiones vive en `.claude/plans/ethereal-mixing-anchor.md`.
+
 Historial oficial de decisiones del proyecto. Toda decisión importante futura debe registrarse aquí antes de darse por adoptada, con Fecha, Problema, Alternativas evaluadas, Decisión tomada, Justificación e Impacto esperado -- ver [ATLAS_CONSTITUTION.md](ATLAS_CONSTITUTION.md).
 
 Las entradas de esta sección quedan reconstruidas a partir de las decisiones reales tomadas durante el desarrollo de Atlas Live / Radar Explosivo (sesión iniciada 2026-08-01), no son hipotéticas.

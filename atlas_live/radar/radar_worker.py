@@ -66,11 +66,29 @@ SWEEP_CEILING_SECONDS = _env_float("ATLAS_RADAR_SWEEP_CEILING_SECONDS", 120.0)
 SWEEP_SAFETY_MARGIN = _env_float("ATLAS_RADAR_SWEEP_SAFETY_MARGIN", 3.0)
 IDLE_RECHECK_SECONDS = _env_float("ATLAS_RADAR_IDLE_RECHECK_SECONDS", 60.0)
 
+# Hito 5, Fase 5.2 (2026-09-04, autorizado explícitamente): watchdog de
+# auto-recuperación -- ver `_watchdog_loop()` más abajo. `WATCHDOG_MAX_REINTENTOS`
+# es un límite EXPLÍCITO y duro (nunca reinicio infinito silencioso, pedido
+# explícito del usuario) -- una vez alcanzado, el watchdog sigue observando
+# pero deja de reiniciar hasta que el hilo vuelva a estar vivo por otra vía.
+WATCHDOG_ENABLED = _env_bool("ATLAS_RADAR_WATCHDOG_ENABLED", True)
+WATCHDOG_CHECK_SECONDS = _env_float("ATLAS_RADAR_WATCHDOG_CHECK_SECONDS", 60.0)
+WATCHDOG_MAX_REINTENTOS = int(_env_float("ATLAS_RADAR_WATCHDOG_MAX_REINTENTOS", 5))
+WATCHDOG_BACKOFF_SECONDS = _env_float("ATLAS_RADAR_WATCHDOG_BACKOFF_SECONDS", 30.0)
+
 _lock = threading.Lock()
 _stop = threading.Event()
 _thread: Optional[threading.Thread] = None
 _history = SweepHistory()
 _last_quotes: Dict[str, object] = {}
+
+# Estado propio del watchdog -- deliberadamente separado del `_lock`/`_stop`
+# del hilo del radar (responsabilidades distintas: uno corre barridos, el
+# otro solo vigila si el primero sigue vivo).
+_watchdog_lock = threading.Lock()
+_watchdog_stop = threading.Event()
+_watchdog_thread: Optional[threading.Thread] = None
+_watchdog_reintentos_consecutivos = 0
 
 
 def _now_iso() -> str:
@@ -345,8 +363,111 @@ def start_universe_radar() -> None:
     _thread.start()
 
 
+def _watchdog_check_and_restart_if_dead() -> Dict[str, object]:
+    """Hito 5, Fase 5.2 (2026-09-04, autorizado explícitamente): UN chequeo
+    del watchdog, sin dormir -- lógica pura y testeable en aislamiento,
+    separada del bucle que la llama cada `WATCHDOG_CHECK_SECONDS`.
+
+    Nunca reinicia si: (a) el radar nunca arrancó (`_thread is None` --
+    respeta `ATLAS_RADAR_ENABLED=false`/arranque todavía no ocurrido), o
+    (b) ya se alcanzó `WATCHDOG_MAX_REINTENTOS` consecutivos -- en ese caso
+    sigue OBSERVANDO (para poder recuperarse solo si el hilo vuelve a estar
+    vivo por otra vía) pero deja de reiniciar, dejando constancia explícita
+    en `radar_meta` en vez de reintentar en silencio para siempre."""
+    global _thread, _watchdog_reintentos_consecutivos
+    with _watchdog_lock:
+        if _thread is None:
+            return {"accion": "sin_hilo_que_vigilar"}
+
+        if _thread.is_alive():
+            if _watchdog_reintentos_consecutivos:
+                _watchdog_reintentos_consecutivos = 0
+                try:
+                    reg.set_meta(watchdog_reintentos_consecutivos=0, watchdog_state="OK")
+                except Exception:
+                    pass
+            return {"accion": "hilo_vivo"}
+
+        # El hilo está muerto -- confirmado por `is_alive()`, no supuesto.
+        # Fase 5.2, corrección tras auditoría de 5.2 (2026-09-04): si ya se
+        # pidió un apagado intencional (`_stop`/`_watchdog_stop`), el hilo
+        # muerto es el resultado ESPERADO de `request_stop()`, no una
+        # caída real -- reiniciarlo acá "ganaría" una carrera contra un
+        # apagado deliberado. `_watchdog_loop()` va a salir solo en su
+        # próxima vuelta (chequea `_watchdog_stop` al tope del `while` y en
+        # el `.wait()` final), pero esta única llamada en curso podía
+        # ejecutarse ANTES de esa vuelta -- se corta acá explícitamente,
+        # sin tocar el contador de reintentos ni intentar ningún reinicio.
+        if _stop.is_set() or _watchdog_stop.is_set():
+            return {"accion": "apagado_intencional_no_reinicia"}
+
+        if _watchdog_reintentos_consecutivos >= WATCHDOG_MAX_REINTENTOS:
+            try:
+                reg.set_meta(
+                    watchdog_state="DETENIDO_LIMITE_REINTENTOS",
+                    watchdog_detenido_at=_now_iso(),
+                )
+            except Exception:
+                pass
+            return {"accion": "limite_reintentos_alcanzado", "reintentos": _watchdog_reintentos_consecutivos}
+
+        _watchdog_reintentos_consecutivos += 1
+        intento_actual = _watchdog_reintentos_consecutivos
+        try:
+            meta = reg.get_meta()
+            reg.set_meta(
+                watchdog_reinicios_total=int(meta.get("watchdog_reinicios_total") or 0) + 1,
+                watchdog_reintentos_consecutivos=intento_actual,
+                watchdog_ultimo_reinicio_at=_now_iso(),
+                watchdog_state="REINICIADO",
+            )
+        except Exception:
+            pass
+
+        # `start_universe_radar()` es un no-op mientras `_thread` siga
+        # apuntando a la referencia vieja (aunque esté muerta) -- se limpia
+        # acá, bajo el mismo lock, para que el reinicio sea real.
+        _thread = None
+        start_universe_radar()
+        return {"accion": "reiniciado", "reintentos": intento_actual}
+
+
+def _watchdog_loop() -> None:
+    """Bucle del watchdog -- nunca puede morir por una excepción de su
+    propio chequeo (mismo criterio de blindaje exterior que `_loop()`).
+    El intervalo entre chequeos CRECE con reintentos consecutivos
+    (backoff explícito: `WATCHDOG_CHECK_SECONDS + WATCHDOG_BACKOFF_SECONDS
+    * reintentos`) -- nunca reinicia en ráfaga."""
+    while not _watchdog_stop.is_set():
+        try:
+            resultado = _watchdog_check_and_restart_if_dead()
+        except Exception as exc:
+            _record_error("watchdog_loop", exc)
+            resultado = {"accion": "error_interno_watchdog"}
+        reintentos = resultado.get("reintentos") or 0
+        intervalo = WATCHDOG_CHECK_SECONDS + (WATCHDOG_BACKOFF_SECONDS * reintentos)
+        if _watchdog_stop.wait(intervalo):
+            break
+
+
+def start_radar_watchdog() -> None:
+    """Arranca el hilo supervisor una sola vez por proceso. No hace nada
+    si el radar (`ATLAS_RADAR_ENABLED=false`) o el watchdog
+    (`ATLAS_RADAR_WATCHDOG_ENABLED=false`) están deshabilitados por
+    entorno. Llamado desde `server.py` junto a `start_universe_radar()`."""
+    global _watchdog_thread
+    if not RADAR_ENABLED or not WATCHDOG_ENABLED:
+        return
+    if _watchdog_thread is not None:
+        return
+    _watchdog_stop.clear()
+    _watchdog_thread = threading.Thread(target=_watchdog_loop, daemon=True, name="universe_radar_watchdog")
+    _watchdog_thread.start()
+
+
 def request_stop() -> None:
     _stop.set()
+    _watchdog_stop.set()
 
 
 def get_last_quotes() -> Dict[str, object]:

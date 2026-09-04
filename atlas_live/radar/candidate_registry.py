@@ -383,13 +383,64 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         _schema_ready_for = str(DB_PATH)
 
 
+# Hito 5, Fase 5.3 (2026-09-04, autorizado explícitamente): conexión
+# reutilizada ESTRICTAMENTE POR HILO -- optimización explícitamente
+# diferida desde el hotfix de concurrencia `3f75dea` (2026-09-03), que
+# resolvió la CONTENCIÓN entre requests concurrentes pero dejó intacto el
+# costo base de abrir una conexión SQLite nueva (con su propio PRAGMA
+# WAL/busy_timeout) en cada una de las ~46 llamadas a `_connect()` que
+# puede hacer un solo request a `/api/radar-oportunidades` (~1.500
+# candidatas). `threading.local()` -- nunca `check_same_thread=False` ni
+# un pool compartido -- porque SQLite no garantiza seguridad de una
+# conexión usada desde más de un hilo; cada hilo (los 8 de gunicorn, el
+# hilo del radar, el watchdog de Fase 5.2, cualquier hilo de test) obtiene
+# su propia conexión, nunca comparte la de otro.
+_thread_local = threading.local()
+
+
 def _connect() -> sqlite3.Connection:
+    """Reutiliza la conexión de ESTE hilo si `DB_PATH` no cambió desde que
+    se abrió -- si cambió (única forma real de que esto ocurra: los tests
+    de este repo reasignan `DB_PATH` a un tempfile distinto entre corridas,
+    dentro del mismo hilo de pytest), cierra la vieja y abre una nueva
+    contra la ruta actual, para nunca leer/escribir sobre la DB de un test
+    anterior. Mismo `journal_mode=WAL`/`busy_timeout=15000`/`row_factory`/
+    `_ensure_schema()` de siempre -- comportamiento observable idéntico,
+    solo cambia CUÁNTAS veces se abre una conexión nueva de verdad.
+
+    Chequeo de vida (`SELECT 1`) antes de devolver la conexión cacheada
+    (hallazgo real, 2026-09-04, `test_migracion_concurrente_no_colisiona`):
+    bajo el contrato ANTERIOR (conexión nueva en cada llamada), cerrar la
+    conexión devuelta por `_connect()` era seguro -- un patrón real ya
+    usado a propósito en ese test para forzar releer un archivo recién
+    creado. Con reutilización por-hilo, esa misma conexión cerrada
+    quedaría cacheada y rompería TODAS las llamadas siguientes en ese
+    hilo -- este chequeo (costo despreciable frente al de abrir una
+    conexión nueva, confirmado en el benchmark) detecta ese caso y
+    reabre, en vez de devolver una conexión muerta."""
+    ruta_actual = str(DB_PATH)
+    conn = getattr(_thread_local, "conn", None)
+    if conn is not None and getattr(_thread_local, "conn_path", None) == ruta_actual:
+        try:
+            conn.execute("SELECT 1")
+            return conn
+        except sqlite3.ProgrammingError:
+            conn = None  # cerrada por fuera de este mecanismo -- se reabre abajo
+
+    if conn is not None:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
     conn = sqlite3.connect(DB_PATH, timeout=15)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=15000")
-    if _schema_ready_for != str(DB_PATH):
+    if _schema_ready_for != ruta_actual:
         _ensure_schema(conn)
+    _thread_local.conn = conn
+    _thread_local.conn_path = ruta_actual
     return conn
 
 

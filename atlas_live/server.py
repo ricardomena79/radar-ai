@@ -115,6 +115,12 @@ study_worker.start_study_worker()
 # ATLAS_RADAR_ENABLED (default: encendido).
 from atlas_live.radar import radar_worker
 radar_worker.start_universe_radar()
+# Hito 5, Fase 5.2 (2026-09-04, autorizado explícitamente): watchdog de
+# auto-recuperación -- hilo separado que vigila si `universe_radar` sigue
+# vivo y lo reinicia con límite de reintentos/backoff explícito (ver
+# `radar_worker._watchdog_loop()`). No cambia nada del comportamiento del
+# radar en sí, solo agrega supervisión.
+radar_worker.start_radar_watchdog()
 
 # Motor de Catalizadores/Noticias (2026-08-23, plan aprobado -- ver
 # ethereal-mixing-anchor.md): hilo de fondo COMPLETAMENTE APARTE del radar
