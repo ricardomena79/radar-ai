@@ -26,7 +26,7 @@ from atlas.data.collectors.data_collector import DataCollector
 from atlas_live import evolution_panel, explosive_config, hot_quote, performance_panel, scan_worker
 from atlas_live.backtest import seed_import
 from atlas_live.data_fusion.registry import get_default_provider
-from atlas_live.memory import classifier, exit_journal, explosion_history, learning_status, live_integration, market_hours, observation_recovery, prediction_journal
+from atlas_live.memory import classifier, exit_journal, explosion_history, live_integration, market_hours, observation_recovery, prediction_journal
 from atlas_live.mission_control import heartbeat, timeline
 from atlas_live.predictive_engine import prediction_log
 from atlas_live.signals import signal_registry, signal_tracker
@@ -2455,18 +2455,6 @@ def api_predictive_engine_symbol(symbol):
     if not recientes:
         return jsonify({"available": False})
     return jsonify({"available": True, **recientes[0]})
-
-
-@app.route("/api/learning-status")
-def api_learning_status():
-    """Estructura preparada para los dos indicadores permanentes de la
-    barra superior (🧠 Aprendizaje, 🎯 Confianza de Atlas), aprobados el
-    2026-08-02. No calcula nada todavía -- ver docstring de
-    `learning_status.py` para el porqué de cada valor."""
-    return jsonify({
-        "learning": learning_status.get_learning_status(),
-        "confidence": learning_status.get_atlas_confidence(),
-    })
 
 
 @app.route("/api/rescan", methods=["POST"])

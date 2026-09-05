@@ -15,10 +15,12 @@ arquitectura preparada para que pueda incorporarse sin rediseñar el motor
 en el futuro."
 
 Calificación (`graded_at`, `actual_outcome`, `correct`) queda NULL hasta
-que `grading.py` (Sprint 5, no implementado todavía) la complete
-comparando contra el resultado real del Exit Journal -- mismo patrón de
-"campo reservado, llenado una sola vez" que ya usa
-`prediction_journal.py` (`AlreadySealedError`/`grade_sealed_prediction`).
+que `grading.py` (Hito 6, Fase 6.1, 2026-09-04: corregido -- YA
+implementado y conectado en vivo, ver `live_integration.py::run_live_cycle()`
+-> `grading.grade_pending(now)`) la complete comparando contra el
+resultado real del Exit Journal -- mismo patrón de "campo reservado,
+llenado una sola vez" que ya usa `prediction_journal.py`
+(`AlreadySealedError`/`grade_sealed_prediction`).
 """
 
 import json

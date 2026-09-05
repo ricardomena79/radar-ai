@@ -1,68 +1,26 @@
-"""Prueba manual de los tres módulos estratégicos: Research Lab, Strategy Lab y Decision Journal.
+"""Prueba manual de Decision Journal.
 
-Research Lab y Strategy Lab son solo interfaz todavía: se verifica que se
-puedan instanciar y que cada método declarado lance NotImplementedError (no
-un error inesperado, no un resultado inventado).
-
-Decision Journal sí tiene su registro (record_trade/get_trades) implementado:
+Decision Journal tiene su registro (record_trade/get_trades) implementado:
 se verifica que funcione end-to-end, que sea un repositorio puro (sin
 métodos de análisis ni estadísticas -- eso vive en Operator Learning
 Engine), y que su base de datos quede completamente separada de la
 Knowledge Base (archivos .db distintos).
+
+Hito 6, Fase 6.1 (2026-09-04, autorizado explícitamente): este archivo
+cubría también Research Lab y Strategy Lab, ambos eliminados por ser
+interfaces 100% NotImplementedError sin ningún caller en producción --
+ver `atlas/tests/test_strategic_modules.py` (git history) para los tests
+retirados.
 """
 
 from pathlib import Path
 
 from atlas.decision_journal import DecisionJournal, Trade
-from atlas.knowledge import KnowledgeEngine
-from atlas.research_lab import ResearchLab
-from atlas.strategy_lab import StrategyLab, StrategyRule
 
+# Solo se usa para el assert de aislamiento de bases de datos (línea 61) --
+# ya no se instancia ningún KnowledgeEngine acá tras retirar Research/Strategy Lab.
 KNOWLEDGE_TEST_DB = Path(__file__).resolve().parents[1] / "cache" / "test_strategic_knowledge.db"
 JOURNAL_TEST_DB = Path(__file__).resolve().parents[1] / "cache" / "test_strategic_journal.db"
-
-
-def test_research_lab_is_interface_only() -> None:
-    knowledge = KnowledgeEngine(db_path=KNOWLEDGE_TEST_DB)
-    lab = ResearchLab(knowledge)
-
-    calls = [
-        lambda: lab.find_factor_combinations(["gap_percent", "rvol"]),
-        lambda: lab.compare_thresholds("rvol", [1.5, 2.0, 3.0]),
-        lambda: lab.discover_emerging_patterns(),
-        lambda: lab.detect_decaying_patterns(),
-        lambda: lab.discover_antipatterns(),
-        lambda: lab.compare_sectors(),
-        lambda: lab.analyze_market_context_influence(),
-        lambda: lab.run_all(),
-    ]
-    for call in calls:
-        try:
-            call()
-            raise AssertionError("Se esperaba NotImplementedError")
-        except NotImplementedError:
-            pass
-
-    knowledge.close()
-    print("Research Lab: todas las investigaciones declaradas responden NotImplementedError (esperado).")
-
-
-def test_strategy_lab_is_interface_only() -> None:
-    knowledge = KnowledgeEngine(db_path=KNOWLEDGE_TEST_DB)
-    lab = StrategyLab(knowledge)
-
-    top1 = StrategyRule(name="Top 1", entry_rule="Top 1 por Atlas Score", take_profit_percent=3.0, stop_loss_percent=2.0)
-    top3 = StrategyRule(name="Top 3", entry_rule="Top 3 por Atlas Score", take_profit_percent=5.0, stop_loss_percent=3.0)
-
-    for call in (lambda: lab.simulate(top1), lambda: lab.compare([top1, top3])):
-        try:
-            call()
-            raise AssertionError("Se esperaba NotImplementedError")
-        except NotImplementedError:
-            pass
-
-    knowledge.close()
-    print("Strategy Lab: simulate() y compare() responden NotImplementedError (esperado).")
 
 
 def test_decision_journal_records_and_stays_isolated() -> None:
@@ -110,7 +68,5 @@ def test_decision_journal_records_and_stays_isolated() -> None:
 
 
 if __name__ == "__main__":
-    test_research_lab_is_interface_only()
-    test_strategy_lab_is_interface_only()
     test_decision_journal_records_and_stays_isolated()
-    print("\nOK: Research Lab, Strategy Lab y Decision Journal quedaron con su arquitectura lista.")
+    print("\nOK: Decision Journal quedó con su arquitectura lista.")
