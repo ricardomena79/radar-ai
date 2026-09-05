@@ -380,6 +380,17 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         _ensure_column(conn, "candidate_detection", "pm_universe_size_at_detection", "INTEGER")
         _ensure_column(conn, "candidate_detection", "pm_volume_at_detection", "INTEGER")
         _ensure_column(conn, "candidate_detection", "pm_dollar_volume_at_detection", "REAL")
+        # PRICE_INTEGRITY (Hito 6, Fase 6.2, 2026-09-04) -- congela la
+        # heurística DEFENSIVA de posible corporate action tal como estaba
+        # en el `Quote` en el momento exacto de la detección (mismo
+        # criterio "estado A, inmutable" que el resto de estos campos
+        # `_at_detection`). `NULL` para toda fila ya existente (nunca se
+        # recalcula retroactivamente) y para cualquier detección donde la
+        # heurística no encontró nada -- ver
+        # `atlas/data/price_integrity.py`. Puramente informativo: ningún
+        # gate ni `candidate_gates.py` lee estas columnas.
+        _ensure_column(conn, "candidate_detection", "possible_split_flag_at_detection", "TEXT")
+        _ensure_column(conn, "candidate_detection", "possible_split_ratio_at_detection", "REAL")
         _schema_ready_for = str(DB_PATH)
 
 
@@ -474,9 +485,16 @@ def record_detection(
     pm_acceleration_at_detection: Optional[float] = None, pm_acceleration_state_at_detection: Optional[str] = None,
     pm_universe_size_at_detection: Optional[int] = None, pm_volume_at_detection: Optional[int] = None,
     pm_dollar_volume_at_detection: Optional[float] = None,
+    possible_split_flag_at_detection: Optional[str] = None, possible_split_ratio_at_detection: Optional[float] = None,
 ) -> bool:
     """Registra la primera detección. Devuelve True si fue nueva (INSERT
     real), False si ya existía (idempotente, nunca se pisa).
+
+    `possible_split_flag_at_detection`/`possible_split_ratio_at_detection`
+    (Hito 6, Fase 6.2, 2026-09-04): heurística DEFENSIVA de posible
+    corporate action, congelada tal cual estaba en el `Quote` en el
+    momento de la detección -- ver `atlas/data/price_integrity.py`.
+    Puramente informativo, nunca leído por `candidate_gates.py`.
 
     `price_basis_at_detection`/`bid_at_detection`/`ask_at_detection`/
     `spread_pct_at_detection` (2026-08-18, pedido explícito del usuario):
@@ -503,8 +521,9 @@ def record_detection(
                 price_basis_at_detection, bid_at_detection, ask_at_detection, spread_pct_at_detection,
                 premarket_volume_percentile_at_detection, premarket_volume_percentile_state_at_detection,
                 premarket_volume_acceleration_at_detection, premarket_volume_acceleration_state_at_detection,
-                pm_universe_size_at_detection, pm_volume_at_detection, pm_dollar_volume_at_detection)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                pm_universe_size_at_detection, pm_volume_at_detection, pm_dollar_volume_at_detection,
+                possible_split_flag_at_detection, possible_split_ratio_at_detection)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (ticker, market_date, session, detected_at, sweep_id, price_at_detection,
              change_pct_at_detection, volume_at_detection, average_volume_at_detection,
              relative_volume_at_detection, dollar_volume_at_detection,
@@ -512,7 +531,8 @@ def record_detection(
              price_basis_at_detection, bid_at_detection, ask_at_detection, spread_pct_at_detection,
              pm_percentile_at_detection, pm_percentile_state_at_detection,
              pm_acceleration_at_detection, pm_acceleration_state_at_detection,
-             pm_universe_size_at_detection, pm_volume_at_detection, pm_dollar_volume_at_detection),
+             pm_universe_size_at_detection, pm_volume_at_detection, pm_dollar_volume_at_detection,
+             possible_split_flag_at_detection, possible_split_ratio_at_detection),
         )
         conn.commit()
         return cur.rowcount > 0

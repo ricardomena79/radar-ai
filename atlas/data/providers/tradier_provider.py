@@ -32,6 +32,7 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 import requests
 
+from atlas.data import price_integrity
 from atlas.data.models.quote import Quote
 from atlas.data.providers.base import DataProvider, ProviderError, QuoteNotFoundError
 
@@ -300,6 +301,16 @@ def _to_quote(data: Dict[str, Any], symbol: str, now: Optional[datetime] = None)
     now = now or datetime.now(timezone.utc)
     resolved = _resolve_current_price(data, now)
 
+    # PRICE_INTEGRITY (Hito 6, Fase 6.2) -- heurística DEFENSIVA, nunca
+    # una confirmación real, calculada sobre el precio YA resuelto arriba
+    # (nunca sobre el `last`/`change_percentage` crudo de Tradier, que
+    # `_resolve_current_price()` puede haber descartado por vencido).
+    # Puramente aditivo al `Quote` -- ver `price_integrity.py` para el
+    # diseño completo, la calibración y las limitaciones documentadas.
+    possible_split_flag, possible_split_ratio = price_integrity.classify_possible_split(
+        data.get("prevclose"), resolved["last_price"], resolved["change_percent"], resolved["price_is_stale"],
+    )
+
     volume = data.get("volume")
     average_volume = data.get("average_volume")
     relative_volume = None
@@ -328,6 +339,8 @@ def _to_quote(data: Dict[str, Any], symbol: str, now: Optional[datetime] = None)
         bid_timestamp=resolved["bid_timestamp"],
         ask_timestamp=resolved["ask_timestamp"],
         price_is_stale=resolved["price_is_stale"],
+        possible_split_flag=possible_split_flag,
+        possible_split_ratio=possible_split_ratio,
     )
 
 

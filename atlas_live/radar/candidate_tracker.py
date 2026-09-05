@@ -332,6 +332,12 @@ def process_sweep(
                 pm_acceleration_state_at_detection=pm_acceleration.validation_state,
                 pm_universe_size_at_detection=pm_universe_size,
                 pm_volume_at_detection=quote.volume, pm_dollar_volume_at_detection=pm_dollar_volume,
+                # PRICE_INTEGRITY (Hito 6, Fase 6.2) -- ya calculado en
+                # `tradier_provider._to_quote()`, acá solo se congela tal
+                # cual estaba en `quote` en el momento de la detección.
+                # Nunca leído por `gates`/`current` (SweepSnapshot) arriba.
+                possible_split_flag_at_detection=quote.possible_split_flag,
+                possible_split_ratio_at_detection=quote.possible_split_ratio,
             )
             if es_nueva:
                 nuevas.append(symbol)

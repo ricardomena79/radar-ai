@@ -133,6 +133,23 @@ class Quote:
     # aditivo hasta que se decida usarlo (endpoints/UI, Fase 1D).
     executable_price: Optional[float] = _EXECUTABLE_PRICE_UNSET  # type: ignore[assignment]
 
+    # PRICE_INTEGRITY (Hito 6, Fase 6.2, 2026-09-04) -- heurística
+    # DEFENSIVA de posible corporate action (split/reverse split), nunca
+    # una confirmación real (Atlas no tiene acceso a ningún feed de
+    # eventos corporativos). `possible_split_flag` es
+    # `"POSSIBLE_SPLIT_OR_REVERSE_SPLIT"` o `None` -- ver
+    # `atlas/data/price_integrity.py::classify_possible_split()` para el
+    # diseño completo, la calibración contra el caso real MRNA, y las
+    # limitaciones (falsos positivos/negativos) documentadas
+    # explícitamente ahí. `possible_split_ratio` guarda el ratio
+    # `last_price/previous_close` que disparó el flag, para poder auditar
+    # el número sin recalcularlo. **Puramente informativo/de
+    # trazabilidad -- ningún consumidor de `Quote` debe usar esto para
+    # bloquear ni modificar ninguna decisión**; en particular,
+    # `atlas_live/radar/candidate_gates.py` nunca lo lee.
+    possible_split_flag: Optional[str] = None
+    possible_split_ratio: Optional[float] = None
+
     def __post_init__(self) -> None:
         if self.executable_price is _EXECUTABLE_PRICE_UNSET:
             object.__setattr__(self, "executable_price", self.last_price)

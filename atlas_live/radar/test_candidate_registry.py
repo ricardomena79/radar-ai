@@ -151,6 +151,43 @@ def test_primera_deteccion_es_idempotente():
         _restore()
 
 
+def test_possible_split_at_detection_persiste_y_se_lee_de_vuelta():
+    # Hito 6, Fase 6.2 (2026-09-04): confirma ida y vuelta de las 2
+    # columnas nuevas de PRICE_INTEGRITY -- puramente informativas, sin
+    # relación con gates_fired ni con ninguna otra columna existente.
+    _fresh()
+    try:
+        reg.record_detection(
+            "SPLT", "2026-09-04", "regular", "2026-09-04T14:00:00Z", "sweep-1",
+            51.0, -49.0, 1000, 500, 2.0, 51_000.0,
+            gates_fired=[{"name": "cambio_de_precio", "value": -49.0}],
+            possible_split_flag_at_detection="POSSIBLE_SPLIT_OR_REVERSE_SPLIT",
+            possible_split_ratio_at_detection=0.51,
+        )
+        candidatas = reg.list_candidates_for_date("2026-09-04")
+        assert len(candidatas) == 1
+        assert candidatas[0]["possible_split_flag_at_detection"] == "POSSIBLE_SPLIT_OR_REVERSE_SPLIT"
+        assert candidatas[0]["possible_split_ratio_at_detection"] == 0.51
+    finally:
+        _restore()
+
+
+def test_possible_split_at_detection_es_none_cuando_no_se_paso():
+    # Camino normal (sin split) -- debe quedar NULL, nunca inventado.
+    _fresh()
+    try:
+        reg.record_detection(
+            "NRML", "2026-09-04", "regular", "2026-09-04T14:00:00Z", "sweep-1",
+            104.0, 4.0, 1000, 500, 2.0, 104_000.0,
+            gates_fired=[{"name": "cambio_de_precio", "value": 4.0}],
+        )
+        candidatas = reg.list_candidates_for_date("2026-09-04")
+        assert candidatas[0]["possible_split_flag_at_detection"] is None
+        assert candidatas[0]["possible_split_ratio_at_detection"] is None
+    finally:
+        _restore()
+
+
 def test_observaciones_se_acumulan_no_desaparece_la_candidata():
     _fresh()
     try:
