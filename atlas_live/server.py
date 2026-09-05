@@ -1655,6 +1655,40 @@ def api_admin_raw_data_consolidation_status():
     return jsonify({"source_table_filter": source_table, "n_bloques": len(bloques), "bloques": bloques})
 
 
+@app.route("/api/admin/shadow-retention-dry-run")
+def api_admin_shadow_retention_dry_run():
+    """Hito 6, Fase 6.4-D1 -- DRY-RUN de retención para
+    `shadow_candidate_detection` (2026-09-05, autorizado explícitamente).
+    Puramente de LECTURA: nunca ejecuta DELETE/VACUUM/ALTER TABLE, nunca
+    cambia el estado de ningún manifiesto, nunca abre
+    `shadow_unified_detector.db` (garantizado estructuralmente -- ver
+    `shadow_retention_dry_run.py`, que ni siquiera importa el módulo que
+    conoce esa ruta). `?retention_days=` opcional (default y piso mínimo:
+    `RETENTION_MIN_DAYS`, hoy 180) -- un valor menor se rechaza con 400,
+    nunca se aplica silenciosamente. Reporta cuántos bloques ESTARÍAN
+    elegibles para una futura compactación real (que este endpoint no
+    ejecuta) -- hoy, honestamente, siempre 0, porque ningún código
+    existente escribe todavía el estado `compacted` que la política
+    exige como único válido para "verified" no alcanza."""
+    if not _admin_token_ok():
+        return jsonify({"error": "no autorizado"}), 403
+
+    from atlas_live.radar import shadow_retention_dry_run as srd
+
+    retention_days_raw = request.args.get("retention_days")
+    try:
+        retention_days = int(retention_days_raw) if retention_days_raw is not None else srd.RETENTION_MIN_DAYS
+    except (TypeError, ValueError):
+        return jsonify({"error": f"retention_days inválido: {retention_days_raw!r}"}), 400
+
+    try:
+        reporte = srd.dry_run_retention_report(retention_days=retention_days)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    return jsonify(reporte)
+
+
 @app.route("/api/admin/decision-knowledge-tribunal")
 def api_admin_decision_knowledge_tribunal():
     """Hito 3, Fase 3.2 -- Tribunal de comparación offline (2026-09-03,
