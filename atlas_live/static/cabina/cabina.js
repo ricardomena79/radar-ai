@@ -479,12 +479,74 @@ function renderUniversoYahooDetalle(q) {
     </div>`;
 }
 
+/* ---------------- TOP 100 EN MOVIMIENTO (protagonista de Universo Yahoo) ----------------
+ * Fuente: GET /api/universo-yahoo/top -- ranking mecánico puro sobre las
+ * quotes que el radar YA obtiene (radar_worker.get_last_quotes(), Tradier,
+ * en memoria) -- ver atlas_live/universo_yahoo_ranking.py para la fórmula
+ * exacta. CERO llamadas nuevas a Tradier/Yahoo para construir este
+ * ranking; el clic en una fila reutiliza fetchUniversoYahooDetalle(), el
+ * MISMO mecanismo de detalle puntual ya existente (1 sola llamada). */
+
+async function fetchUniversoYahooTop() {
+  const metaEl = document.getElementById("yahoo-top-meta");
+  const el = document.getElementById("yahoo-top-results");
+  if (!el) return;
+  try {
+    const res = await fetch("/api/universo-yahoo/top");
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
+    renderUniversoYahooTop(data);
+    if (metaEl) {
+      const antiguedad = data.ultimo_sweep_at ? _mercadoAgeLabel(data.ultimo_sweep_at) : "sin barrido todavía";
+      metaEl.textContent = `${data.candidatos_tras_filtros ?? 0} cumplen los filtros de ${data.quotes_disponibles ?? 0} cotizados · ${antiguedad}`;
+    }
+  } catch (err) {
+    console.error("fetchUniversoYahooTop:", err);
+    if (metaEl) metaEl.textContent = "No se pudo cargar el ranking";
+    el.innerHTML = `<div class="empty-state small">No se pudo cargar el Top 100 ahora mismo.</div>`;
+  }
+}
+
+function renderUniversoYahooTop(data) {
+  const el = document.getElementById("yahoo-top-results");
+  if (!el) return;
+
+  if (!data.quotes_disponibles) {
+    el.innerHTML = `<div class="empty-state small">El radar todavía no tiene cotizaciones disponibles -- sin datos para calcular el ranking (nunca se inventa uno).</div>`;
+    return;
+  }
+  const top = data.top || [];
+  if (!top.length) {
+    el.innerHTML = `<div class="empty-state small">Ninguna acción cumple ahora mismo los criterios (subiendo + volumen relativo + liquidez mínima) sobre ${data.quotes_disponibles} instrumentos cotizados.</div>`;
+    return;
+  }
+
+  el.innerHTML = top.map((c) => `
+    <div class="yahoo-row yahoo-top-row" data-symbol="${c.symbol}">
+      <span class="yahoo-top-rank">${c.rank}</span>
+      <span class="yahoo-row-symbol">${c.symbol}</span>
+      <span class="yahoo-row-name">${c.name || ""}</span>
+      <span class="yahoo-top-price">${c.price != null ? "$" + fmtNum(c.price, 2) : "--"}</span>
+      <span class="yahoo-top-chg up">${fmtPct(c.change_percent)}</span>
+      <span class="yahoo-top-rvol">${fmtNum(c.relative_volume)}x</span>
+    </div>`).join("");
+  el.querySelectorAll(".yahoo-top-row").forEach((row) => {
+    row.addEventListener("click", () => fetchUniversoYahooDetalle(row.dataset.symbol));
+  });
+}
+
+const TOP_MOVIMIENTO_POLL_MS = 60000; // mismo orden que UNIVERSO_POLL_MS -- el
+// costo de recalcular es nulo (solo ordena quotes ya en memoria), pero no
+// tiene sentido pedirlo más seguido que la cadencia real del radar (30-120s).
+
 function initUniversoYahoo() {
   fetchUniversoYahoo();
+  fetchUniversoYahooTop();
   const input = document.getElementById("yahoo-search");
   if (input) {
     input.addEventListener("input", () => renderUniversoYahooResultados(input.value));
   }
+  setInterval(fetchUniversoYahooTop, TOP_MOVIMIENTO_POLL_MS);
 }
 
 /* ---------------- arranque ---------------- */

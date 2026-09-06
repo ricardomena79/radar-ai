@@ -647,6 +647,37 @@ def api_universo_yahoo():
     })
 
 
+@app.route("/api/universo-yahoo/top")
+def api_universo_yahoo_top():
+    """TOP 100 EN MOVIMIENTO (2026-09-06, Universo Yahoo -- capa de
+    descubrimiento, autorizado explícitamente). Ranking puramente mecánico
+    -- fórmula y filtros exactos documentados en
+    `universo_yahoo_ranking.py`, sin pesos/normalización/capado/thresholds
+    adicionales, sin candidate_gates/priority_classifier/Oportunidades/
+    DecisionEngine/scoring histórico -- sobre las quotes YA obtenidas por
+    el radar (`radar_worker.get_last_quotes()`, Tradier, en memoria).
+    CERO llamadas nuevas a Tradier o Yahoo para construir este ranking.
+
+    Si el radar no tiene quotes todavía (recién arrancado, caído, o fuera
+    de sesión con el proceso recién iniciado), `quotes_disponibles` queda
+    en 0 y `top` vacío -- nunca se fabrica un ranking. `ultimo_sweep_at`
+    (de `radar_worker.status()`, ya existente) permite a la Cabina mostrar
+    la antigüedad real de los datos en vez de fingir que son de ahora."""
+    from atlas_live import universo_yahoo_ranking as ranking
+
+    quotes = radar_worker.get_last_quotes()
+    estado_radar = radar_worker.status()
+    resultado = ranking.compute_top_movimiento(quotes)
+
+    return jsonify({
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "ultimo_sweep_at": estado_radar.get("ultimo_sweep_at"),
+        "quotes_disponibles": resultado["total_evaluados"],
+        "candidatos_tras_filtros": resultado["total_candidatos"],
+        "top": resultado["top"],
+    })
+
+
 @app.route("/api/universo-yahoo/<symbol>")
 def api_universo_yahoo_detalle(symbol):
     """Cotización puntual de Yahoo para UN símbolo (2026-09-06, Cabina --

@@ -81,18 +81,30 @@
   </div>
 
   <!-- ================= UNIVERSO YAHOO — sector independiente ================= -->
-  <!-- Cabina 2.0 (2026-09-06): universo amplio (~6.600+), completamente
+  <!-- Cabina 2.0 (2026-09-06): universo amplio (~12.700+), completamente
        separado de Universo Racional -- sin columna/indicador de Racional,
-       sin comparación automática. Carga la identidad UNA vez y busca 100%
-       local; solo al hacer clic en un resultado se pide su cotización real
-       de Yahoo (una única consulta puntual). -->
+       sin comparación automática. El protagonista es el TOP 100 EN
+       MOVIMIENTO (ranking mecánico sobre quotes ya obtenidas por el radar,
+       cero llamadas nuevas) -- el buscador manual del universo completo
+       queda debajo, como herramienta secundaria. Solo al hacer clic en
+       una fila (del Top 100 o del buscador) se pide la cotización real de
+       Yahoo para ESE símbolo (una única consulta puntual). -->
   <div class="panel panel-full">
     <div class="panel-head">
       <span class="panel-title">Universo Yahoo</span>
       <span class="panel-sub" id="yahoo-universo-meta">Cargando...</span>
     </div>
+
+    <div class="yahoo-top-head">
+      <span class="yahoo-top-title">🔥 Top 100 en Movimiento</span>
+      <span class="yahoo-top-sub" id="yahoo-top-meta">Cargando...</span>
+    </div>
+    <div id="yahoo-top-results"><div class="empty-state small">Cargando ranking...</div></div>
+
+    <div class="yahoo-search-head">Buscar en el universo completo (12.700+)</div>
     <input type="text" id="yahoo-search" class="mercado-search" placeholder="Buscar por ticker o nombre...">
     <div id="yahoo-results"><div class="empty-state small">Cargando universo...</div></div>
+
     <div id="yahoo-detail"></div>
   </div>
 
