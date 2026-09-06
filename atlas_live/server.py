@@ -563,6 +563,62 @@ def api_racional_movers():
     return jsonify(radar_worker.racional_movers_report(thresholds=thresholds))
 
 
+@app.route("/api/universo-resumen")
+def api_universo_resumen():
+    """Resumen del universo COMPLETO que Atlas sigue (2026-09-05, Cabina
+    nueva -- aditivo, solo lectura). A diferencia de `/api/radar-universo`
+    (que solo cuenta candidatas ya DETECTADAS hoy) y de `/api/racional-movers`
+    (que barre Racional fresco pero sin exponer volumen), este endpoint
+    responde "¿de cuántos símbolos sigue Atlas y cuántos están en Racional?"
+    sin generar ningún tráfico nuevo hacia Tradier:
+
+    - `universo_total`/`disponibles_racional` salen de la clasificación ya
+      cacheada a disco (`market_study.universe.fetch_broad_universe_meta()`),
+      el MISMO conjunto (EQUITY + ETF apalancado) que ya usa
+      `radar_worker.py::run_sweep_once()` para decidir qué escanea -- no se
+      recalcula ni se filtra distinto acá.
+    - `top_volumen` sale de `radar_worker.get_last_quotes()` -- las quotes
+      del ÚLTIMO barrido real ya en memoria (mismo mecanismo que ya usa
+      este endpoint hermano para el precio en vivo de las oportunidades) --
+      nunca dispara una consulta nueva. Si el radar todavía no barrió nada
+      (arranque reciente, fin de semana) queda vacío -- nunca se inventa un
+      volumen."""
+    from atlas_live.market_study import universe as broad_universe
+
+    meta = broad_universe.fetch_broad_universe_meta()
+    universo = {
+        s for s, info in meta.items()
+        if info.get("type") == "EQUITY"
+        or (info.get("type") == "ETF" and broad_universe.is_leveraged_etf_name(info.get("name")))
+    }
+    racional = broad_universe.racional_symbols()
+    disponibles_racional = len(universo & racional)
+
+    quotes = radar_worker.get_last_quotes()
+    top_volumen = sorted(
+        (
+            {
+                "ticker": ticker,
+                "volume": getattr(q, "volume", None),
+                "relative_volume": getattr(q, "relative_volume", None),
+                "racional_available": ticker in racional,
+            }
+            for ticker, q in quotes.items()
+            if getattr(q, "volume", None) is not None
+        ),
+        key=lambda r: r["volume"],
+        reverse=True,
+    )[:10]
+
+    return jsonify({
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "universo_total": len(universo),
+        "disponibles_racional": disponibles_racional,
+        "con_dato_de_volumen_ahora": len(quotes),
+        "top_volumen": top_volumen,
+    })
+
+
 @app.route("/api/radar-informe-dia")
 def api_radar_informe_dia():
     """Informe de cierre del radar (2026-08-14): condiciones en detección vs.

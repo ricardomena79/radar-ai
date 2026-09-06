@@ -1,3020 +1,241 @@
-/* Cabina del Piloto -- navegación y renderizado. Sin framework, mismo
- * criterio que el resto de atlas_live/static/.
+/* Cabina 2.0 (2026-09-05, rediseño autorizado explícitamente).
  *
- * Limpieza MOCK completada (2026-08-07, ver DECISION_LOG.md): NINGÚN panel
- * usa datos simulados. Cada sección proviene de un motor real (Radar,
- * Memory Engine, Prediction Journal, Exit Journal, Mission Control, config
- * del backend) o muestra un estado honesto ("Sin evidencia suficiente",
- * "Sin alertas registradas", "sin fuente conectada"). Regla permanente:
- * preferir un panel vacío antes que un dato inventado. `mock_data.js` fue
- * eliminado. */
-
-const SEMAFORO_EMOJI = { verde: "🟢", amarillo: "🟡", rojo: "🔴", neutro: "⚪" };
-const SEMAFORO_BADGE = { verde: "badge-verde", amarillo: "badge-amarillo", rojo: "badge-rojo", neutro: "badge-neutro" };
-const SESSION_LABEL = {
-  premarket: "PREMARKET",
-  regular: "MERCADO ABIERTO",
-  afterhours: "POSTMARKET",
-  closed: "CERRADO",
-};
-
-function semaforoHtml(nivel) {
-  return `<span class="semaforo" title="${nivel}">${SEMAFORO_EMOJI[nivel] || "⚪"}</span>`;
-}
-
-// Decisión Atlas (2026-08-26, U3-B -- Atlas Decision Core): campo
-// canónico de `atlas_decision_core.decide()`, mostrado EN PARALELO a
-// eligible_radar/semáforo (Radar Explosivo/Memory Engine) mientras ambas
-// capas conviven para validación visual -- pedido explícito: NO reemplaza
-// todavía el filtro de ningún panel, es solo información diagnóstica
-// adicional. `decision_shadow` (si difiere) se muestra entre paréntesis --
-// SOLO informativo, el aprendizaje sigue en Shadow Mode
-// (`apply_recalibration=False`), nunca cambia qué se muestra. Sin dato
-// -> "s/d" honesto, nunca inventado.
-const ATLAS_DECISION_BADGE_CLASS = {
-  OPORTUNIDAD_PRIORITARIA: "badge-verde",
-  VIGILAR: "badge-amarillo",
-  PREPARACION: "badge-neutro",
-  NO_TOCAR: "badge-rojo",
-};
-
-// CURRENT TOP OPPORTUNITY (2026-08-26, Fase 3/5 -- autorizado
-// explícitamente): fuente ÚNICA de "mejor oportunidad ahora", ya decidida
-// en el backend por `select_current_top_opportunity()` (Fase 1/5) y
-// registrada por `register_top_opportunity()` (Fase 2/5) -- este helper
-// SOLO busca, dentro de la lista ya traída, la fila que corresponde al
-// ticker que el backend ya eligió. Nunca vuelve a ordenar ni a decidir
-// nada -- reemplaza el uso anterior de `_memoryRanking.candidates[0]`
-// (que dependía del propio sort de Memory Engine, un segundo selector
-// independiente, ver auditoría "CURRENT_TOP_OPPORTUNITY").
-function _currentTopOpportunityCandidate() {
-  const ctop = _memoryRanking.current_top_opportunity;
-  if (!ctop || !ctop.ticker) return null;
-  return (_memoryRanking.candidates || []).find(c => c.symbol === ctop.ticker) || null;
-}
-
-// Fase 4/5 (2026-08-27, autorizado explícitamente -- corrige la
-// discrepancia detectada en Fase 3/5): Plan B ya NO es `candidates[1]`
-// crudo del ranking de Memory Engine -- es el `runner_up_ticker` del
-// MISMO selector canónico que decide la Oportunidad Principal. No existe
-// un segundo concepto de "segundo lugar".
-function _currentRunnerUpCandidate() {
-  const ctop = _memoryRanking.current_top_opportunity;
-  if (!ctop || !ctop.runner_up_ticker) return null;
-  return (_memoryRanking.candidates || []).find(c => c.symbol === ctop.runner_up_ticker) || null;
-}
-
-// Fix de contradicción NO_TOCAR/"Atlas Recomienda" (2026-08-27, autorizado
-// explícitamente): `current_top_opportunity`/`runner_up` pueden resolver
-// legítimamente en NO_TOCAR -- el registro interno para auditoría NUNCA
-// filtra por decisión (ver current_top_opportunity.py, test explícito "si
-// NO_TOCAR es la única candidata, gana trivialmente"). Pero NO_TOCAR nunca
-// debe PRESENTARSE como una recomendación. Esta función centraliza esa
-// regla de presentación -- no cambia qué se registra/audita, solo qué se
-// muestra como "Atlas Recomienda"/"Oportunidad Principal".
-const _RECOMMENDABLE_DECISIONS = ["OPORTUNIDAD_PRIORITARIA", "VIGILAR", "PREPARACION"];
-function _isRecommendableDecision(decision) {
-  return _RECOMMENDABLE_DECISIONS.includes(decision);
-}
-
-// Mensaje único de "sin oportunidad recomendable ahora" -- cubre tanto la
-// ausencia de candidato como una candidata NO_TOCAR (que sigue registrada
-// para auditoría, mostrada acá solo como nota informativa, nunca como
-// recomendación).
-function _noOpportunityHtml(candidate, decision) {
-  if (_memoryRanking.generated_at === null) {
-    return "Esperando el primer escaneo del día...";
-  }
-  if (candidate && decision === "NO_TOCAR") {
-    return `NO HAY OPORTUNIDAD VÁLIDA AHORA<br><span style="font-size:12px">Última candidata evaluada: ${candidate.symbol} — NO_TOCAR</span>`;
-  }
-  return "NO HAY OPORTUNIDAD VÁLIDA AHORA";
-}
-
-function atlasDecisionBadge(atlasDecision) {
-  if (!atlasDecision || !atlasDecision.decision) return '<span class="dim">s/d</span>';
-  const cls = ATLAS_DECISION_BADGE_CLASS[atlasDecision.decision] || "badge-neutro";
-  const shadow = atlasDecision.shadow_differs
-    ? ` <span class="dim" title="Lo que propondría la recalibración -- SOLO shadow, nunca activo">(shadow: ${atlasDecision.decision_shadow})</span>`
-    : "";
-  return `<span class="badge ${cls}" title="${(atlasDecision.reason || "").replace(/"/g, "&quot;")}">${atlasDecision.decision}</span>${shadow}`;
-}
-
-function badgeHtml(text, nivel) {
-  return `<span class="badge ${SEMAFORO_BADGE[nivel] || "badge-neutro"}">${text}</span>`;
-}
-
-function fmtPct(value, decimals = 1) {
-  if (value === null || value === undefined) return '<span class="dim">--</span>';
-  const cls = value > 0 ? "num-pos" : value < 0 ? "num-neg" : "";
-  const sign = value > 0 ? "+" : "";
-  return `<span class="${cls}">${sign}${value.toFixed(decimals)}%</span>`;
-}
-
-function fmtNum(value, decimals = 1) {
-  if (value === null || value === undefined) return '<span class="dim">--</span>';
-  return value.toFixed(decimals);
-}
-
-// Corrección 2026-08-18 (punto 5 del cierre de arquitectura): el backend
-// entrega SIEMPRE timestamps UTC (`datetime.now(timezone.utc).isoformat()`)
-// -- hasta acá `fmtTime`/`fmtTimeSec` solo recortaban el substring HH:MM
-// del UTC crudo y lo etiquetaban "ET" sin convertir, lo que hacía ver un
-// dato de hace horas como si fuera reciente. Se usa `Intl.DateTimeFormat`
-// (soporta DST automáticamente, sin tabla de offsets a mano) con
-// `hourCycle: "h23"` para evitar el "24:00" que algunos motores devuelven
-// con `hour12:false` en medianoche.
-const _ET_TIME_FMT = new Intl.DateTimeFormat("en-US", {
-  timeZone: "America/New_York", hourCycle: "h23", hour: "2-digit", minute: "2-digit",
-});
-const _ET_TIME_SEC_FMT = new Intl.DateTimeFormat("en-US", {
-  timeZone: "America/New_York", hourCycle: "h23", hour: "2-digit", minute: "2-digit", second: "2-digit",
-});
-
-function fmtTime(isoString) {
-  if (!isoString) return '<span class="dim">--</span>';
-  const d = new Date(isoString);
-  if (isNaN(d.getTime())) return '<span class="dim">--</span>';
-  return _ET_TIME_FMT.format(d);
-}
-
-// Igual que fmtTime pero con segundos (HH:MM:SS) -- lo pide el indicador de
-// frescura del canal rápido, donde el segundo exacto importa.
-function fmtTimeSec(isoString) {
-  if (!isoString) return "--";
-  const d = new Date(isoString);
-  if (isNaN(d.getTime())) return "--";
-  return _ET_TIME_SEC_FMT.format(d);
-}
-
-/* Indicadores de frescura del dato (2026-08-07, ver DECISION_LOG.md
- * "Optimización de latencia"). Semáforo PURO en función de la antigüedad
- * en segundos -- 🟢 0-3s (en vivo), 🟡 3-10s (con retraso), 🔴 >10s (dato
- * viejo). Sin dato: ⚪. Función sin efectos, testeable de forma aislada. */
-const FRESH_GREEN_MAX = 3;   // seg -- objetivo del canal rápido (Plan A/B)
-const FRESH_AMBER_MAX = 10;  // seg -- todavía utilizable, pero ya con retraso
-
-function freshnessStatus(ageSeconds) {
-  if (ageSeconds === null || ageSeconds === undefined || !isFinite(ageSeconds)) {
-    return { emoji: "⚪", cls: "fresh-none", label: "Sin dato" };
-  }
-  if (ageSeconds <= FRESH_GREEN_MAX) return { emoji: "🟢", cls: "fresh-green", label: "En vivo" };
-  if (ageSeconds <= FRESH_AMBER_MAX) return { emoji: "🟡", cls: "fresh-amber", label: "Con retraso" };
-  return { emoji: "🔴", cls: "fresh-red", label: "Dato viejo" };
-}
-
-// "hace X s" / "hace X min" -- antigüedad legible, nunca oculta. Se
-// recalcula cada segundo (tickHotFreshness), no en cada fetch.
-function fmtAge(ageSeconds) {
-  if (ageSeconds === null || ageSeconds === undefined || !isFinite(ageSeconds)) return "sin dato";
-  const s = Math.max(0, Math.round(ageSeconds));
-  if (s < 60) return `hace ${s}s`;
-  const m = Math.floor(s / 60);
-  const rem = s % 60;
-  return rem ? `hace ${m}min ${rem}s` : `hace ${m}min`;
-}
-
-function fmtMoney(value) {
-  // Corrección de interfaz (2026-08-07, ver DECISION_LOG.md): Atlas solo
-  // opera el mercado estadounidense hoy -- "US$" en vez del "$" genérico,
-  // para no dejar ambigua la moneda. Único punto de formato de precios de
-  // toda la Cabina -- cambiar acá alcanza, nunca se formatea "$" a mano
-  // en otro lugar (verificado).
-  if (value === null || value === undefined) return '<span class="dim">--</span>';
-  return "US$" + value.toFixed(2);
-}
-
-/* Trazabilidad de precio (2026-08-02) -- ver DATA_FUSION_ENGINE_PROPUESTA.md.
- * Regla permanente: Atlas nunca muestra un precio sin indicar de dónde
- * salió, a qué sesión corresponde, y cuándo se actualizó. Comparar un
- * precio Regular contra uno de After-hours de otra fuente NO es una
- * discrepancia -- son sesiones distintas, por eso esta etiqueta siempre
- * viaja junto al número. */
-const PRICE_TYPE_LABEL = { regular: "Regular", premarket: "Premarket", afterhours: "After-hours", unknown: "Sin clasificar" };
-const PRICE_SOURCE_LABEL = { yahoo_finance: "Yahoo Finance", tradier: "Tradier", finnhub: "Finnhub" };
-
-// Indicador visual del estado real de mercado (2026-08-02, UX) -- se lee
-// de `market_state` (el valor CRUDO del proveedor: REGULAR/PRE/POST/
-// CLOSED/PREPRE/POSTPOST), no de `price_type`. Son cosas distintas a
-// propósito: `price_type` describe qué precio se está USANDO (y por
-// diseño, CLOSED cae en price_type="regular", porque ese es el precio
-// correcto a mostrar) -- pero el badge visual debe seguir mostrando
-// "mercado cerrado" como su propio estado distinto, no disfrazarlo de
-// "Regular", o el usuario perdería justo la señal que pidió.
-const MARKET_STATE_VISUAL = {
-  REGULAR:  { emoji: "🟢", label: "REGULAR",     cls: "mstate-regular" },
-  PRE:      { emoji: "🟡", label: "PREMARKET",   cls: "mstate-premarket" },
-  PREPRE:   { emoji: "🟡", label: "PREMARKET",   cls: "mstate-premarket" },
-  POST:     { emoji: "🟣", label: "AFTER-HOURS", cls: "mstate-afterhours" },
-  POSTPOST: { emoji: "🟣", label: "AFTER-HOURS", cls: "mstate-afterhours" },
-  CLOSED:   { emoji: "⚫", label: "CLOSED",       cls: "mstate-closed" },
-};
-
-function marketStateVisual(marketState) {
-  return MARKET_STATE_VISUAL[marketState] || { emoji: "⚪", label: marketState || "SIN DATO", cls: "mstate-unknown" };
-}
-
-function marketStateBadgeHtml(marketState) {
-  const v = marketStateVisual(marketState);
-  return `<span class="mstate-badge ${v.cls}">${v.emoji} ${v.label}</span>`;
-}
-
-function priceSourceLabel(source) {
-  return PRICE_SOURCE_LABEL[source] || source || "Fuente desconocida";
-}
-
-function priceTypeLabel(priceType) {
-  return PRICE_TYPE_LABEL[priceType] || "Sin clasificar";
-}
-
-/* Línea compacta para usar junto a cualquier precio en tablas -- el badge
- * visual del estado de mercado (punto 1, no depende de leer texto) más
- * los tres datos obligatorios (fuente, tipo, hora), en el mínimo espacio. */
-// Fase 1E (2026-08-24, cierre de la presentación BID_ONLY en Explosivas/
-// Momentum/No Tocar -- las 3 tablas que usan esta línea compartida): igual
-// criterio que ya tienen "Oportunidades Detectadas"/"Catalizadores" --
-// `price`/`change_pct` siguen siendo precio de SEÑAL sin cambios;
-// `executable_price` es la única fuente de verdad sobre si hay contraparte
-// de compra real. `tradier_bid_ask_mid`/`tradier_last`/otros proveedores
-// quedan exactamente igual que antes (executable_price == price siempre).
-function bidOnlyWarningHtml(c) {
-  if (!c || c.price == null || c.executable_price != null) return "";
-  const motivo = c.price_basis === "tradier_bid_only"
-    ? `Fuente: solo bid -- ask descartado (${c.bid_only_reason || "sin razón"})` : "Precio vencido, sin contraparte de compra verificable";
-  return ` <span style="color:var(--amber,#e0a800);font-weight:700;white-space:nowrap" title="${motivo.replace(/"/g, "&quot;")} -- PRECIO DE SEÑAL, NO EJECUTABLE">⚠ SEÑAL, NO EJECUTABLE</span>`;
-}
-
-function priceContextLine(c) {
-  if (!c || !c.price_type) return '<span class="dim">sin contexto de precio</span>';
-  return `<span class="price-context">${marketStateBadgeHtml(c.market_state)} ${priceSourceLabel(c.price_source)} · ${priceTypeLabel(c.price_type)} · ${fmtTime(c.price_as_of)} ET</span>${bidOnlyWarningHtml(c)}`;
-}
-
-/* Desglose completo para Hero/Plan B -- muestra TODOS los precios que
- * Yahoo entregó al mismo tiempo (Regular/Premarket/After-hours), nunca
- * solo el usado, para que nunca parezca que Atlas "oculta" un valor.
- * "Precio usado" queda visualmente destacado (punto 2) con una etiqueta
- * "EN USO" explícita, para que quede claro cuál alimenta el Ranking Score
- * sin tener que leer la fila de abajo. */
-function priceBreakdownHtml(c) {
-  if (!c || !c.price_type) return "";
-  const row = (label, value, isUsed) => `
-    <div class="price-row${isUsed ? " price-row--used" : ""}">
-      <span class="price-row-label">${label}${isUsed ? ' <span class="price-row-used-pill">EN USO</span>' : ""}</span>
-      <span class="price-row-value">${value !== null && value !== undefined ? fmtMoney(value) : '<span class="dim">--</span>'}</span>
-    </div>`;
-
-  // Investigación 3 (2026-08-06): un "--" desnudo en Premarket dejaba al
-  // usuario sin saber si Atlas falló o si el proveedor simplemente no
-  // entregó el dato en esta consulta -- confirmado con evidencia real
-  // (yf.Ticker(...).info con preMarketPrice=None) que esto es una
-  // ausencia honesta del proveedor, no un bug de Atlas (ver
-  // DECISION_LOG.md). Esta fila hace esa causa explícita en vez de dejar
-  // que el usuario se pregunte por qué -- mismo patrón ya usado en la
-  // fila "Overnight" de abajo, con el agregado del motivo puntual.
-  const premarketRow = (() => {
-    if (c.price_premarket !== null && c.price_premarket !== undefined) {
-      return row("Premarket", c.price_premarket, c.price_type === "premarket");
-    }
-    return `
-    <div class="price-row price-row--unavailable price-row--explained">
-      <span class="price-row-label">Premarket</span>
-      <span class="price-row-value">No disponible</span>
-      <span class="price-row-reason">Proveedor: ${priceSourceLabel(c.price_source)} · Motivo: no reportó precio de premarket en esta consulta.</span>
-    </div>`;
-  })();
-  // Cuarta sesión (Overnight / Blue Ocean ATS, 2026-08-02) -- Atlas no
-  // tiene este dato con ningún proveedor actual. Se muestra la fila con
-  // el mismo criterio que el resto de la Cabina: nunca ocultar una
-  // categoría que existe, nunca inventar un valor. Sin párrafo -- el
-  // dato mismo ("No disponible con el proveedor actual") es la
-  // explicación. Queda lista para el día en que un proveedor del Data
-  // Fusion Engine llene `price_overnight` -- esta misma fila lo mostraría.
-  const overnightRow = `
-    <div class="price-row price-row--unavailable">
-      <span class="price-row-label">Overnight (Blue Ocean ATS)</span>
-      <span class="price-row-value">${c.price_overnight !== null && c.price_overnight !== undefined ? fmtMoney(c.price_overnight) : '<span class="dim">No disponible con el proveedor actual</span>'}</span>
-    </div>`;
-  return `
-    <div class="price-breakdown">
-      <div class="price-breakdown-header">${marketStateBadgeHtml(c.market_state)}<span class="price-breakdown-header-note">Estado de mercado detectado por ${priceSourceLabel(c.price_source)}</span></div>
-      <div class="price-breakdown-used">
-        <span class="price-row-label">Precio utilizado <span class="price-row-used-pill">EN USO -- Ranking Score</span></span>
-        <span class="price-breakdown-used-value">${fmtMoney(c.price)}</span>
-      </div>
-      <div class="price-breakdown-grid">
-        ${row("Regular", c.price_regular, c.price_type === "regular")}
-        ${premarketRow}
-        ${row("After-hours", c.price_afterhours, c.price_type === "afterhours")}
-        ${overnightRow}
-      </div>
-      <div class="price-row price-row--meta"><span class="price-row-label">Fuente</span><span class="price-row-value">${priceSourceLabel(c.price_source)}</span></div>
-      <div class="price-row price-row--meta"><span class="price-row-label">Actualizado</span><span class="price-row-value">${fmtTime(c.price_as_of)} ET</span></div>
-    </div>
-    <div class="price-note">Un precio Regular y uno de After-hours pueden diferir legítimamente -- son sesiones distintas del mercado, no un error.</div>`;
-}
-
-/* ---------------- Navegación ---------------- */
-
-function setupNav() {
-  const items = document.querySelectorAll(".nav-item");
-  items.forEach((item) => {
-    item.addEventListener("click", () => {
-      items.forEach((i) => i.classList.remove("active"));
-      item.classList.add("active");
-      document.querySelectorAll(".view").forEach((v) => v.classList.remove("active"));
-      document.getElementById("view-" + item.dataset.view).classList.add("active");
-    });
-  });
-}
-
-/* ---------------- Estado global (sidebar) ---------------- */
-
-/* ---------------- Barra superior: reloj de Nueva York + sesión + cuenta
-   regresiva, calculados en vivo con la MISMA regla de horario que ya usa
-   `market_hours.py` (premarket 04:00-09:30, regular 09:30-16:00,
-   afterhours 16:00-20:00, lunes a viernes). Esto NO es un dato de Atlas --
-   es aritmética de calendario, así que corre en vivo aunque el resto de
-   la cabina siga con datos simulados. No contempla feriados de mercado,
-   misma limitación ya documentada en market_hours.py. */
-
-function nyNow() {
-  return new Date(new Date().toLocaleString("en-US", { timeZone: "America/New_York" }));
-}
-
-function getSessionNY(ny) {
-  const day = ny.getDay(); // 0=domingo .. 6=sábado
-  if (day === 0 || day === 6) return "closed";
-  const mins = ny.getHours() * 60 + ny.getMinutes();
-  if (mins >= 4 * 60 && mins < 9 * 60 + 30) return "premarket";
-  if (mins >= 9 * 60 + 30 && mins < 16 * 60) return "regular";
-  if (mins >= 16 * 60 && mins < 20 * 60) return "afterhours";
-  return "closed";
-}
-
-function nextBoundary(ny, session) {
-  const target = new Date(ny);
-  if (session === "premarket") { target.setHours(9, 30, 0, 0); return { target, label: "Apertura en" }; }
-  if (session === "regular") { target.setHours(16, 0, 0, 0); return { target, label: "Cierre en" }; }
-  if (session === "afterhours") { target.setHours(20, 0, 0, 0); return { target, label: "Fin postmarket en" }; }
-  // closed -> próximo día hábil a las 04:00
-  target.setHours(4, 0, 0, 0);
-  const isWeekday = ny.getDay() >= 1 && ny.getDay() <= 5;
-  const yaPaso = !(isWeekday && ny < target);
-  if (yaPaso) {
-    do { target.setDate(target.getDate() + 1); } while (target.getDay() === 0 || target.getDay() === 6);
-    target.setHours(4, 0, 0, 0);
-  }
-  return { target, label: "Premarket en" };
-}
-
-function fmtHHMMSS(totalSeconds) {
-  const s = Math.max(0, Math.floor(totalSeconds));
-  const hh = String(Math.floor(s / 3600)).padStart(2, "0");
-  const mm = String(Math.floor((s % 3600) / 60)).padStart(2, "0");
-  const ss = String(s % 60).padStart(2, "0");
-  return `${hh}:${mm}:${ss}`;
-}
-
-function tickTopbar() {
-  const ny = nyNow();
-  const session = getSessionNY(ny);
-  const { target, label } = nextBoundary(ny, session);
-  const secondsLeft = (target - ny) / 1000;
-
-  document.getElementById("topbar-session").textContent = SESSION_LABEL[session] || session.toUpperCase();
-  document.getElementById("topbar-clock").textContent =
-    ny.toTimeString().slice(0, 8);
-  document.getElementById("topbar-countdown-label").innerHTML =
-    `${label} <span id="topbar-countdown" class="topbar-mono">${fmtHHMMSS(secondsLeft)}</span>`;
-}
-
-/* Panel 1 (CONECTADO): Estado de Atlas + Última actualización salen de
- * /api/ranking, que ya expone scan_worker.STATE.snapshot() real -- no se
- * tocó server.py ni scan_worker.py, el endpoint ya existía. La sesión de
- * mercado, la hora de NY y la cuenta regresiva siguen siendo cálculo de
- * calendario en el cliente (tickTopbar), no dependen de este fetch. */
-const STATUS_POLL_MS = 15000;
-
-// Calidad del Mercado (2026-08-03) lee `context` (VIX real, ya calculado
-// por MarketContextEngine) del mismo /api/ranking que ya se pollea acá --
-// se guarda en una variable global para no duplicar el fetch.
-let _lastContext = null;
-// Estado real del último ciclo (para la barra de actividad -- limpieza MOCK).
-let _systemStatus = null;
-
-async function fetchSystemStatus() {
-  try {
-    const res = await fetch("/api/ranking");
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-
-    const dot = document.getElementById("topbar-status-dot");
-    const text = document.getElementById("topbar-status-text");
-    const lastUpdate = document.getElementById("topbar-last-update");
-
-    // Estado honesto por `last_cycle_status` (heartbeat real del motor):
-    //  ok        -> 🟢 hay dato fresco;
-    //  sin_datos -> 🟡 el ciclo terminó pero el proveedor no dio datos
-    //               (NO es una caída de Atlas: el motor sigue vivo);
-    //  error     -> 🔴 excepción real del ciclo.
-    const st = data.last_cycle_status;
-    const okTime = data.last_success_at ? data.last_success_at.slice(11, 19) + " UTC" : "nunca";
-    if (data.scanning) {
-      dot.className = "dot dot-amber";
-      text.textContent = "Escaneando...";
-    } else if (st === "ok") {
-      dot.className = "dot dot-green";
-      text.textContent = `Sistema OK (${data.symbols_ok}/${data.symbols_scanned})`;
-    } else if (st === "sin_datos") {
-      dot.className = "dot dot-amber";
-      text.textContent = `Sin datos del proveedor · último ciclo con datos: ${okTime}`;
-    } else if (st === "error") {
-      dot.className = "dot dot-red";
-      text.textContent = "Error en el ciclo (excepción)";
-    } else if (data.generated_at === null && (data.cycles_total || 0) === 0) {
-      dot.className = "dot dot-amber";
-      text.textContent = "Sin escaneo todavía";
-    } else {
-      dot.className = "dot dot-green";
-      text.textContent = `Sistema OK (${data.symbols_ok}/${data.symbols_scanned})`;
-    }
-    // Heartbeat en el tooltip: ciclos y último éxito -- confirma que el motor
-    // está vivo aunque un ciclo puntual no traiga datos.
-    if (text.parentElement) {
-      text.parentElement.title =
-        `Ciclos: ${data.cycles_total || 0} (ok ${data.cycles_ok || 0} · sin datos ${data.cycles_sin_datos || 0} · error ${data.cycles_error || 0}). ` +
-        `Último ciclo con datos: ${okTime}. Último ciclo terminado: ${data.last_cycle_finished_at ? data.last_cycle_finished_at.slice(11, 19) + " UTC" : "--"}.` +
-        (data.last_failure_reason ? ` Motivo: ${data.last_failure_reason}` : "");
-    }
-
-    lastUpdate.textContent = data.generated_at ? data.generated_at.slice(11, 19) + " UTC" : "--";
-    _lastContext = data.context;
-    _systemStatus = data;
-    renderMarketQuality();
-    renderActivity();
-    renderOpina();
-  } catch (err) {
-    document.getElementById("topbar-status-dot").className = "dot dot-red";
-    document.getElementById("topbar-status-text").textContent = "Sin conexión con el servidor";
-    _systemStatus = null;
-    renderActivity();
-    console.error("fetchSystemStatus:", err);
-  }
-}
-
-function renderGlobalStatus() {
-  fetchSystemStatus();
-  setInterval(fetchSystemStatus, STATUS_POLL_MS);
-  tickTopbar();
-  setInterval(tickTopbar, 1000);
-}
-
-/* ---------------- Dashboard: Oportunidad del Día (dominante) + 3 bloques ---------------- */
-
-// Calidad del Mercado (2026-08-03) -- factores reales, SIN veredicto
-// compuesto ("BUENA/REGULAR/MALA"): combinarlos en un solo número sería
-// un algoritmo nuevo sin validar (Principio 3 de la Constitución). El
-// usuario prefirió explícitamente mostrar los factores por separado
-// hasta que exista una fórmula validada -- ver DECISION_LOG.md.
-// Umbral de VIX reutilizado tal cual de scan_worker.py (RISK_VIX_HIGH=25,
-// RISK_VIX_LOW=18), no inventado acá.
-const VIX_HIGH = 25.0;
-const VIX_LOW = 18.0;
-
-function vixLabel(vix) {
-  if (vix === null || vix === undefined) return '<span class="dim">sin dato</span>';
-  const nivel = vix >= VIX_HIGH ? "Alta" : vix <= VIX_LOW ? "Baja" : "Normal";
-  return `${fmtNum(vix)} (${nivel})`;
-}
-
-function renderMarketQuality() {
-  const el = document.getElementById("dashboard-quality");
-  const candidates = _memoryRanking.candidates;
-  const total = candidates.length;
-  const vix = _lastContext ? _lastContext.vix_price : null;
-  // Regla de consenso (2026-08-03): estos 4 conteos también deben exigir
-  // eligible_radar -- si no, "Calidad del Mercado" podría reportar
-  // "oportunidades" u "candidatos que superan el Ranking" inflados con
-  // símbolos que Radar Explosivo ya rechazó. Reutiliza los mismos
-  // helpers que ya protegen Explosivas/Momentum/No tocar, en vez de
-  // duplicar el criterio.
-  const superanRanking = candidates.filter(c => c.eligible_radar && (c.semaforo === "verde" || c.semaforo === "amarillo")).length;
-  const altaConfianza = candidates.filter(c => c.eligible_radar && c.confidence === "Alta").length;
-  const microcapsVerde = _explosivasReal().length;
-  const noTocar = _noTocarReal().length;
-
-  el.className = "quality-bar";
-  el.innerHTML = `
-    <span class="quality-label">📊 Calidad del Mercado -- factores reales <span class="dim" style="font-weight:400;font-size:11px">(sin veredicto compuesto todavía -- ver diseño en discusión)</span></span>
-    <span class="quality-factors">
-      <span class="quality-factor">VIX: <b>${vixLabel(vix)}</b></span>
-      <span class="quality-factor">Candidatos que superan el Ranking: <b>${total ? `${superanRanking}/${total} (${fmtNum(superanRanking / total * 100, 0)}%)` : '<span class="dim">sin datos</span>'}</b></span>
-      <span class="quality-factor">Oportunidades de alta confianza: <b>${altaConfianza}</b></span>
-      <span class="quality-factor">Microcaps con evidencia confiable: <b>${microcapsVerde}</b></span>
-      <span class="quality-factor">Símbolos "No tocar" hoy: <b>${noTocar}</b></span>
-    </span>`;
-}
-
-/* "¿Por qué NO?" -- datos REALES de /api/explosive-diagnostics (tabla de
- * exclusiones del Radar: symbol, etapa que falló, motivo real). Se muestran
- * los descartes más "llamativos" (mayor gap% o RVOL) para responder la
- * pregunta obvia; el motivo es el que registró el propio motor, nunca
- * inventado. Estado honesto si no hay descartes reales. */
-let _explosiveDiagnostics = null;
-
-async function fetchExplosiveDiagnostics() {
-  try {
-    const res = await fetch("/api/explosive-diagnostics");
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    _explosiveDiagnostics = await res.json();
-  } catch (err) {
-    console.error("fetchExplosiveDiagnostics:", err);
-  }
-  renderWhyNot();
-}
-
-function _whyNotApparentReason(r) {
-  const bits = [];
-  if (r.gap_pct !== null && r.gap_pct !== undefined) bits.push(`Gap ${r.gap_pct >= 0 ? "+" : ""}${r.gap_pct.toFixed(1)}%`);
-  if (r.relative_volume !== null && r.relative_volume !== undefined) bits.push(`RVOL ${r.relative_volume.toFixed(1)}x`);
-  return bits.length ? bits.join(" · ") : "Apareció en el escaneo";
-}
-
-function renderWhyNot() {
-  const el = document.getElementById("dashboard-whynot");
-  const table = (_explosiveDiagnostics && _explosiveDiagnostics.available && _explosiveDiagnostics.table) || [];
-  // Solo exclusiones con motivo real; priorizar las de mayor gap/RVOL (las
-  // que "a primera vista" parecerían atractivas), máximo 5.
-  const excluded = table
-    .filter(r => r.status === "Excluida" && r.reason)
-    .sort((a, b) => (Math.abs(b.gap_pct || 0) + (b.relative_volume || 0)) - (Math.abs(a.gap_pct || 0) + (a.relative_volume || 0)))
-    .slice(0, 5);
-  el.innerHTML = excluded.length
-    ? excluded.map(w => `
-        <div class="whynot-item">
-          <div class="whynot-q">¿Por qué no <span class="sym">${w.symbol}</span>?${w.name ? ` <span class="dim">(${w.name})</span>` : ""} -- ${_whyNotApparentReason(w)}</div>
-          <div class="whynot-a">${w.reason}</div>
-        </div>`).join("")
-    : `<div class="empty-state">Sin descartes que aclarar en este momento -- ningún candidato llamativo quedó fuera del Radar.</div>`;
-}
-
-/* ---------------- Panel 2-6 (CONECTADO): /api/memory-ranking ----------
- * Mismo Ranking Score ya validado en atlas_live/memory/ (ver MEMORY_ENGINE.md),
- * servido por scan_worker.py sin recalcular nada nuevo. `etaMovementMinutes`
- * y `historicalTarget` NO existen en el backend real (nunca existieron,
- * ver mock_data.js) -- se muestran como "sin cálculo real" en vez de
- * inventar un número, ahora que se conecta de verdad. */
-const MEMORY_POLL_MS = 30000;
-let _memoryRanking = { generated_at: null, candidates: [] };
-
-/* Motor Predictivo -- Cabina del Piloto, Sprint 4 (2026-08-06, ver
- * DECISIONES.md). Última predicción de `entry_window` para el candidato
- * #1 del Hero (mismo símbolo que ya decide `renderHero`/`renderOportunidad`,
- * no un candidato distinto) -- `/api/predictive-engine/<symbol>`, solo
- * lectura sobre atlas_live/predictive_engine/prediction_log.py. */
-let _entryWindow = null;
-
-async function fetchEntryWindow(symbol) {
-  if (!symbol) {
-    _entryWindow = null;
-    return;
-  }
-  try {
-    const res = await fetch(`/api/predictive-engine/${encodeURIComponent(symbol)}`);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    _entryWindow = await res.json();
-  } catch (err) {
-    console.error("fetchEntryWindow:", err);
-    _entryWindow = null;
-  }
-}
-
-const ENTRY_WINDOW_RECOMMENDATION_LABEL = {
-  esperar: "Esperar",
-  comprar_ahora: "Comprar ahora",
-  movimiento_pudo_haber_empezado: "La ventana ya pasó",
-};
-
-/* HTML de los metric-value de la ventana óptima de entrada, reutilizado
- * tanto por el Hero del Dashboard como por el detalle de Oportunidad del
- * día -- misma fuente (`_entryWindow`), mismo criterio: nunca un número
- * inventado, "Evidencia insuficiente" es un estado honesto, no un error. */
-function entryWindowMetricsHtml(labelClass = "hero-metric-label", valueClass = "hero-metric-value", wrap = null) {
-  const p = _entryWindow;
-  const item = (label, value, dim) => {
-    const inner = `<div class="${labelClass}">${label}</div><div class="${valueClass}${dim ? " dim" : ""}"${dim ? ' style="font-size:14px"' : ""}>${value}</div>`;
-    return wrap ? `<div class="${wrap}">${inner}</div>` : `<div>${inner}</div>`;
-  };
-  if (!p || !p.available || p.confidence === "insuficiente") {
-    const detalle = p && p.available
-      ? `${p.sample_size} caso(s) histórico(s) -- se necesitan al menos 10 para estimar`
-      : "todavía no se registró ninguna predicción para este símbolo hoy";
-    return (
-      item("Ventana óptima de entrada", "Evidencia insuficiente", true) +
-      item("Condición de evidencia", p && p.evidence_condition ? p.evidence_condition : detalle, true)
-    );
-  }
-  const recomendacion = ENTRY_WINDOW_RECOMMENDATION_LABEL[p.recommendation] || p.recommendation || "sin recomendación";
-  return (
-    item("Ventana óptima de entrada", recomendacion, false) +
-    item("Mediana histórica", `${fmtNum(p.value)} min`, false) +
-    item("Rango P25-P75", `${fmtNum(p.range_low)}-${fmtNum(p.range_high)} min`, false) +
-    item("Casos similares", p.sample_size, false) +
-    item("Nivel de confianza", p.confidence, false) +
-    item("Condición de evidencia", p.evidence_condition || "sin condición confiable", false)
-  );
-}
-
-async function fetchMemoryRanking() {
-  try {
-    const res = await fetch("/api/memory-ranking");
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    _memoryRanking = await res.json();
-  } catch (err) {
-    console.error("fetchMemoryRanking:", err);
-  }
-  // Fase 3/5: la ventana de entrada se calcula para el candidato CANÓNICO,
-  // no para `candidates[0]` crudo.
-  const top = _currentTopOpportunityCandidate();
-  await fetchEntryWindow(top ? top.symbol : null);
-  renderHero();
-  renderPlanB();
-  renderTripleColumns();
-  renderRadarCompleto();
-  renderMarketQuality();
-  renderOpina();
-  if (document.querySelector('.nav-item[data-view="oportunidad"]').classList.contains("active")) {
-    renderOportunidad();
-  }
-}
-
-function startMemoryRankingPolling() {
-  fetchMemoryRanking();
-  setInterval(fetchMemoryRanking, MEMORY_POLL_MS);
-}
-
-/* ---------------- Canal de actualización rápida (Plan A + Plan B) --------
- * Optimización de latencia (2026-08-07, ver DECISION_LOG.md). EXCLUSIVO
- * para los 2 símbolos visibles -- la Oportunidad del Día (Hero = candidato
- * #1 elegible) y el Plan B (candidato #2 elegible). El scanner del universo
- * (~244) NO cambia; este canal solo refresca esos 2 precios contra
- * `/api/hot-quote`, para mantenerlos con antigüedad <=3s cuando el
- * proveedor lo permite. Presupuesto: 2 símbolos cada 3s ~= 40 req/min,
- * dentro de Finnhub (60/min).
- *
- * "Último recibido, nunca ocultar la antigüedad": si el proveedor no
- * entrega un dato nuevo (mismo price_as_of, error, o rate-limit) NO se
- * reinicia el reloj -- se conserva el último precio bueno y su antigüedad
- * sigue creciendo (🟢->🟡->🔴). El timestamp solo avanza cuando llega un
- * price_as_of genuinamente nuevo. */
-const HOT_POLL_MS = 3000;
-// symbol -> { price, change_pct, price_type, market_state, source,
-//             price_as_of, baseAgeMs, receivedAt, lastStatus, gotNew }
-const _hotQuotes = {};
-
-// Símbolos que alimenta el canal rápido AHORA: Hero (candidato[0] elegible)
-// y Plan B (candidato[1] elegible). Mismo criterio de elegibilidad que ya
-// usan renderHero/renderPlanB -- si un candidato no es elegible, no se
-// refresca (no se muestra).
-function hotSymbols() {
-  const c = _memoryRanking.candidates || [];
-  const out = [];
-  if (c[0] && c[0].eligible_radar) out.push(c[0].symbol);
-  if (c[1] && c[1].eligible_radar && c[1].symbol !== (c[0] && c[0].symbol)) out.push(c[1].symbol);
-  return out;
-}
-
-async function fetchHotQuotes() {
-  const symbols = hotSymbols();
-  if (symbols.length === 0) { renderHotWidgets(); return; }
-  try {
-    const res = await fetch(`/api/hot-quote?symbols=${encodeURIComponent(symbols.join(","))}`);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    const serverMs = Date.parse(data.server_time);
-    const clientNow = Date.now();
-    for (const q of (data.quotes || [])) {
-      const prev = _hotQuotes[q.symbol];
-      if (q.status === "ok" && q.price_as_of) {
-        const isNew = !prev || prev.price_as_of !== q.price_as_of;
-        if (isNew) {
-          // Dato genuinamente nuevo: el reloj de antigüedad se reancla al
-          // timestamp real del proveedor (baseAgeMs = server_time - dato).
-          const asOfMs = Date.parse(q.price_as_of);
-          _hotQuotes[q.symbol] = {
-            price: q.price,
-            change_pct: q.change_pct,
-            price_type: q.price_type,
-            market_state: q.market_state,
-            source: q.source,
-            price_as_of: q.price_as_of,
-            baseAgeMs: (isFinite(serverMs) && isFinite(asOfMs)) ? (serverMs - asOfMs) : 0,
-            receivedAt: clientNow,
-            lastStatus: "ok",
-            gotNew: true,
-          };
-        } else {
-          // Mismo timestamp: el proveedor devolvió, pero sin dato nuevo. NO
-          // se reancla el reloj -- la antigüedad sigue creciendo sola.
-          prev.lastStatus = "ok";
-          prev.gotNew = false;
-        }
-      } else if (prev) {
-        // Proveedor no entregó (error/rate-limit): se conserva el último
-        // recibido, su antigüedad sigue creciendo. Nunca se oculta.
-        prev.lastStatus = q.status || "unavailable";
-        prev.gotNew = false;
-      }
-      // Si status != ok y no hay prev, no hay nada que mostrar todavía --
-      // el Hero mostrará su precio de ciclo con su propia antigüedad.
-    }
-  } catch (err) {
-    console.error("fetchHotQuotes:", err);
-    // Fallo de red del canal: se conserva todo lo previo, no se resetea.
-  }
-  renderHotWidgets();
-}
-
-// Antigüedad EN VIVO del último dato bueno de un símbolo, sin skew de reloj:
-// (server_time - price_as_of)  [ambos del servidor]  +  (ahora - recibido)
-// [ambos del cliente]. Devuelve segundos, o null si no hay dato.
-function hotAgeSeconds(entry) {
-  if (!entry || !isFinite(entry.baseAgeMs)) return null;
-  return entry.baseAgeMs / 1000 + (Date.now() - entry.receivedAt) / 1000;
-}
-
-// Widget de frescura para un símbolo -- los 5 indicadores pedidos: hora
-// exacta del dato, antigüedad, proveedor, semáforo, y aviso de "último
-// recibido" cuando el proveedor no entregó un dato nuevo.
-function hotFreshnessHtml(entry) {
-  if (!entry) {
-    return `<span class="hot-fresh-dot">⚪</span><span class="hot-fresh-label">Refrescando precio en vivo…</span>`;
-  }
-  const age = hotAgeSeconds(entry);
-  const st = freshnessStatus(age);
-  const stale = entry.lastStatus !== "ok" || entry.gotNew === false;
-  const note = stale
-    ? `<span class="hot-fresh-note" title="El proveedor no entregó un dato nuevo en la última consulta">· último recibido</span>`
-    : "";
-  return `
-    <span class="hot-fresh-dot">${st.emoji}</span>
-    <span class="hot-fresh-label">${st.label}</span>
-    <span class="hot-fresh-price">${fmtMoney(entry.price)}</span>
-    <span class="hot-fresh-age">${fmtAge(age)}</span>
-    <span class="hot-fresh-time">dato: ${fmtTimeSec(entry.price_as_of)} ET</span>
-    <span class="hot-fresh-src">${priceSourceLabel(entry.source)}</span>
-    ${note}`;
-}
-
-// Rellena los contenedores de frescura del Hero y el Plan B. Se llama desde
-// el fetch (cada 3s) Y desde el tick de 1s (para que "hace X s" avance solo
-// aunque no llegue dato nuevo). Actualiza también el precio destacado.
-function renderHotWidgets() {
-  // Fase 4/5: mismo candidato canónico que renderHero()/renderPlanB(),
-  // nunca candidates[0]/[1] crudo.
-  const heroCand = _currentTopOpportunityCandidate();
-  const planBCand = _currentRunnerUpCandidate();
-  const heroSym = heroCand ? heroCand.symbol : null;
-  const planBSym = planBCand ? planBCand.symbol : null;
-
-  const heroBox = document.getElementById("hot-fresh-hero");
-  if (heroBox) {
-    const e = heroSym ? _hotQuotes[heroSym] : null;
-    heroBox.className = "hot-fresh " + freshnessStatus(hotAgeSeconds(e)).cls;
-    heroBox.innerHTML = hotFreshnessHtml(e);
-    if (e) {
-      const pv = document.getElementById("hero-price-value");
-      if (pv) pv.innerHTML = fmtMoney(e.price);
-    }
-  }
-  const planBox = document.getElementById("hot-fresh-planb");
-  if (planBox) {
-    const e = planBSym ? _hotQuotes[planBSym] : null;
-    planBox.className = "hot-fresh " + freshnessStatus(hotAgeSeconds(e)).cls;
-    planBox.innerHTML = hotFreshnessHtml(e);
-    if (e) {
-      const pv = document.getElementById("planb-price-value");
-      if (pv) pv.innerHTML = fmtMoney(e.price);
-    }
-  }
-}
-
-function tickHotFreshness() {
-  renderHotWidgets();
-}
-
-function startHotChannel() {
-  fetchHotQuotes();
-  setInterval(fetchHotQuotes, HOT_POLL_MS);
-  setInterval(tickHotFreshness, 1000);
-}
-
-/* Paneles 9-12 (Memory Engine, Prediction Journal, Exit Journal, Mission
- * Control) -- cambian con mucha menos frecuencia que el ranking (una vez
- * por día de mercado, o solo cuando corre un proceso instrumentado), así
- * que su intervalo de sondeo es más largo. Datos reales de sus propios
- * módulos en atlas_live/memory/ y atlas_live/mission_control/ -- estados
- * vacíos (sin días sellados, sin procesos activos) son resultados
- * legítimos mientras no haya corrido todavía una sesión completa en vivo,
- * no un error. */
-const PANEL_STATUS_POLL_MS = 60000;
-// Precios en vivo (2026-08-18, pedido explícito del usuario): los paneles
-// que muestran price_actual/RVOL en vivo refrescan cada 30s -- el piso real
-// de la cadencia de barrido del radar (ATLAS_RADAR_SWEEP_FLOOR_SECONDS,
-// ver radar_worker.py) también es 30s, así que nunca se espera más de un
-// barrido de más para ver un precio nuevo. El resto de los paneles
-// (Memory Engine, Journals, Mission Control, etc. -- no dependen de un
-// precio fresco minuto a minuto) siguen en PANEL_STATUS_POLL_MS sin cambios.
-const PRICE_POLL_MS = 30000;
-let _memoryEngine = null;
-let _predictionJournal = null;
-let _exitJournalSummaries = [];
-let _missionControlProcesses = [];
-
-async function fetchMemoryEngine() {
-  try {
-    const res = await fetch("/api/memory-engine");
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    _memoryEngine = await res.json();
-  } catch (err) {
-    console.error("fetchMemoryEngine:", err);
-  }
-  renderMemoryEngine();
-}
-
-async function fetchPredictionJournal() {
-  try {
-    const res = await fetch("/api/prediction-journal");
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    _predictionJournal = await res.json();
-  } catch (err) {
-    console.error("fetchPredictionJournal:", err);
-  }
-  renderPredictionJournal();
-}
-
-async function fetchExitJournal() {
-  try {
-    const res = await fetch("/api/exit-journal");
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    _exitJournalSummaries = data.summaries || [];
-  } catch (err) {
-    console.error("fetchExitJournal:", err);
-  }
-  renderExitJournal();
-}
-
-let _missionControlMarketStateHistory = [];
-let _missionControlFailoverHistory = [];
-
-async function fetchMissionControl() {
-  try {
-    const res = await fetch("/api/mission-control");
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    _missionControlProcesses = data.processes || [];
-    _missionControlMarketStateHistory = data.market_state_history || [];
-    _missionControlFailoverHistory = data.provider_failover_history || [];
-  } catch (err) {
-    console.error("fetchMissionControl:", err);
-  }
-  renderMissionControl();
-  renderAlerts();
-}
-
-/* Indicadores permanentes de la barra superior: 🧠 Aprendizaje y 🎯 Confianza.
- *
- * ÚNICA FUENTE DE VERDAD (2026-08-15): "🧠 Aprendizaje" se alimenta de
- * `_learningMaturity` (/api/learning-maturity) -- la Madurez real (11 ejes,
- * cuello de botella), NUNCA un porcentaje. Antes mostraba
- * `nivel_aprendizaje_pct` (condiciones_confiables/14 del Memory Engine v1,
- * mezclaba histórico y en vivo) -- ese cálculo generó el "71.4% (10/14)"
- * que seguía apareciendo después del reset del aprendizaje. Ver
- * PROPUESTA_MADUREZ_APRENDIZAJE.md. "🎯 Confianza" no cambia en esta ronda
- * -- sigue viniendo de /api/evolution (precisión histórica del Clasificador,
- * concepto distinto, fuera de alcance de este cambio). */
-function renderTopbarLearning() {
-  const learnEl = document.getElementById("topbar-learning-text");
-  const confEl = document.getElementById("topbar-confidence-text");
-  if (!learnEl || !confEl) return;
-
-  if (!_learningMaturity) {
-    learnEl.innerHTML = `<span class="pill-dim">cargando…</span>`;
-  } else {
-    const m = _learningMaturity.madurez || {};
-    const estado = m.estado || "Sin evidencia";
-    const nivelClass = (m.nivel >= 5) ? "pill-green" : (m.nivel >= 2 ? "pill-amber" : "pill-dim");
-    learnEl.innerHTML = `<span class="${nivelClass}">${estado}</span>` +
-      (m.eje_limitante ? ` · limita: ${m.eje_limitante}` : "");
-    document.getElementById("topbar-learning").title =
-      (m.explicacion || "Madurez del aprendizaje: mínimo de 11 ejes independientes de evidencia (nunca un promedio). Ver la vista Evolución para el detalle de cada eje.");
-  }
-
-  if (!_evolution) {
-    confEl.innerHTML = `<span class="pill-dim">--</span>`;
-    return;
-  }
-  const p = _evolution.precision_del_modelo || {};
-
-  // 🎯 Confianza = precisión histórica real (aciertos sobre casos cerrados).
-  // Si aún no hay casos cerrados evaluados -> "No disponible" (nunca inventado).
-  if (p.precision_historica_pct === null || p.precision_historica_pct === undefined) {
-    confEl.innerHTML = `<span class="pill-dim">No disponible</span>`;
-    document.getElementById("topbar-confidence").title =
-      "Precisión (aciertos) no disponible: todavía no hay casos cerrados evaluados.";
-  } else {
-    confEl.innerHTML = `<span class="pill-green">${fmtNum(p.precision_historica_pct)}%</span>`;
-    document.getElementById("topbar-confidence").title =
-      `Precisión histórica real sobre ${p.muestra_historica} casos cerrados evaluados.`;
-  }
-}
-
-/* Panel de Evolución (2026-08-07, ver DECISION_LOG.md) -- precisión del
- * modelo, rendimiento financiero y evolución del aprendizaje, cada uno
- * desde datos reales ya existentes (reutiliza performance_panel para 1 y
- * 2). Cualquier dato ausente se muestra "No disponible", nunca un número
- * inventado. */
-let _evolution = null;
-
-async function fetchEvolution() {
-  try {
-    const res = await fetch("/api/evolution");
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    _evolution = await res.json();
-  } catch (err) {
-    console.error("fetchEvolution:", err);
-    _evolution = null;
-  }
-  renderEvolution();
-}
-
-/* Aprendizaje en Vivo + Madurez (2026-08-15, ver PROPUESTA_MADUREZ_APRENDIZAJE.md).
- * ÚNICA fuente real de la barra superior "🧠 Aprendizaje" y de la sección
- * "Aprendizaje en Vivo" de la vista Evolución -- ya NO /api/evolution
- * (ese cálculo -- condiciones_confiables/14 -- queda como diagnóstico
- * interno del Memory Engine v1, nunca se presenta como "Aprendizaje"). */
-let _learningMaturity = null;
-
-async function fetchLearningMaturity() {
-  try {
-    const res = await fetch("/api/learning-maturity");
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    _learningMaturity = await res.json();
-  } catch (err) {
-    console.error("fetchLearningMaturity:", err);
-    _learningMaturity = null;
-  }
-  renderTopbarLearning();
-  renderLearningHeadline();
-  renderMaturityAxes();
-}
-
-/* Base Histórica de Referencia -- NUNCA es aprendizaje de Atlas, solo
- * contexto para comparar patrones (siempre etiquetado como tal). */
-let _historicalReference = null;
-
-async function fetchHistoricalReference() {
-  try {
-    const res = await fetch("/api/historical-reference-summary");
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    _historicalReference = await res.json();
-  } catch (err) {
-    console.error("fetchHistoricalReference:", err);
-    _historicalReference = null;
-  }
-  renderHistoricalReference();
-}
-
-// Aprendizaje en Vivo (2026-08-15, ver PROPUESTA_MADUREZ_APRENDIZAJE.md).
-// SOLO datos de /api/learning-maturity (radar CAPA 2, en vivo, arranca en
-// cero tras el reset) -- nunca mezcla la Base Histórica de Referencia.
-// Cada precisión viaja SIEMPRE con numerador/denominador, nunca un % aislado.
-function renderLearningHeadline() {
-  const el = document.getElementById("learning-headline");
-  if (!el) return;
-  if (!_learningMaturity) { el.innerHTML = `<div class="empty-state">Cargando…</div>`; return; }
-
-  const hoy = _learningMaturity.hoy || {};
-  const acum = _learningMaturity.acumulada || {};
-  const reciente = _learningMaturity.reciente || {};
-  const m = _learningMaturity.madurez || {};
-  const rac = _learningMaturity.racional || {};
-  const racHoy = rac.hoy || {}, racAcum = rac.acumulada || {}, racReciente = rac.reciente || {};
-
-  const numOr = (v) => (v === null || v === undefined) ? '<span class="dim">No disponible</span>' : v;
-  const precOr = (v) => (v === null || v === undefined) ? '<span class="dim">No disponible</span>' : v; // ya viene como "X/Y = Z%"
-
-  const card = (icon, label, value, sub) => `
-    <div class="lh-card">
-      <div class="lh-icon">${icon}</div>
-      <div class="lh-label">${label}</div>
-      <div class="lh-value">${value}</div>
-      ${sub ? `<div class="lh-sub">${sub}</div>` : ""}
-    </div>`;
-
-  el.innerHTML =
-    card("🔎", "Estudiadas hoy", numOr(hoy.estudiadas), "universo escaneado") +
-    card("🕵️", "Candidatas hoy", numOr(hoy.candidatas), "") +
-    card("✅", "Señales hoy", numOr(hoy.senales), "sobrevivieron confirmación") +
-    card("📋", "Casos evaluables hoy", numOr(hoy.evaluables), "ya con resultado cerrado") +
-    card("🎯", "Aciertos hoy", numOr(hoy.aciertos), `${numOr(hoy.fallos)} fallos`) +
-    card("⏱", "Tardías hoy", numOr(hoy.tardias), "no cuentan como acierto") +
-    card("📊", "Precisión del día (Universal)", precOr(hoy.precision), "num/denom siempre") +
-    card("📊", "Precisión acumulada (Universal)", precOr(acum.precision), `${numOr(acum.dias)} días con resumen`) +
-    card("📊", "Precisión reciente (Universal)", precOr(reciente.precision), reciente.dias_incluidos ? `últimos ${reciente.dias_incluidos} días` : "sin ventana todavía") +
-    card("🧠", "Madurez actual", m.estado || "Sin evidencia", `limita: ${m.eje_limitante || "--"}`);
-
-  // Marcador Racional (2026-08-18, pedido explícito del usuario): mismo
-  // criterio de arriba, recalculado solo sobre candidatas disponibles en
-  // Racional ahora -- panel separado, para comparar lado a lado sin mezclar
-  // con el marcador universal (que sigue exactamente igual, arriba).
-  const elRacional = document.getElementById("learning-headline-racional");
-  if (elRacional) {
-    elRacional.innerHTML =
-      card("🎯", "Precisión del día (Racional)", precOr(racHoy.precision), `${numOr(racHoy.aciertos)}/${numOr(racHoy.evaluables)} evaluables`) +
-      card("🎯", "Precisión acumulada (Racional)", precOr(racAcum.precision), `${numOr(racAcum.dias)} días con resumen`) +
-      card("🎯", "Precisión reciente (Racional)", precOr(racReciente.precision), racReciente.dias_incluidos ? `últimos ${racReciente.dias_incluidos} días` : "sin ventana todavía");
-  }
-
-  // Se re-renderiza acá también (2026-08-21, pedido explícito del usuario:
-  // "quiero que aparezca en el mismo panel, no quiero estar buscando en
-  // diferentes lugares") -- Precisión de Magnitud vive en la vista Radar
-  // Universo, pero necesita cuánto estudió/Madurez de ACÁ (Aprendizaje en
-  // Vivo, Evolución) -- cada poll de cualquiera de los dos refresca ambos.
-  renderPrecisionMagnitud();
-}
-
-// Los 11 ejes de Madurez, con su evidencia real -- nunca un promedio, la
-// madurez global es el MÍNIMO de estos 11 (cuello de botella).
-function renderMaturityAxes() {
-  const el = document.getElementById("madurez-ejes");
-  if (!el) return;
-  if (!_learningMaturity) { el.innerHTML = `<div class="empty-state">Cargando…</div>`; return; }
-
-  const ejes = (_learningMaturity.madurez && _learningMaturity.madurez.ejes) || [];
-  const limitante = (_learningMaturity.madurez || {}).eje_limitante;
-  const rows = ejes.map((a) => `
-    <tr>
-      <td>${a.nombre}${a.nombre === limitante ? ' <span class="pill-amber">⛔ limita</span>' : ""}</td>
-      <td>${a.estado}</td>
-      <td class="dim" style="font-size:12px">${a.explicacion}</td>
-    </tr>`).join("");
-  el.innerHTML = `
-    <div class="table-wrap">
-      <table class="data-table">
-        <thead><tr><th>Eje</th><th>Estado</th><th>Evidencia</th></tr></thead>
-        <tbody>${rows || '<tr><td class="empty-state" colspan="3">Sin datos.</td></tr>'}</tbody>
-      </table>
-    </div>
-    <div class="detail-note" style="margin-top:8px">La Madurez global es el MÍNIMO de estos 11 estados, nunca un promedio -- subirla exige cerrar la brecha del eje más débil, no acumular más de lo que ya sobra.</div>`;
-}
-
-// Base Histórica de Referencia (2026-08-15) -- NUNCA se presenta como
-// aprendizaje de Atlas, solo contexto para comparar patrones.
-function renderHistoricalReference() {
-  const el = document.getElementById("historico-referencia");
-  if (!el) return;
-  if (!_historicalReference) { el.innerHTML = `<div class="empty-state">Cargando…</div>`; return; }
-
-  const h = _historicalReference;
-  const card = (icon, label, value, sub) => `
-    <div class="lh-card">
-      <div class="lh-icon">${icon}</div>
-      <div class="lh-label">${label}</div>
-      <div class="lh-value">${value}</div>
-      ${sub ? `<div class="lh-sub">${sub}</div>` : ""}
-    </div>`;
-  el.innerHTML =
-    `<div class="detail-note" style="margin-bottom:8px">${h.nota || ""}</div>` +
-    card("📚", "Símbolos estudiados", h.simbolos_procesados ?? "--", h.universo_total ? `de ${h.universo_total} del universo` : "") +
-    card("📚", "Casos históricos evaluables", Number(h.observaciones_evaluables || 0).toLocaleString("es"), "backtest, no en vivo");
-}
-
-function renderEvolution() {
-  renderLearningHeadline();
-  renderTopbarLearning();  // re-render idempotente: el badge "Aprendizaje" sigue leyendo _learningMaturity (/api/learning-maturity), NUNCA _evolution -- solo "Confianza" usa _evolution
-  const nd = (v, suf = "") => (v === null || v === undefined) ? '<span class="dim">No disponible</span>' : (v + suf);
-  const ndPct = (v) => (v === null || v === undefined) ? '<span class="dim">No disponible</span>' : (fmtNum(v) + "%");
-  const precEl = document.getElementById("evolucion-precision");
-  const finEl = document.getElementById("evolucion-financiero");
-  const aprEl = document.getElementById("evolucion-aprendizaje");
-  if (!precEl || !finEl || !aprEl) return;
-
-  if (!_evolution) {
-    precEl.innerHTML = finEl.innerHTML = aprEl.innerHTML = `<div class="empty-state">No disponible.</div>`;
-    return;
-  }
-
-  const p = _evolution.precision_del_modelo;
-  precEl.innerHTML = `
-    <div class="detail-grid">
-      <div class="detail-metric"><div class="detail-metric-label">Aciertos hoy</div><div class="detail-metric-value">${nd(p.aciertos_hoy)}</div></div>
-      <div class="detail-metric"><div class="detail-metric-label">Aciertos de la semana</div><div class="detail-metric-value">${nd(p.aciertos_semana)}</div></div>
-      <div class="detail-metric"><div class="detail-metric-label">Aciertos del mes</div><div class="detail-metric-value">${nd(p.aciertos_mes)}</div></div>
-      <div class="detail-metric"><div class="detail-metric-label">Aciertos históricos</div><div class="detail-metric-value">${nd(p.aciertos_historico)}</div></div>
-      <div class="detail-metric"><div class="detail-metric-label">Precisión histórica</div><div class="detail-metric-value">${ndPct(p.precision_historica_pct)}</div></div>
-      <div class="detail-metric"><div class="detail-metric-label">Muestra</div><div class="detail-metric-value">${nd(p.muestra_historica)}</div></div>
-    </div>
-    <div class="detail-note" style="margin-top:8px">"Acierto" = el símbolo alcanzó una EXPLOSION real (misma definición del Clasificador del proyecto). No es lo mismo que rentabilidad.</div>`;
-
-  const f = _evolution.rendimiento_financiero;
-  finEl.innerHTML = `
-    <div class="detail-grid">
-      <div class="detail-metric"><div class="detail-metric-label">Win Rate (financiero)</div><div class="detail-metric-value">${ndPct(f.win_rate_financiero_pct)}</div></div>
-      <div class="detail-metric"><div class="detail-metric-label">Profit Factor</div><div class="detail-metric-value">${(f.profit_factor === null || f.profit_factor === undefined) ? '<span class="dim">No disponible</span>' : fmtNum(f.profit_factor, 2)}</div></div>
-      <div class="detail-metric"><div class="detail-metric-label">Ganancia promedio</div><div class="detail-metric-value">${ndPct(f.ganancia_promedio_pct)}</div></div>
-      <div class="detail-metric"><div class="detail-metric-label">Pérdida promedio</div><div class="detail-metric-value">${ndPct(f.perdida_promedio_pct)}</div></div>
-      <div class="detail-metric"><div class="detail-metric-label">Expectativa matemática</div><div class="detail-metric-value">${ndPct(f.expectativa_pct)}</div></div>
-      <div class="detail-metric"><div class="detail-metric-label">Drawdown <span class="dim" style="font-size:10px">(hipotético)</span></div><div class="detail-metric-value">${(f.drawdown_hipotetico_pct === null || f.drawdown_hipotetico_pct === undefined) ? '<span class="dim">No disponible</span>' : fmtNum(f.drawdown_hipotetico_pct) + " pts"}</div></div>
-      <div class="detail-metric"><div class="detail-metric-label">Mejor operación</div><div class="detail-metric-value">${ndPct(f.mejor_operacion_global_pct)}</div></div>
-      <div class="detail-metric"><div class="detail-metric-label">Peor operación</div><div class="detail-metric-value">${ndPct(f.peor_operacion_global_pct)}</div></div>
-    </div>
-    <div class="detail-note" style="margin-top:8px">El drawdown es una curva de capital <b>hipotética</b> -- no representa dinero real, Atlas no gestiona una cuenta.</div>`;
-
-  // Memory Engine v1 -- SOLO diagnóstico interno (2026-08-15). NO es la
-  // Madurez de Atlas (eso vive en #madurez-ejes, desde /api/learning-maturity).
-  const a = _evolution.evolucion_aprendizaje;
-  const condiciones = (a.memory_engine_conditions_reliable === null || a.memory_engine_conditions_reliable === undefined)
-    ? '<span class="dim">No disponible</span>'
-    : `${a.memory_engine_conditions_reliable} / ${a.memory_engine_conditions_total}`;
-  aprEl.innerHTML = `
-    <div class="detail-note" style="margin-bottom:8px">⚠️ Diagnóstico interno del Memory Engine v1 -- NO es la Madurez de Atlas. Ver "🧠 Madurez del aprendizaje" más abajo para la métrica real.</div>
-    <div class="detail-grid">
-      <div class="detail-metric"><div class="detail-metric-label">Trayectorias almacenadas</div><div class="detail-metric-value">${nd(a.trayectorias_almacenadas)}</div></div>
-      <div class="detail-metric"><div class="detail-metric-label">Muestras analizadas</div><div class="detail-metric-value">${nd(a.muestras_analizadas)}</div></div>
-      <div class="detail-metric"><div class="detail-metric-label">Casos similares acumulados</div><div class="detail-metric-value">${nd(a.casos_similares_acumulados)}</div></div>
-      <div class="detail-metric"><div class="detail-metric-label">Condiciones con evidencia (Memory Engine v1)</div><div class="detail-metric-value">${condiciones}</div></div>
-      <div class="detail-metric"><div class="detail-metric-label">Cobertura de condiciones (Memory Engine v1)</div><div class="detail-metric-value">${ndPct(a.memory_engine_condition_coverage_pct)}</div></div>
-      <div class="detail-metric"><div class="detail-metric-label">Última actualización</div><div class="detail-metric-value">${nd(a.ultima_actualizacion)}</div></div>
-    </div>
-    <div class="detail-note" style="margin-top:8px">${a.memory_engine_nota || ""}</div>`;
-}
-
-// Marcador Histórico de Explosiones (2026-08-09). Todo dato real de
-// /api/explosion-history; lo que no tiene evidencia dice "No disponible".
-let _explosionHistory = null;
-
-async function fetchExplosionHistory() {
-  try {
-    const res = await fetch("/api/explosion-history");
-    if (!res.ok) throw new Error("HTTP " + res.status);
-    _explosionHistory = await res.json();
-  } catch (err) {
-    console.error("fetchExplosionHistory:", err);
-    _explosionHistory = null;
-  }
-  renderExplosionHistory();
-}
-
-function renderExplosionHistory() {
-  const calEl = document.getElementById("explosiones-calidad");
-  const bandEl = document.getElementById("explosiones-bandas");
-  const antEl = document.getElementById("explosiones-anticipacion");
-  const listEl = document.getElementById("explosiones-lista");
-  if (!calEl || !bandEl || !antEl || !listEl) return;
-  if (!_explosionHistory) {
-    calEl.innerHTML = bandEl.innerHTML = antEl.innerHTML = listEl.innerHTML = `<div class="empty-state">No disponible.</div>`;
-    return;
-  }
-  const nd = (v, suf = "") => (v === null || v === undefined) ? '<span class="dim">No disponible</span>' : (v + suf);
-  const cal = (_explosionHistory.por_banda && _explosionHistory.por_banda.calidad) || {};
-  const lhCard = (icon, label, value, sub) =>
-    `<div class="lh-card"><div class="lh-icon">${icon}</div><div class="lh-label">${label}</div><div class="lh-value">${value}</div>${sub ? `<div class="lh-sub">${sub}</div>` : ""}</div>`;
-  calEl.innerHTML =
-    lhCard("🔥", "Explosiones (≥30%)", nd(cal.eventos_incluidos), "no artefactos") +
-    lhCard("✅", "Limpias (start observado)", nd(cal.limpias_start_observado), "usables p/ anticipación") +
-    lhCard("⏭", "Pre-iniciadas", nd(cal.pre_iniciadas), "movimiento antes de la ventana") +
-    lhCard("🚫", "Artefactos excluidos", nd(cal.artefactos_excluidos), "datos imposibles, no contados");
-
-  // Bandas acumulativas
-  const bandas = (_explosionHistory.por_banda && _explosionHistory.por_banda.por_banda_acumulativa) || {};
-  const bandRow = (b) => {
-    const d = bandas[b];
-    if (!d || d.n === 0) return `<div class="detail-metric"><div class="detail-metric-label">≥ +${b}%</div><div class="detail-metric-value"><span class="dim">No disponible</span></div></div>`;
-    return `<div class="detail-metric"><div class="detail-metric-label">≥ +${b}%</div><div class="detail-metric-value">${d.n} <span class="dim" style="font-size:11px">casos · máx ${d.max_absoluto_pct}%</span></div></div>`;
-  };
-  bandEl.innerHTML = `<div class="detail-grid">${["30","50","100","150","200"].map(bandRow).join("")}</div>
-    <div class="detail-note" style="margin-top:8px">Acumulativo: "≥+50%" incluye las que superaron +50%. Máximo intradía real de la trayectoria (5 min). n explícito.</div>`;
-
-  // Estudio A/B/C/D
-  const grpEl = document.getElementById("explosiones-grupos");
-  const disEl = document.getElementById("explosiones-discriminacion");
-  const gs = _explosionHistory.grupos;
-  if (grpEl && disEl && gs) {
-    const defs = gs.definiciones || {};
-    const g = gs.grupos || {};
-    const grpCard = (key) => {
-      const d = g[key] || {};
-      const b = d.bandas_alcanzadas || {};
-      return `<div class="lh-card">
-        <div class="lh-icon">${key}</div>
-        <div class="lh-label">${defs[key] || key}</div>
-        <div class="lh-value">${nd(d.n)}${d.muestra_suficiente === false ? ' <span class="dim" style="font-size:11px">muestra chica</span>' : ""}</div>
-        <div class="lh-sub">≥50%: ${nd(b["50"])} · ≥100%: ${nd(b["100"])}${d.mediana_duracion_min != null ? " · dur " + d.mediana_duracion_min + "min" : ""}</div>
-      </div>`;
-    };
-    grpEl.innerHTML = `<div class="learning-headline">${["A","B","C","D"].map(grpCard).join("")}</div>`;
-
-    const disc = (gs.discriminacion_A_vs_B && gs.discriminacion_A_vs_B.features) || {};
-    const adv = gs.discriminacion_A_vs_B && gs.discriminacion_A_vs_B.advertencia;
-    const featRow = (f) => {
-      const d = disc[f] || {};
-      return `<tr><td>${f}</td>
-        <td style="text-align:right">${nd(d.A_mediana)} <span class="dim" style="font-size:10px">(n${nd(d.A_n)})</span></td>
-        <td style="text-align:right">${nd(d.B_mediana)} <span class="dim" style="font-size:10px">(n${nd(d.B_n)})</span></td></tr>`;
-    };
-    disEl.innerHTML = `<h3 style="margin:0 0 6px">Discriminación: A (continuó) vs B (perdió momentum)</h3>
-      <div style="overflow-x:auto"><table class="data-table">
-      <thead><tr><th>Característica (snapshot +10min)</th><th style="text-align:right">A mediana</th><th style="text-align:right">B mediana</th></tr></thead>
-      <tbody>${Object.keys(disc).map(featRow).join("")}</tbody></table></div>
-      ${adv ? `<div class="detail-note" style="margin-top:8px;color:var(--amber,#e0a800)">⚠️ ${adv}</div>`
-            : `<div class="detail-note" style="margin-top:8px">Diferencias de mediana entre continuación y fallo, con n por característica.</div>`}`;
-  }
-
-  // Anticipación
-  const a = _explosionHistory.anticipacion || {};
-  if (!a.n) {
-    antEl.innerHTML = `<div class="empty-state">Evidencia insuficiente para medir anticipación.</div>`;
-  } else {
-    antEl.innerHTML = `<div class="detail-grid">
-      <div class="detail-metric"><div class="detail-metric-label">Casos (n)</div><div class="detail-metric-value">${a.n}${a.muestra_suficiente ? "" : ' <span class="dim" style="font-size:11px">muestra chica</span>'}</div></div>
-      <div class="detail-metric"><div class="detail-metric-label">Mediana</div><div class="detail-metric-value">${nd(a.mediana_min, " min")}</div></div>
-      <div class="detail-metric"><div class="detail-metric-label">Media</div><div class="detail-metric-value">${nd(a.media_min, " min")}</div></div>
-      <div class="detail-metric"><div class="detail-metric-label">p25 / p75</div><div class="detail-metric-value">${nd(a.p25_min)} / ${nd(a.p75_min)} min</div></div>
-      <div class="detail-metric"><div class="detail-metric-label">% ≥ 10 min</div><div class="detail-metric-value">${nd(a.pct_ge_10min, "%")}</div></div>
-      <div class="detail-metric"><div class="detail-metric-label">% ≥ 15 min</div><div class="detail-metric-value">${nd(a.pct_ge_15min, "%")}</div></div>
-    </div>
-    <div class="detail-note" style="margin-top:8px">${a.definicion}. Es la anticipación REALMENTE medida, no una promesa. Resolución: 5 minutos.</div>`;
-  }
-
-  // Lista de explosiones
-  const eventos = _explosionHistory.eventos || [];
-  if (!eventos.length) {
-    listEl.innerHTML = `<div class="empty-state">Sin explosiones ≥30% en el histórico disponible.</div>`;
-  } else {
-    const rows = eventos.slice(0, 40).map(e => {
-      const h = e.hitos || {};
-      const hito = (m) => h[m] && h[m].alcanzado ? (h[m].hora_et || "antes") : "—";
-      return `<tr>
-        <td>${e.symbol}</td><td>${e.date}</td>
-        <td>${e.quality === "limpia" ? "✅" : (e.quality === "pre_iniciada" ? "⏭" : "?")}</td>
-        <td style="text-align:right;font-weight:600">+${e.max_return_pct}%</td>
-        <td>${nd(e.movimiento_inicio_hora_et)}</td>
-        <td>${hito("30")}</td><td>${hito("100")}</td>
-        <td>${nd(e.max_hora_et)}</td>
-        <td>${nd(e.duracion_movimiento_min, " min")}</td>
-      </tr>`;
-    }).join("");
-    listEl.innerHTML = `<div style="overflow-x:auto"><table class="data-table">
-      <thead><tr><th>Símbolo</th><th>Día</th><th>Cal.</th><th style="text-align:right">Máx</th><th>Inicio ET</th><th>+30% ET</th><th>+100% ET</th><th>Pico ET</th><th>Duración</th></tr></thead>
-      <tbody>${rows}</tbody></table></div>
-    <div class="detail-note" style="margin-top:8px">Cal.: ✅ limpia (start observado) · ⏭ pre-iniciada (movimiento anterior a la ventana). Horas en ET, reales de la serie de 5 min. "—" = hito no alcanzado.</div>`;
-  }
-}
-
-// 📡 Marcador Histórico Tradier (2026-08-18, aprendizaje unificado, pedido
-// explícito del usuario) -- sistema NUEVO y en paralelo al Marcador
-// Histórico de arriba (ese es Yahoo/exit_journal); este viene del radar
-// Tradier en vivo (CAPA1/2, /api/radar-explosion-bands), solo resultados
-// FINALES y CONFIABLES (ver filtro de calidad -- datos sospechosos siguen
-// detectándose, solo quedan fuera de esta estadística).
-let _explosionBandsTradier = null;
-
-async function fetchExplosionBandsTradier() {
-  try {
-    const res = await fetch("/api/radar-explosion-bands");
-    if (!res.ok) throw new Error("HTTP " + res.status);
-    _explosionBandsTradier = await res.json();
-  } catch (err) {
-    console.error("fetchExplosionBandsTradier:", err);
-    _explosionBandsTradier = null;
-  }
-  renderExplosionBandsTradier();
-}
-
-function renderExplosionBandsTradier() {
-  const calEl = document.getElementById("explosiones-tradier-calidad");
-  const bandEl = document.getElementById("explosiones-tradier-bandas");
-  if (!calEl || !bandEl) return;
-  if (!_explosionBandsTradier) {
-    calEl.innerHTML = bandEl.innerHTML = `<div class="empty-state">No disponible.</div>`;
-    return;
-  }
-  const nd = (v, suf = "") => (v === null || v === undefined) ? '<span class="dim">No disponible</span>' : (v + suf);
-  const lhCard = (icon, label, value, sub) =>
-    `<div class="lh-card"><div class="lh-icon">${icon}</div><div class="lh-label">${label}</div><div class="lh-value">${value}</div>${sub ? `<div class="lh-sub">${sub}</div>` : ""}</div>`;
-
-  const n = _explosionBandsTradier.n_total_evaluado || 0;
-  if (!n) {
-    calEl.innerHTML = lhCard("📡", "Resultados finales confiables", "0", "todavía sin cierres del día evaluados");
-    bandEl.innerHTML = `<div class="empty-state">Sin resultados confiables todavía -- vuelve tras el cierre de la próxima sesión.</div>`;
-    return;
-  }
-  calEl.innerHTML = lhCard("📡", "Resultados finales confiables", n, "detección Tradier, cierre del día ya evaluado");
-
-  const bandas = _explosionBandsTradier.por_banda_acumulativa || {};
-  const bandRow = (b) => {
-    const d = bandas[b];
-    if (!d || d.n === 0) return `<div class="detail-metric"><div class="detail-metric-label">≥ +${b}%</div><div class="detail-metric-value"><span class="dim">No disponible</span></div></div>`;
-    return `<div class="detail-metric"><div class="detail-metric-label">≥ +${b}%</div><div class="detail-metric-value">${d.n} <span class="dim" style="font-size:11px">casos · máx ${d.max_absoluto_pct}%</span></div></div>`;
-  };
-  bandEl.innerHTML = `<div class="detail-grid">${["10", "20", "30", "50", "100", "150", "200"].map(bandRow).join("")}</div>
-    <div class="detail-note" style="margin-top:8px">Acumulativo: "≥+50%" incluye las que superaron +50%. Máximo real DESPUÉS de la detección (no el día completo). n explícito, solo evidencia confiable.</div>`;
-}
-
-// 📡 Señales -- validación en vivo. Todo real de /api/signals/*. "Sin señales"
-// cuando no hay datos reales; nunca ejemplos falsos.
-let _signalsStats = null, _signalsActive = null, _signalsResults = null;
-
-async function fetchSignals() {
-  try {
-    const [st, ac, re] = await Promise.all([
-      fetch("/api/signals/stats").then(r => r.json()),
-      fetch("/api/signals/active").then(r => r.json()),
-      fetch("/api/signals/results").then(r => r.json()),
-    ]);
-    _signalsStats = st; _signalsActive = ac.active || []; _signalsResults = re.results || [];
-  } catch (err) {
-    console.error("fetchSignals:", err);
-    _signalsStats = null; _signalsActive = null; _signalsResults = null;
-  }
-  renderSignals();
-}
-
-function renderSignals() {
-  const statsEl = document.getElementById("senales-stats");
-  const bandsEl = document.getElementById("senales-bandas");
-  const actEl = document.getElementById("senales-activas");
-  const resEl = document.getElementById("senales-resultados");
-  if (!statsEl || !bandsEl || !actEl || !resEl) return;
-  const nd = (v, suf = "") => (v === null || v === undefined) ? '<span class="dim">No disponible</span>' : (v + suf);
-  const s = _signalsStats;
-
-  // Tarjetas de estadísticas -- SIEMPRE con n. Acierto sin n no se muestra.
-  const card = (icon, label, value, sub) =>
-    `<div class="lh-card"><div class="lh-icon">${icon}</div><div class="lh-label">${label}</div><div class="lh-value">${value}</div>${sub ? `<div class="lh-sub">${sub}</div>` : ""}</div>`;
-  if (!s || s.total_senales === 0) {
-    statsEl.innerHTML = card("📡", "Señales detectadas", "0", "sin señales todavía");
-    bandsEl.innerHTML = actEl.innerHTML = resEl.innerHTML = `<div class="empty-state">Sin señales todavía. Cuando abra el premarket, Atlas empezará a registrar las oportunidades reales que detecte.</div>`;
-    return;
-  }
-  const tasa = (s.tasa_acierto_pct === null || s.tasa_acierto_pct === undefined)
-    ? '<span class="dim">No disponible</span>'
-    : `${fmtNum(s.tasa_acierto_pct)}%`;
-  statsEl.innerHTML =
-    card("🔥", "Señales detectadas", nd(s.total_senales)) +
-    card("📡", "Activas", nd(s.activas), "observándose") +
-    card("🎯", "Aciertos", nd(s.aciertos), `n=${s.n_evaluadas}`) +
-    card("❌", "Fallos", nd(s.fallos), "") +
-    card("📊", "% acierto", tasa, `n=${s.n_evaluadas}${s.muestra_suficiente ? "" : " · " + (s.aviso_muestra || "muestra chica")}`) +
-    card("⏱", "Anticipación a +30%", nd(s.anticipacion_a_30pct.mediana_min, " min"), `mediana · n=${s.anticipacion_a_30pct.n}${s.anticipacion_a_30pct.aviso ? " · " + s.anticipacion_a_30pct.aviso : ""}`);
-
-  const p = s.pct_alcanzo || {};
-  const bandCell = (k, label) => `<div class="detail-metric"><div class="detail-metric-label">${label}</div><div class="detail-metric-value">${nd(p[k], "%")}</div></div>`;
-  bandsEl.innerHTML = `<div class="detail-grid">
-    ${bandCell("10pct", "% ≥ +10%")}${bandCell("30pct", "% ≥ +30%")}${bandCell("50pct", "% ≥ +50%")}
-    ${bandCell("100pct", "% ≥ +100%")}${bandCell("150pct", "% ≥ +150%")}${bandCell("200pct", "% ≥ +200%")}
-  </div><div class="detail-note" style="margin-top:8px">Sobre ${s.n_evaluadas} señales evaluadas. ${s.muestra_suficiente ? "" : "Muestra chica: interpretar con cautela."}</div>`;
-
-  // Activas
-  if (!_signalsActive || !_signalsActive.length) {
-    actEl.innerHTML = `<div class="empty-state">Ninguna señal activa en este momento.</div>`;
-  } else {
-    actEl.innerHTML = `<div style="overflow-x:auto"><table class="data-table">
-      <thead><tr><th>Ticker</th><th>Día</th><th>Sesión</th><th>Detección</th><th style="text-align:right">Precio</th><th style="text-align:right">Score</th><th>Dirección</th><th>Similar a</th><th>Estado</th></tr></thead>
-      <tbody>${_signalsActive.slice(0, 50).map(x => {
-        const dir = DIRECTION_STYLE[(x.features || {}).direction] || DIRECTION_STYLE.INDEFINIDA;
-        return `<tr>
-        <td>${x.ticker}</td><td>${x.market_date}</td><td>${x.session}</td>
-        <td>${fmtTimeSec(x.detected_at)} ET</td>
-        <td style="text-align:right">${nd(x.price_at_detection)}</td>
-        <td style="text-align:right">${nd(x.score)}</td>
-        <td style="color:${dir.color}">${dir.label}</td>
-        <td>${x.historical_group || "—"} <span class="dim" style="font-size:10px">(${nd(x.similar_historical_cases)})</span></td>
-        <td>${x.state}</td></tr>`;
-      }).join("")}</tbody></table></div>`;
-  }
-
-  // Resultados
-  if (!_signalsResults || !_signalsResults.length) {
-    resEl.innerHTML = `<div class="empty-state">Sin resultados todavía (ninguna señal cerró su día).</div>`;
-  } else {
-    resEl.innerHTML = `<div style="overflow-x:auto"><table class="data-table">
-      <thead><tr><th>Ticker</th><th>Día</th><th>Dirección al detectar</th><th>Resultado</th><th style="text-align:right">Máx</th><th>min→+30%</th><th>min→+100%</th><th>Fin impulso</th></tr></thead>
-      <tbody>${_signalsResults.slice(0, 100).map(x => {
-        const dir = DIRECTION_STYLE[x.direction] || DIRECTION_STYLE.INDEFINIDA;
-        return `<tr>
-        <td>${x.ticker}</td><td>${x.market_date}</td>
-        <td style="color:${dir.color}">${dir.label}</td>
-        <td>${x.result === "ACIERTO" ? "🎯 Acierto" : (x.result === "FALLO" ? "❌ Fallo" : "— Sin datos")}</td>
-        <td style="text-align:right">${x.max_return_pct != null ? "+" + fmtNum(x.max_return_pct) + "%" : "—"}</td>
-        <td>${nd(x.minutes_to_30pct, " min")}</td><td>${nd(x.minutes_to_100pct, " min")}</td>
-        <td>${x.momentum_end_at ? fmtTimeSec(x.momentum_end_at) + " ET" : "—"}</td></tr>`;
-      }).join("")}</tbody></table></div>`;
-  }
-}
-
-// 🧠 Estudio Histórico -- job de fondo. Todo real de /api/market-study.
-let _estudio = null;
-
-async function fetchEstudio() {
-  try {
-    const res = await fetch("/api/market-study");
-    if (!res.ok) throw new Error("HTTP " + res.status);
-    _estudio = await res.json();
-  } catch (err) {
-    console.error("fetchEstudio:", err);
-    _estudio = null;
-  }
-  renderEstudio();
-}
-
-function renderEstudio() {
-  const stEl = document.getElementById("estudio-estado");
-  const bandEl = document.getElementById("estudio-bandas");
-  const detEl = document.getElementById("estudio-detalle");
-  if (!stEl || !bandEl || !detEl) return;
-  const nd = (v, suf = "") => (v === null || v === undefined) ? '<span class="dim">No disponible</span>' : (v + suf);
-  if (!_estudio || !_estudio.status) {
-    stEl.innerHTML = bandEl.innerHTML = detEl.innerHTML = `<div class="empty-state">No disponible.</div>`;
-    return;
-  }
-  const s = _estudio.status;
-  const stateBadge = {
-    RUNNING: '<span class="pill-green">EJECUTANDO</span>', COMPLETE: '<span class="pill-green">COMPLETO</span>',
-    PAUSED: '<span class="pill-amber">PAUSADO</span>', ERROR: '<span class="pill-red">ERROR</span>',
-    IDLE: '<span class="pill-dim">EN ESPERA</span>',
-  }[s.state] || `<span class="pill-dim">${s.state}</span>`;
-  const card = (icon, label, value, sub) =>
-    `<div class="lh-card"><div class="lh-icon">${icon}</div><div class="lh-label">${label}</div><div class="lh-value">${value}</div>${sub ? `<div class="lh-sub">${sub}</div>` : ""}</div>`;
-  const fmtN = (v) => (v === null || v === undefined) ? "—" : Number(v).toLocaleString("es");
-  stEl.innerHTML =
-    card("⚙", "Estado", stateBadge, `proveedor: ${s.provider || "—"}`) +
-    card("🌐", "Universo", fmtN(s.universe_total), "acciones US (amplio)") +
-    card("✅", "Procesadas", fmtN(s.procesados), `pendientes: ${fmtN(s.pendientes)}`) +
-    card("📈", "Progreso", s.progreso_pct === null ? "—" : s.progreso_pct + "%", "") +
-    card("💥", "Explosiones", fmtN(s.explosiones_totales), `en Racional: ${fmtN(s.en_racional)} · fuera: ${fmtN(s.fuera_de_racional)}`) +
-    card("🕐", "Último avance", s.ultimo_avance_at ? fmtTimeSec(s.ultimo_avance_at) + " ET" : "—", `${nd(s.velocidad_symbols_min)}/min · errores ${s.errores || 0} · retries ${s.retries || 0}`);
-
-  const e = s.explosiones || {};
-  const bandCell = (k) => `<div class="detail-metric"><div class="detail-metric-label">≥ ${k}%</div><div class="detail-metric-value">${fmtN(e["+" + k])}</div></div>`;
-  bandEl.innerHTML = `<div class="detail-grid">${["30","50","100","150","200"].map(bandCell).join("")}</div>
-    <div class="detail-note" style="margin-top:8px">Acumulativo: "≥+100%" incluye las que superaron +100%. Universo amplio (no solo Racional). Último símbolo: ${s.ultimo_simbolo || "—"}.</div>`;
-
-  const top = (_estudio.top_explosions || []).slice(0, 40);
-  if (!top.length) {
-    detEl.innerHTML = `<div class="empty-state">Sin explosiones registradas todavía. El job de fondo las irá acumulando.</div>`;
-  } else {
-    detEl.innerHTML = `<div style="overflow-x:auto"><table class="data-table">
-      <thead><tr><th>Ticker</th><th>Empresa</th><th>Exchange</th><th>Fecha</th><th style="text-align:right">Máx</th><th>Banda</th><th style="text-align:right">Gap apertura</th><th>Racional</th></tr></thead>
-      <tbody>${top.map(x => `<tr>
-        <td title="${x.tradingview_symbol || x.ticker}">${x.tradingview_symbol || x.ticker}</td>
-        <td>${x.name || '<span class="dim">—</span>'}</td>
-        <td>${x.exchange || '<span class="dim">—</span>'}</td>
-        <td>${x.date}</td>
-        <td style="text-align:right;font-weight:600">+${fmtNum(x.max_intraday_pct)}%</td>
-        <td>${x.band}</td>
-        <td style="text-align:right">${x.gap_open_pct != null ? fmtNum(x.gap_open_pct) + "%" : "—"}</td>
-        <td>${x.available_in_racional ? "✅ sí" : "— no"}</td></tr>`).join("")}</tbody></table></div>
-    <div class="detail-note" style="margin-top:8px">Identidad = ticker + exchange + empresa (evita confundir homónimos; símbolo con prefijo TradingView). Gap de apertura = feature disponible EN la detección (leakage-safe). El máximo es RESULTADO, en tabla separada.</div>`;
-  }
-}
-
-let _radarUniverso = null;
-let _radarInforme = null;
-
-async function fetchRadarUniverso() {
-  try {
-    const res = await fetch("/api/radar-universo");
-    if (!res.ok) throw new Error("HTTP " + res.status);
-    _radarUniverso = await res.json();
-  } catch (err) {
-    console.error("fetchRadarUniverso:", err);
-    _radarUniverso = null;
-  }
-  try {
-    const res2 = await fetch("/api/radar-informe-dia");
-    if (res2.ok) _radarInforme = await res2.json();
-  } catch (err) {
-    console.error("fetchRadarInforme:", err);
-  }
-  renderRadarUniverso();
-}
-
-function renderRadarUniverso() {
-  const stEl = document.getElementById("radar-universo-estado");
-  const candEl = document.getElementById("radar-universo-candidatas");
-  const infEl = document.getElementById("radar-universo-informe");
-  if (!stEl || !candEl || !infEl) return;
-  const fmtN = (v) => (v === null || v === undefined) ? "—" : Number(v).toLocaleString("es");
-  if (!_radarUniverso || !_radarUniverso.status) {
-    stEl.innerHTML = candEl.innerHTML = infEl.innerHTML = `<div class="empty-state">No disponible.</div>`;
-    return;
-  }
-  const s = _radarUniverso.status;
-  const stateBadge = {
-    RUNNING: '<span class="pill-green">EJECUTANDO</span>', EOD_COMPLETO: '<span class="pill-green">CIERRE EVALUADO</span>',
-    ERROR: '<span class="pill-red">ERROR</span>', IDLE: '<span class="pill-dim">EN ESPERA</span>',
-  }[s.state] || `<span class="pill-dim">${s.state || "—"}</span>`;
-  const card = (icon, label, value, sub) =>
-    `<div class="lh-card"><div class="lh-icon">${icon}</div><div class="lh-label">${label}</div><div class="lh-value">${value}</div>${sub ? `<div class="lh-sub">${sub}</div>` : ""}</div>`;
-  stEl.innerHTML =
-    card("⚙", "Estado", stateBadge, `sesión: ${s.session_actual || "—"}`) +
-    card("🔁", "Barridos", fmtN(s.sweeps_total), `ok: ${fmtN(s.sweeps_ok)} · error: ${fmtN(s.sweeps_error)}`) +
-    card("🕐", "Último barrido", s.ultimo_sweep_at ? fmtTimeSec(s.ultimo_sweep_at) + " ET" : "—", s.ultimo_sweep_duracion_s ? `${s.ultimo_sweep_duracion_s}s` : "") +
-    card("🎯", "Candidatas hoy", fmtN(s.candidatas_hoy), s.market_date_actual || "");
-
-  // Universo de aprendizaje vs. universo operable (2026-08-18, pedido
-  // explícito del usuario): la tarjeta de arriba ("Candidatas hoy") sigue
-  // mostrando TODO lo que Atlas detectó y aprendió, sin límite -- esta
-  // nota audita cuántas de esas quedan disponibles en Racional para
-  // operar, ya que la tabla de abajo viene filtrada server-side.
-  const racionalConteoUnivEl = document.getElementById("radar-universo-racional-conteo");
-  if (racionalConteoUnivEl) {
-    const totalHoy = _radarUniverso.total_detectadas_hoy;
-    const totalRacional = _radarUniverso.total_disponibles_racional;
-    racionalConteoUnivEl.textContent = (totalHoy != null && totalRacional != null)
-      ? `Atlas detectó ${totalHoy} candidatas hoy (universo completo, para aprendizaje) · ${totalRacional} disponibles en Racional (esta tabla) · ${totalHoy - totalRacional} quedaron fuera por no estar en Racional (siguen guardadas para aprendizaje).`
-      : "";
-  }
-
-  const candidatas = (_radarUniverso.candidatas_hoy || []).slice(0, 40);
-  if (!candidatas.length) {
-    candEl.innerHTML = `<div class="empty-state">Sin candidatas detectadas todavía en el día actual.</div>`;
-  } else {
-    candEl.innerHTML = `<div style="overflow-x:auto"><table class="data-table">
-      <thead><tr><th>Ticker</th><th>Detectada</th><th style="text-align:right">Precio</th><th style="text-align:right">Cambio %</th><th style="text-align:right">RVOL</th><th>Puertas</th></tr></thead>
-      <tbody>${candidatas.map(c => `<tr>
-        <td>${c.ticker}</td><td>${fmtTimeSec(c.detected_at)} ET</td>
-        <td style="text-align:right">${c.price_at_detection != null ? "$" + fmtNum(c.price_at_detection) : "—"}</td>
-        <td style="text-align:right;font-weight:600">${c.change_pct_at_detection != null ? fmtNum(c.change_pct_at_detection) + "%" : "—"}</td>
-        <td style="text-align:right">${c.relative_volume_at_detection != null ? fmtNum(c.relative_volume_at_detection) + "x" : "—"}</td>
-        <td>${(c.gates_fired || []).map(g => g.name).join(", ")}</td></tr>`).join("")}</tbody></table></div>`;
-  }
-
-  const resumen = _radarInforme && _radarInforme.resumen;
-  if (!resumen) {
-    infEl.innerHTML = `<div class="empty-state">El informe de cierre corre automáticamente cuando termina el mercado regular.</div>`;
-  } else {
-    infEl.innerHTML = `<div class="detail-grid">
-      <div class="detail-metric"><div class="detail-metric-label">Candidatas</div><div class="detail-metric-value">${fmtN(resumen.n_candidatas)}</div></div>
-      <div class="detail-metric"><div class="detail-metric-label">≥ +20%</div><div class="detail-metric-value">${fmtN(resumen.n_reached_20)}</div></div>
-      <div class="detail-metric"><div class="detail-metric-label">≥ +50%</div><div class="detail-metric-value">${fmtN(resumen.n_reached_50)}</div></div>
-      <div class="detail-metric"><div class="detail-metric-label">≥ +100%</div><div class="detail-metric-value">${fmtN(resumen.n_reached_100)}</div></div>
-      <div class="detail-metric"><div class="detail-metric-label">Falsas señales</div><div class="detail-metric-value">${fmtN(resumen.n_falsas_senales)}</div></div>
-      <div class="detail-metric"><div class="detail-metric-label">Detección tardía</div><div class="detail-metric-value">${fmtN(resumen.n_deteccion_tardia)}</div></div>
-    </div>
-    <div class="detail-note" style="margin-top:8px">"Detección tardía" = la acción ya había corrido la mayor parte del movimiento ANTES de que el radar la detectara -- no cuenta como buen acierto operativo aunque el día haya cerrado muy arriba.</div>`;
-  }
-
-  renderPrecisionMagnitud();
-}
-
-// Precisión de Magnitud (2026-08-20, aprobado por el usuario): predicción
-// congelada (mediana histórica en el momento en que la candidata se volvió
-// accionable por primera vez) vs. resultado real ya cerrado -- ver
-// candidate_registry.magnitud_precision_report(). Puramente de solo
-// lectura, mismo patrón que el resto del informe de cierre.
-function renderPrecisionMagnitud() {
-  const el = document.getElementById("radar-universo-precision-magnitud");
-  if (!el) return;
-  const hoy = _radarInforme && _radarInforme.precision_de_magnitud;
-  const acum = _radarInforme && _radarInforme.precision_de_magnitud_acumulada;
-  if (!hoy) { el.innerHTML = `<div class="empty-state">No disponible.</div>`; return; }
-
-  const fmtN = (v) => (v === null || v === undefined) ? "—" : Number(v).toLocaleString("es");
-  const card = (icon, label, value, sub) =>
-    `<div class="lh-card"><div class="lh-icon">${icon}</div><div class="lh-label">${label}</div><div class="lh-value">${value}</div>${sub ? `<div class="lh-sub">${sub}</div>` : ""}</div>`;
-
-  // Cuánto estudió Atlas + Madurez (2026-08-21, pedido explícito del
-  // usuario: "quiero que aparezca en el mismo panel" -- el % de acierto
-  // de magnitud sin el tamaño real de la muestra que lo respalda, y sin
-  // saber si Atlas ya aprendió lo suficiente, es un número suelto).
-  // `_learningMaturity` es la MISMA fuente que ya usa "Aprendizaje en
-  // Vivo" (/api/learning-maturity) -- nunca un cálculo nuevo, solo se
-  // reutiliza acá.
-  const lm = _learningMaturity;
-  const lmAcum = (lm && lm.acumulada) || {};
-  const madurez = (lm && lm.madurez) || {};
-  const cardsAprendizaje = lm ? (
-    card("🔎", "Estudiadas (acumulado)", fmtN(lmAcum.estudiadas), `${fmtN(lmAcum.dias)} días con resumen`) +
-    card("🧠", "Madurez del aprendizaje", madurez.estado || "Sin evidencia", madurez.eje_limitante ? `limita: ${madurez.eje_limitante}` : "")
-  ) : "";
-
-  const cards =
-    cardsAprendizaje +
-    card("🎯", "Aciertos hoy", fmtN(hoy.n_aciertos), `de ${fmtN(hoy.n_evaluables)} evaluables`) +
-    card("📊", "Precisión de magnitud (hoy)", hoy.precision_pct != null ? fmtNum(hoy.precision_pct) + "%" : "No disponible", `${fmtN(hoy.n_aciertos)}/${fmtN(hoy.n_evaluables)}`) +
-    card("📊", "Precisión de magnitud (histórica)", (acum && acum.precision_pct != null) ? fmtNum(acum.precision_pct) + "%" : "No disponible", (acum && acum.n_evaluables) ? `${fmtN(acum.n_aciertos)}/${fmtN(acum.n_evaluables)}` : "");
-
-  const filaHtml = (c) => `<tr class="${c.acierto ? "acierto-row-hit" : "acierto-row-miss"}">
-      <td>${c.ticker}</td>
-      <td style="text-align:right">${c.predicted_pct != null ? "≥" + fmtNum(c.predicted_pct) + "%" : "—"}</td>
-      <td class="dim">${c.frozen_at ? fmtTimeSec(c.frozen_at) + " ET" : "—"}</td>
-      <td style="text-align:right">${c.resultado_real_pct != null ? fmtPct(c.resultado_real_pct) : "—"}</td>
-      <td>${c.acierto ? '<span style="color:var(--green);font-weight:700">✅ Acierto</span>' : '<span style="color:var(--red);font-weight:700">❌ Falló</span>'}</td>
-    </tr>`;
-  const tablaHtml = (candidatas) => `<div style="overflow-x:auto"><table class="data-table">
-      <thead><tr><th>Ticker</th><th style="text-align:right">Predicción congelada</th><th>Congelada al</th><th style="text-align:right">Resultado real</th><th>Resultado</th></tr></thead>
-      <tbody>${candidatas.map(filaHtml).join("")}</tbody>
-    </table></div>`;
-
-  // Lista nombrada de TODOS los aciertos históricos (2026-08-23, pedido
-  // explícito del usuario: "los 6 aciertos que tuvo no están nombrados" --
-  // la tarjeta "histórica" solo mostraba un %, nunca los tickers reales
-  // detrás de ese número; y la tabla de arriba solo mostraba el día de
-  // HOY, que en fin de semana/fuera de sesión queda vacía). Sale del mismo
-  // `acumulada` ya usado en las tarjetas -- ningún cálculo nuevo, filtrado
-  // a `acierto===true` y ordenado más reciente primero.
-  const filaConFechaHtml = (c) => `<tr class="acierto-row-hit">
-      <td>${c.ticker}</td>
-      <td class="dim">${c.market_date || "—"}</td>
-      <td style="text-align:right">${c.predicted_pct != null ? "≥" + fmtNum(c.predicted_pct) + "%" : "—"}</td>
-      <td style="text-align:right">${c.resultado_real_pct != null ? fmtPct(c.resultado_real_pct) : "—"}</td>
-    </tr>`;
-  const tablaAciertosHtml = (candidatas) => {
-    const aciertos = (candidatas || []).filter(c => c.acierto)
-      .sort((a, b) => (b.market_date || "").localeCompare(a.market_date || "") || (b.frozen_at || "").localeCompare(a.frozen_at || ""));
-    if (!aciertos.length) return `<div class="empty-state">Sin aciertos registrados todavía.</div>`;
-    return `<div style="overflow-x:auto"><table class="data-table">
-      <thead><tr><th>Ticker</th><th>Fecha</th><th style="text-align:right">Predijo ≥</th><th style="text-align:right">Resultado real</th></tr></thead>
-      <tbody>${aciertos.map(filaConFechaHtml).join("")}</tbody>
-    </table></div>`;
-  };
-
-  // Rigor estadístico (2026-08-24, pedido explícito del usuario: "evitar
-  // que una muestra pequeña produzca una falsa impresión de precisión" +
-  // meta de 80% del 2026-08-23) -- `validation_state`/`wilson_ci`/
-  // `meta_confirmada` YA vienen calculados del backend
-  // (`candidate_registry.py`), acá solo se presentan -- ningún umbral
-  // nuevo ni cálculo propio en el frontend (se retiró la constante
-  // duplicada `MUESTRA_MINIMA_MAGNITUD` que vivía acá).
-  const METAS_CONFIANZA_PCT = 80;
-  const VALIDATION_STATE_STYLE = {
-    MUESTRA_INSUFICIENTE: { label: "🔴 MUESTRA INSUFICIENTE", color: "var(--red)" },
-    EN_VALIDACION: { label: "🟡 EN VALIDACIÓN", color: "var(--amber)" },
-    VALIDACION_ROBUSTA: { label: "🟢 VALIDACIÓN ROBUSTA", color: "var(--green)" },
-  };
-  const ventanaTexto = (v) => {
-    if (!v) return "—";
-    if (!v.datos_suficientes) return `${fmtN(v.n_evaluables)} datos disponibles`;
-    return fmtNum(v.precision_pct) + "%";
-  };
-  const progresoMetaHtml = (acum, etiqueta, ventanas) => {
-    if (!acum || acum.n_evaluables == null) {
-      return `<div class="empty-state">No disponible.</div>`;
-    }
-    const pct = acum.precision_pct;
-    const anchoBarra = pct != null ? Math.min(100, Math.max(0, 100 * pct / METAS_CONFIANZA_PCT)) : 0;
-    const vs = VALIDATION_STATE_STYLE[acum.validation_state] || { label: acum.validation_state || "—", color: "var(--text-dim)" };
-    const colorBarra = acum.meta_confirmada ? "var(--green)" : (acum.validation_state === "MUESTRA_INSUFICIENTE" ? "var(--text-faint)" : "var(--accent)");
-    const ic = acum.wilson_ci ? ` <span class="dim" style="font-size:11px">(IC 95%: ${fmtNum(acum.wilson_ci[0])}%–${fmtNum(acum.wilson_ci[1])}%)</span>` : "";
-    return `<div style="margin:6px 0 4px">
-      <div style="font-size:12px;color:var(--text-dim);margin-bottom:4px">
-        <span>${etiqueta}: <strong style="color:var(--text)">${pct != null ? fmtNum(pct) + "%" : "No disponible"}</strong>${ic} -- ${fmtN(acum.n_aciertos)} / ${fmtN(acum.n_evaluables)} evaluables</span>
-      </div>
-      <div style="background:var(--panel-2);border:1px solid var(--border);border-radius:4px;height:10px;overflow:hidden">
-        <div style="width:${anchoBarra}%;height:100%;background:${colorBarra}"></div>
-      </div>
-      <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:12px;margin-top:6px;color:var(--text-dim)">
-        <span style="color:${vs.color};font-weight:700">${vs.label}</span>
-        <span>Últimas 50: ${ventanaTexto(ventanas && ventanas.ultimas_50)}</span>
-        <span>Últimas 100: ${ventanaTexto(ventanas && ventanas.ultimas_100)}</span>
-        <span>Meta: ${METAS_CONFIANZA_PCT}%</span>
-        <span>Meta confirmada: <strong style="color:${acum.meta_confirmada ? "var(--green)" : "var(--text-dim)"}">${acum.meta_confirmada ? "SÍ" : "NO"}</strong></span>
-      </div>
-    </div>`;
-  };
-
-  // Desglose Racional (2026-08-23, pedido explícito del usuario: "esa
-  // info la quiero en atlas") -- mismo criterio de acierto, filtrado al
-  // universo operable real (atlas.data.universe), para juzgar el % de
-  // acierto contra lo que realmente se puede comprar, no contra todo el
-  // mercado estudiado -- mismo espíritu que "Aprendizaje en Vivo (Racional)".
-  const hoyRac = _radarInforme && _radarInforme.precision_de_magnitud_racional;
-  const acumRac = _radarInforme && _radarInforme.precision_de_magnitud_racional_acumulada;
-  const cardsRacional = hoyRac ? (
-    card("🎯", "Aciertos hoy (Racional)", fmtN(hoyRac.n_aciertos), `de ${fmtN(hoyRac.n_evaluables)} evaluables`) +
-    card("📊", "Precisión de magnitud hoy (Racional)", hoyRac.precision_pct != null ? fmtNum(hoyRac.precision_pct) + "%" : "No disponible", `${fmtN(hoyRac.n_aciertos)}/${fmtN(hoyRac.n_evaluables)}`) +
-    card("📊", "Precisión de magnitud histórica (Racional)", (acumRac && acumRac.precision_pct != null) ? fmtNum(acumRac.precision_pct) + "%" : "No disponible", (acumRac && acumRac.n_evaluables) ? `${fmtN(acumRac.n_aciertos)}/${fmtN(acumRac.n_evaluables)}` : "")
-  ) : "";
-
-  // Bug real encontrado en vivo (2026-08-23, fin de semana -- 0 predicciones
-  // cerradas HOY): un `return` acá adentro cortaba la función ANTES de
-  // llegar a la sección "Solo Racional" de abajo -- esa sección depende de
-  // datos ACUMULADOS (históricos), que siguen existiendo aunque hoy no haya
-  // nada nuevo. Ahora el caso "sin nada hoy" solo cambia la tabla de arriba
-  // por un aviso, nunca corta el resto del panel.
-  const tablaOAviso = (candidatas, aviso) =>
-    (candidatas && candidatas.length) ? tablaHtml(candidatas) : `<div class="empty-state">${aviso}</div>`;
-
-  // Evolución día por día (2026-08-23, pedido explícito del usuario:
-  // "tiene q hacerlo todo los dias. para que ese % baje o suba" -- un
-  // acumulado total no dice si mejora o empeora, hace falta ver cada día
-  // por separado). `n_estudiadas` = universo escaneado ESE día (misma
-  // fuente que "Aprendizaje en Vivo", ya registrado por el EOD).
-  const filaEvolucionHtml = (d) => `<tr>
-      <td>${d.market_date}</td>
-      <td style="text-align:right">${fmtN(d.n_estudiadas)}</td>
-      <td style="text-align:right">${fmtN(d.n_predicciones)}</td>
-      <td style="text-align:right">${fmtN(d.n_evaluables)}</td>
-      <td style="text-align:right">${fmtN(d.n_aciertos)}</td>
-      <td style="text-align:right;font-weight:700;color:${d.precision_pct != null ? "var(--accent)" : "var(--text-faint)"}">${d.precision_pct != null ? fmtNum(d.precision_pct) + "%" : "—"}</td>
-    </tr>`;
-  const tablaEvolucionHtml = (dias) => {
-    if (!dias || !dias.length) return `<div class="empty-state">Sin días registrados todavía.</div>`;
-    return `<div style="overflow-x:auto"><table class="data-table">
-      <thead><tr><th>Fecha</th><th style="text-align:right">Estudiadas</th><th style="text-align:right">Predicciones</th><th style="text-align:right">Evaluables</th><th style="text-align:right">Aciertos</th><th style="text-align:right">% Acierto</th></tr></thead>
-      <tbody>${dias.map(filaEvolucionHtml).join("")}</tbody>
-    </table></div>`;
-  };
-  const evolucion = _radarInforme && _radarInforme.precision_de_magnitud_por_dia;
-  const evolucionRac = _radarInforme && _radarInforme.precision_de_magnitud_por_dia_racional;
-  const ventanas = _radarInforme && _radarInforme.precision_de_magnitud_ventanas;
-  const ventanasRac = _radarInforme && _radarInforme.precision_de_magnitud_ventanas_racional;
-
-  el.innerHTML = `<div class="lh-grid" style="margin-bottom:10px">${cards}</div>
-    ${progresoMetaHtml(acum, "🎯 Precisión de magnitud histórica", ventanas)}
-    <h3 style="font-size:14px;margin-top:18px">📅 Evolución día por día <span class="dim" style="font-size:12px">(¿sube o baja? -- más reciente primero)</span></h3>
-    ${tablaEvolucionHtml(evolucion)}
-    <h3 style="margin-top:22px;font-size:14px">📋 Detalle de hoy</h3>
-    ${tablaOAviso(hoy.candidatas, "Sin predicciones de magnitud cerradas todavía hoy.")}
-    <div class="detail-note" style="margin-top:8px">"Predicción congelada" = la mediana histórica en el momento exacto en que la candidata se volvió accionable (🟢/🟡) por primera vez -- nunca se recalcula después. "Resultado real" = el CIERRE del día (no el máximo intradía, que sobrestima lo que un trader real puede capturar). "Acierto" = el cierre igualó o superó ese número. Solo cuenta resultados marcados confiables por Atlas (descarta ticks ilíquidos/datos sospechosos).</div>
-    <h3 style="margin-top:22px;font-size:14px">🏆 Todos los aciertos (histórico) <span class="dim" style="font-size:12px">(los tickers detrás del % de precisión histórica de arriba, más reciente primero)</span></h3>
-    ${tablaAciertosHtml(acum && acum.candidatas)}
-    <h3 style="margin-top:22px;font-size:14px">🎯 Solo Racional <span class="dim" style="font-size:12px">(mismo criterio, filtrado a lo que realmente podés comprar)</span></h3>
-    <div class="lh-grid" style="margin:10px 0">${cardsRacional}</div>
-    ${progresoMetaHtml(acumRac, "🎯 Precisión de magnitud histórica (Racional)", ventanasRac)}
-    <h3 style="margin-top:18px;font-size:14px">📅 Evolución día por día (Racional)</h3>
-    ${tablaEvolucionHtml(evolucionRac)}
-    <h3 style="margin-top:14px;font-size:14px">📋 Detalle de hoy (Racional)</h3>
-    ${tablaOAviso(hoyRac && hoyRac.candidatas, "Sin predicciones Racional cerradas todavía hoy.")}
-    <h3 style="margin-top:14px;font-size:14px">🏆 Todos los aciertos Racional (histórico)</h3>
-    ${tablaAciertosHtml(acumRac && acumRac.candidatas)}`;
-}
-
-let _alertStages = null;
-let _stageCardFilter = null;  // etapa clickeada en los cuadros de arriba (2026-08-20), o null = todas
-let _flujoSectorial = null;
-let _catalystEvents = null;
-let _seguridadAprendizaje = null;
-
-async function fetchAlertStages() {
+ * Reemplaza la interfaz/navegación anterior (18 vistas) por una sola
+ * pantalla: Oportunidades como bloque protagonista (con Aprendizaje/
+ * Aciertos en su encabezado) + 2 paneles secundarios (Universo, Mercado).
+ * Ningún endpoint backend cambió -- esta reescritura es puramente de
+ * presentación. El ranking/scoring de Oportunidades NO se modificó: se
+ * reutiliza exactamente el mismo criterio de agrupación que ya usaba la
+ * interfaz anterior (bucket por `estado_final`, luego detección más
+ * reciente primero) -- ver `FINAL_STATE_ORDER`. La lógica de Mercado
+ * (fetch/render/sparkline) es una copia literal de la versión anterior,
+ * sin cambios de datos ni de cálculo -- solo se acortó el intervalo de
+ * polling (ver `MERCADO_POLL_MS`).
+ */
+
+/* ---------------- helpers de formato (mínimos, sin dependencias) ---------------- */
+
+function fmtNum(v, decimals = 1) {
+  if (v == null || Number.isNaN(v)) return "--";
+  return Number(v).toFixed(decimals);
+}
+
+function fmtPct(v, decimals = 1) {
+  if (v == null || Number.isNaN(v)) return "--";
+  const sign = v > 0 ? "+" : "";
+  return `${sign}${Number(v).toFixed(decimals)}%`;
+}
+
+function fmtAge(seconds) {
+  if (seconds == null) return "--";
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes} min`;
+  return `${Math.round(minutes / 60)} h`;
+}
+
+/* ============================================================
+ * OPORTUNIDADES -- bloque principal
+ * Fuente: GET /api/radar-oportunidades (sin cambios de backend).
+ * ============================================================ */
+
+// Mismo orden ya usado por la interfaz anterior
+// (atlas_live/radar/priority_classifier.py) -- no es un ranking nuevo,
+// solo se reutiliza para decidir qué mostrar primero dentro de las 4-6
+// tarjetas visibles.
+const FINAL_STATE_ORDER = ["OPORTUNIDAD_PRIORITARIA", "VIGILAR", "PREPARACION", "NO_TOCAR"];
+const MAX_OPORTUNIDADES_VISIBLES = 6;
+
+let _oportunidades = [];
+
+async function fetchOportunidades() {
   try {
     const res = await fetch("/api/radar-oportunidades");
     if (!res.ok) throw new Error("HTTP " + res.status);
-    _alertStages = await res.json();
+    const data = await res.json();
+    _oportunidades = data.oportunidades || [];
   } catch (err) {
-    console.error("fetchAlertStages:", err);
-    _alertStages = null;
+    console.error("fetchOportunidades:", err);
   }
-  renderAlertStages();
+  renderOportunidades();
 }
 
-const ALERT_STAGE_STYLE = {
-  DETECCION_TEMPRANA: { label: "Detección Temprana", color: "var(--text-dim)" },
-  PREPARACION: { label: "Preparación", color: "var(--text-dim)" },
-  ALERTA_TEMPRANA: { label: "Alerta Temprana", color: "var(--amber)" },
-  ALERTA_FUERTE: { label: "Alerta Fuerte", color: "var(--amber)", bold: true },
-  INICIO: { label: "Inicio", color: "var(--green)" },
-  CONFIRMACION: { label: "Confirmación", color: "var(--green)", bold: true },
-  NO_PERSEGUIR: { label: "No Perseguir", color: "var(--red)" },
-  FLUJO_VENDEDOR: { label: "Flujo Vendedor", color: "var(--red)", bold: true },
-};
-const ALERT_STAGE_ORDER = ["DETECCION_TEMPRANA", "PREPARACION", "ALERTA_TEMPRANA", "ALERTA_FUERTE", "INICIO", "CONFIRMACION", "FLUJO_VENDEDOR", "NO_PERSEGUIR"];
-
-// Fase 7 (2026-08-18): el volumen/la volatilidad detectan movimiento, no
-// dirección -- esta etiqueta muestra la dirección real (o la falta de
-// evidencia confiable para afirmarla) por separado de la etapa.
-const DIRECTION_STYLE = {
-  ALCISTA: { label: "🟢 Comprador", color: "var(--green)" },
-  BAJISTA: { label: "🔴 Vendedor", color: "var(--red)" },
-  NEUTRAL: { label: "⚪ Neutral", color: "var(--text-dim)" },
-  INDEFINIDA: { label: "❓ Sin dato confiable", color: "var(--text-dim)" },
-};
-
-// Capa de prioridad operativa final (2026-08-18, cierre de arquitectura) --
-// atlas_live/radar/priority_classifier.py. Orden por defecto de la tabla:
-// 🟢 primero, 🔴 último -- para que premarket/primera hora muestre lo
-// accionable arriba sin scrollear miles de filas.
-const FINAL_STATE_STYLE = {
-  OPORTUNIDAD_PRIORITARIA: { label: "🟢 Oportunidad Prioritaria", color: "var(--green)", bold: true },
-  VIGILAR: { label: "🟡 Vigilar", color: "var(--amber)" },
-  PREPARACION: { label: "🔵 Preparación", color: "var(--blue, #3b82f6)" },
-  NO_TOCAR: { label: "🔴 No tocar", color: "var(--red)" },
-};
-const FINAL_STATE_ORDER = ["OPORTUNIDAD_PRIORITARIA", "VIGILAR", "PREPARACION", "NO_TOCAR"];
-
-// Mejores Oportunidades Ahora (2026-08-18, autorizado por el usuario) --
-// ranking de SOLO PRESENTACIÓN, calculado en el cliente a partir de los
-// mismos campos que ya trae /api/radar-oportunidades para cada fila de la
-// tabla de abajo. No es un clasificador nuevo, no cambia ningún umbral de
-// candidate_gates.py/alert_stage.py/priority_classifier.py -- es
-// exactamente el mismo criterio de evidencia usado a mano en esta sesión
-// para elegir el Top 3 real: precio fresco y confiable
-// (estado_validacion === "OK"), dirección alcista YA confirmada (no
-// NEUTRAL/BAJISTA/INDEFINIDA), disponible en Racional, ordenado primero
-// por volumen relativo EN VIVO (relative_volume_hoy -- la evidencia real
-// de que está entrando dinero, no solo que subió el precio) y, entre
-// candidatas con volumen comparable, por el % de cambio real.
-function _rankTop3Oportunidades(oportunidades) {
-  // Bug real encontrado en vivo (2026-08-18, caso XOS): este filtro NO
-  // chequeaba `estado_final` -- una candidata que el backend ya reclasificó
-  // como NO_TOCAR (ej. stage=NO_PERSEGUIR, el movimiento ya se considera
-  // agotado) podía seguir ganando el Top 3 acá con solo precio fresco +
-  // dirección alcista + buen RVOL, contradiciendo visualmente su propia
-  // etiqueta de etapa. El ranking de presentación NUNCA puede mostrar como
-  // "mejor oportunidad" algo que `priority_classifier.py` ya descartó --
-  // por eso ahora exige explícitamente estado_final en {OPORTUNIDAD_PRIORITARIA,
-  // VIGILAR} (las únicas 2 categorías que el backend considera accionables).
-  const candidatas = (oportunidades || []).filter(o =>
-    o.estado_validacion === "OK" &&
-    o.direction === "ALCISTA" &&
-    o.racional_available === true &&
-    (o.estado_final === "OPORTUNIDAD_PRIORITARIA" || o.estado_final === "VIGILAR")
+function _ordenarOportunidades(oportunidades) {
+  // Solo las 2 categorías que priority_classifier.py ya considera
+  // accionables -- PREPARACION/NO_TOCAR no compiten por los 6 lugares
+  // del bloque principal (siguen existiendo en /api/radar-oportunidades
+  // tal cual, esta pantalla simplemente no las prioriza en un espacio
+  // reducido a propósito).
+  const accionables = oportunidades.filter(
+    (o) => o.estado_final === "OPORTUNIDAD_PRIORITARIA" || o.estado_final === "VIGILAR"
   );
-  const rvol = o => (typeof o.relative_volume_hoy === "number" ? o.relative_volume_hoy : 0);
-  const cambio = o => (typeof o.change_pct_actual === "number" ? o.change_pct_actual : 0);
-  return [...candidatas].sort((a, b) => (rvol(b) - rvol(a)) || (cambio(b) - cambio(a))).slice(0, 3);
-}
-
-function _explicacionTop3(o) {
-  const partes = [];
-  if (o.relative_volume_hoy != null) {
-    partes.push(`RVOL ${fmtNum(o.relative_volume_hoy)}x ahora mismo${o.relative_volume_at_detection != null ? ` (${fmtNum(o.relative_volume_at_detection)}x al detectarla)` : ""}`);
-  }
-  if (o.dias_volumen_elevado) partes.push(`${o.dias_volumen_elevado} día(s) previos de volumen elevado`);
-  partes.push("dirección alcista ya confirmada");
-  const ev = o.evidencia_historica;
-  if (ev && ev.grupo_existe) {
-    partes.push(`mediana histórica de casos similares (n=${ev.n}): ~${fmtNum(ev.mediana_max_advance_pct)}% · ${fmtNum(ev.pct_20)}% llegó a +20%`);
-  }
-  return partes.join(", ") + ".";
-}
-
-const MEDALLAS = ["🥇 MEJOR OPORTUNIDAD", "🥈 SEGUNDA MEJOR OPCIÓN", "🥉 TERCERA MEJOR OPCIÓN"];
-const MEDALLA_ICONO = ["🥇", "🥈", "🥉"];
-
-function renderMejoresOportunidadesAhora(oportunidades) {
-  const el = document.getElementById("mejores-oportunidades-ahora");
-  if (!el) return;
-  const top3 = _rankTop3Oportunidades(oportunidades);
-  if (!top3.length) {
-    el.innerHTML = `<div class="empty-state">Ninguna candidata reúne ahora mismo precio fresco + dirección alcista confirmada + disponibilidad en Racional. Atlas prefiere no elegir una "mejor opción" sin esa evidencia, en vez de inventar una.</div>`;
-    return;
-  }
-  el.innerHTML = top3.map((o, i) => {
-    const st = ALERT_STAGE_STYLE[o.stage] || { label: o.stage, color: "var(--text-dim)" };
-    const dir = DIRECTION_STYLE[o.direction];
-    const ev = o.evidencia_historica;
-    const estimadoPct = (ev && ev.grupo_existe) ? ev.mediana_max_advance_pct : null;
-    return `<div class="top3-card">
-      <div class="top3-card-top"><span class="top3-medal">${MEDALLA_ICONO[i]}</span><span class="dim" style="font-size:11px;text-transform:uppercase;letter-spacing:.03em">${MEDALLAS[i]}</span></div>
-      <div class="top3-ticker">${o.ticker}</div>
-      <div class="kv-row"><span class="k">Precio actual</span><span class="v">${o.price_actual != null ? "$" + fmtNum(o.price_actual) : "—"}</span></div>
-      <div class="kv-row"><span class="k">% cambio</span><span class="v">${typeof o.change_pct_actual === "number" ? fmtPct(o.change_pct_actual) : "—"}</span></div>
-      <div class="kv-row"><span class="k">RVOL actual</span><span class="v">${o.relative_volume_hoy != null ? fmtNum(o.relative_volume_hoy) + "x" : "—"}</span></div>
-      <div class="kv-row"><span class="k">Dirección</span><span class="v">${dir ? `<span style="color:${dir.color}">${dir.label}</span>` : "—"}</span></div>
-      <div class="kv-row"><span class="k">Etapa</span><span class="v"><span style="color:${st.color};font-weight:${st.bold ? 700 : 600}">${st.label}</span></span></div>
-      <div class="kv-row"><span class="k">Antigüedad del precio</span><span class="v">${o.price_age_seconds != null ? fmtAge(o.price_age_seconds) : "—"}</span></div>
-      <div class="kv-row"><span class="k">Disponible en Racional</span><span class="v">${o.racional_available === true ? "Sí" : "No"}</span></div>
-      <div class="kv-row" style="background:var(--panel-2);margin:4px -10px 0;padding:7px 10px;border-radius:4px;border-bottom:none">
-        <span class="k" style="color:var(--accent);font-weight:600">📈 % estimado (histórico)</span>
-        <span class="v" style="color:var(--accent);font-size:14px">${estimadoPct != null ? "~" + fmtNum(estimadoPct) + "%" : "No disponible"}</span>
-      </div>
-      <div class="detail-explain" style="margin-top:10px;font-size:12.5px">${_explicacionTop3(o)}</div>
-    </div>`;
-  }).join("");
-}
-
-function renderAlertStages() {
-  const conteosEl = document.getElementById("alert-stage-conteos");
-  const tablaEl = document.getElementById("alert-stage-tabla");
-  if (!conteosEl || !tablaEl) return;
-  if (!_alertStages) {
-    conteosEl.innerHTML = tablaEl.innerHTML = `<div class="empty-state">No disponible.</div>`;
-    return;
-  }
-  const conteos = _alertStages.conteos_por_etapa || {};
-  // Click en el cuadro para ver el detalle (2026-08-20, pedido explícito
-  // del usuario): cada cuadro filtra la tabla de abajo a esa etapa exacta
-  // -- click de nuevo en el mismo cuadro limpia el filtro. Puramente de
-  // presentación, no cambia ningún dato ni recalcula nada -- filtra la
-  // misma lista `_alertStages.oportunidades` que ya llegó del servidor.
-  const card = (icon, label, value, stage) => {
-    const active = _stageCardFilter === stage;
-    return `<div class="lh-card stage-card${active ? " stage-card-active" : ""}" data-stage="${stage}"
-      style="cursor:pointer${active ? ";outline:2px solid var(--accent, #6ea8fe)" : ""}"
-      title="Ver candidatas en esta etapa">
-      <div class="lh-icon">${icon}</div><div class="lh-label">${label}</div><div class="lh-value">${value}</div>
-    </div>`;
-  };
-  conteosEl.innerHTML = ALERT_STAGE_ORDER.map(stage => {
-    const st = ALERT_STAGE_STYLE[stage];
-    return card("🔔", st.label, conteos[stage] || 0, stage);
-  }).join("");
-  conteosEl.querySelectorAll(".stage-card").forEach(elCard => {
-    elCard.addEventListener("click", () => {
-      const stage = elCard.dataset.stage;
-      _stageCardFilter = (_stageCardFilter === stage) ? null : stage;
-      renderAlertStages();
-      const tabla = document.getElementById("alert-stage-tabla");
-      if (_stageCardFilter && tabla) tabla.scrollIntoView({ behavior: "smooth", block: "start" });
-    });
-  });
-
-  // Filtro de Racional (2026-08-18, caso real BATL): ya NO es un filtro
-  // visual -- el servidor (`/api/radar-oportunidades`) ya devuelve solo
-  // candidatas con `racional_available === true`. Acá solo se hace
-  // auditable con los conteos reales que el propio backend expone.
-  const racionalConteoEl = document.getElementById("oportunidades-racional-conteo");
-  if (racionalConteoEl) {
-    const totalHoy = _alertStages.total_detectadas_hoy;
-    const totalRacional = _alertStages.total_disponibles_racional;
-    racionalConteoEl.textContent = (totalHoy != null && totalRacional != null)
-      ? `Tradier detectó ${totalHoy} candidatas hoy · ${totalRacional} disponibles en Racional (esta lista) · ${totalHoy - totalRacional} quedaron fuera por no estar en Racional (siguen guardadas para aprendizaje).`
-      : "";
-  }
-
-  renderMejoresOportunidadesAhora(_alertStages.oportunidades || []);
-
-  let oportunidades = _alertStages.oportunidades || [];
-  const filtroEstadoEl = document.getElementById("oportunidades-filtro-estado");
-  if (filtroEstadoEl && filtroEstadoEl.value) {
-    oportunidades = oportunidades.filter(o => o.estado_final === filtroEstadoEl.value);
-  }
-  if (_stageCardFilter) {
-    oportunidades = oportunidades.filter(o => o.stage === _stageCardFilter);
-  }
-  const avisoFiltroEl = document.getElementById("oportunidades-filtro-etapa-aviso");
-  if (avisoFiltroEl) {
-    avisoFiltroEl.innerHTML = _stageCardFilter
-      ? `Filtrando por etapa: <b>${(ALERT_STAGE_STYLE[_stageCardFilter] || {}).label || _stageCardFilter}</b> (${oportunidades.length}) -- <a href="#" id="limpiar-filtro-etapa">ver todas</a>`
-      : "";
-    const limpiar = document.getElementById("limpiar-filtro-etapa");
-    if (limpiar) limpiar.addEventListener("click", (e) => { e.preventDefault(); _stageCardFilter = null; renderAlertStages(); });
-  }
-  if (!oportunidades.length) {
-    tablaEl.innerHTML = `<div class="empty-state">${_stageCardFilter ? "Ninguna candidata en esta etapa ahora mismo." : "Sin candidatas detectadas todavía hoy."}</div>`;
-    return;
-  }
-  // Orden por defecto: Estado final (🟢→🟡→🔵→🔴), y dentro de cada grupo,
-  // detección más reciente primero -- lista corta y priorizada para
-  // premarket/primera hora, no miles de filas sin ordenar.
-  const ordenEstado = o => {
-    const i = FINAL_STATE_ORDER.indexOf(o.estado_final);
-    return i === -1 ? FINAL_STATE_ORDER.length : i;
-  };
-  oportunidades = [...oportunidades].sort((a, b) => {
-    const diff = ordenEstado(a) - ordenEstado(b);
+  return [...accionables].sort((a, b) => {
+    const diff = FINAL_STATE_ORDER.indexOf(a.estado_final) - FINAL_STATE_ORDER.indexOf(b.estado_final);
     if (diff !== 0) return diff;
     return (b.detected_at || "").localeCompare(a.detected_at || "");
   });
-  tablaEl.innerHTML = `<div style="overflow-x:auto"><table class="data-table">
-    <thead><tr><th>Ticker</th><th>Estado</th><th>Etapa</th><th>Dirección</th><th>Sector</th><th style="text-align:right">Precio actual</th><th>Antigüedad</th><th style="text-align:right">Precio detección</th><th>Hora detección</th><th style="text-align:right">Min. desde detección</th><th style="text-align:right">Cambio desde detección</th><th>Fuente</th><th style="text-align:right">RVOL actual</th><th style="text-align:right">RVOL detección</th><th style="text-align:right;color:var(--accent)">📈 % Estimado</th><th>Evidencia</th><th>Racional</th></tr></thead>
-    <tbody>${oportunidades.map(o => {
-      const st = ALERT_STAGE_STYLE[o.stage] || { label: o.stage, color: "var(--text-dim)" };
-      const fs = FINAL_STATE_STYLE[o.estado_final] || { label: o.estado_final || "—", color: "var(--text-dim)" };
-      const dir = DIRECTION_STYLE[o.direction];
-      const cambioDesdeDeteccion = (o.price_actual != null && o.price_at_detection)
-        ? (100 * (o.price_actual / o.price_at_detection - 1)) : null;
-      const evidencia = (o.gates_fired && o.gates_fired[0]) ? o.gates_fired[0].reason : "—";
-      const sector = o.sector ? `${o.sector}${o.dinero_entra_sector ? " 💰" : ""}` : "—";
-      // Decisión Atlas (U3-B): `estado_final` YA sale de atlas_decision_core.decide()
-      // -- sin duplicidad que mostrar acá. `decision_shadow` (Fase 5/5,
-      // Shadow Mode) se agrega al tooltip SOLO como información -- nunca
-      // cambia `estado_final`/el orden/el filtro de esta tabla.
-      const shadowNote = o.shadow_differs ? ` | Shadow (aprendizaje, informativo): ${o.decision_shadow}` : "";
-      const motivoTooltip = ((o.motivo_estado_final || "") + shadowNote).replace(/"/g, "&quot;");
-      // Trazabilidad del precio de premarket (2026-08-18): de dónde salió
-      // exactamente price_actual -- último trade de Tradier, punto medio
-      // bid/ask, solo bid, o cierre vencido (ver Quote.price_basis).
-      const basisLabel = o.price_basis === "tradier_bid_ask_mid" ? "punto medio bid/ask (last vencido)"
-        : o.price_basis === "tradier_last" ? "último trade (Tradier)"
-        : o.price_basis === "tradier_bid_only" ? `solo bid -- ask descartado (${o.bid_only_reason || "sin razón"})`
-        : o.price_basis === "tradier_regular_close_stale" ? "cierre regular anterior (vencido)" : null;
-      // Fase 1D (2026-08-24, auditoría de seguridad): `price_actual` es
-      // precio de SEÑAL -- `executable_price` es la única fuente de verdad
-      // sobre si hay contraparte de compra real a ese precio. NUNCA ocultar
-      // el dato, solo advertir explícitamente cuando no es comprable.
-      const noEjecutable = o.price_actual != null && o.executable_price == null;
-      const priceTooltipParts = [];
-      if (basisLabel) priceTooltipParts.push(`Fuente: ${basisLabel}`);
-      if (noEjecutable) priceTooltipParts.push("PRECIO DE SEÑAL -- sin contraparte de compra verificable, NO ejecutable");
-      if (o.bid != null && o.ask != null) {
-        priceTooltipParts.push(`Bid ${fmtNum(o.bid)} / Ask ${fmtNum(o.ask)}`);
-        if (o.spread_pct != null) priceTooltipParts.push(`Spread ${fmtNum(o.spread_pct)}%`);
-      }
-      const priceTooltip = priceTooltipParts.join(" — ").replace(/"/g, "&quot;");
-      const priceWarningHtml = noEjecutable
-        ? '<div style="color:var(--amber,#e0a800);font-size:10px;font-weight:700;white-space:nowrap">⚠ SEÑAL, NO EJECUTABLE</div>' : "";
-      // Retroceso desde máximo intradía (2026-08-18): explica por qué una
-      // candidata que sigue positiva en el día puede estar en NO_PERSEGUIR
-      // -- caso real YYAI (pico $1,57, cayendo, pero +13% vs cierre de ayer).
-      const etapaTooltip = o.retroceso_desde_maximo_pct != null
-        ? `Retrocedió ${fmtNum(o.retroceso_desde_maximo_pct)}% desde su máximo de hoy`.replace(/"/g, "&quot;")
-        : "";
-      // % estimado (2026-08-20, aprobado por el usuario): mediana real de
-      // cuánto llegaron a subir casos históricos parecidos (misma
-      // dirección + mismo momento de detección) -- ver
-      // historical_scoring.score_candidate(). Nunca inventado: "—" si no
-      // hay grupo comparable con evidencia suficiente todavía.
-      const ev = o.evidencia_historica;
-      const estimadoPct = (ev && ev.grupo_existe) ? ev.mediana_max_advance_pct : null;
-      const estimadoTooltip = (ev && ev.grupo_existe)
-        ? `Mediana de ${ev.n} casos históricos similares (${ev.direction}, "${ev.timing_deteccion}", bucket ${ev.bucket})`.replace(/"/g, "&quot;")
-        : "Sin suficiente evidencia histórica comparable todavía";
-      return `<tr>
-        <td>${o.ticker}</td>
-        <td title="${motivoTooltip}"><span style="color:${fs.color};font-weight:${fs.bold ? 700 : 600}">${fs.label}</span></td>
-        <td title="${etapaTooltip}"><span style="color:${st.color};font-weight:${st.bold ? 700 : 600}">${st.label}</span></td>
-        <td>${dir ? `<span style="color:${dir.color}">${dir.label}</span>` : "—"}</td>
-        <td class="dim" title="${o.dinero_entra_sector ? "Sector con flujo de dinero activo" : ""}">${sector}</td>
-        <td style="text-align:right" title="${priceTooltip}">${o.price_actual != null ? "$" + fmtNum(o.price_actual) : "—"}${priceWarningHtml}</td>
-        <td class="dim" title="${o.price_actual_as_of ? fmtTimeSec(o.price_actual_as_of) + " ET" : ""}">${o.price_age_seconds != null ? fmtAge(o.price_age_seconds) : "—"}</td>
-        <td style="text-align:right">${o.price_at_detection != null ? "$" + fmtNum(o.price_at_detection) : "—"}</td>
-        <td>${o.detected_at ? fmtTimeSec(o.detected_at) + " ET" : "—"}</td>
-        <td style="text-align:right">${o.minutos_desde_deteccion != null ? fmtNum(o.minutos_desde_deteccion, 0) + " min" : "—"}</td>
-        <td style="text-align:right">${cambioDesdeDeteccion != null ? fmtPct(cambioDesdeDeteccion) : "—"}</td>
-        <td>${o.price_actual_source || o.source || "—"}</td>
-        <td style="text-align:right">${o.relative_volume_hoy != null ? fmtNum(o.relative_volume_hoy) + "x" : "—"}</td>
-        <td style="text-align:right">${o.relative_volume_at_detection != null ? fmtNum(o.relative_volume_at_detection) + "x" : "—"}</td>
-        <td style="text-align:right;color:var(--accent);font-weight:700" title="${estimadoTooltip}">${estimadoPct != null ? "~" + fmtNum(estimadoPct) + "%" : '<span class="dim">—</span>'}</td>
-        <td class="dim" title="${evidencia}">${evidencia}</td>
-        <td>${o.racional_available === true ? "Sí" : (o.racional_available === false ? "No" : "—")}</td>
-      </tr>`;
-    }).join("")}</tbody></table></div>`;
 }
 
-async function fetchFlujoSectorial() {
-  try {
-    const res = await fetch("/api/flujo-sectorial");
-    if (!res.ok) throw new Error("HTTP " + res.status);
-    _flujoSectorial = await res.json();
-  } catch (err) {
-    console.error("fetchFlujoSectorial:", err);
-    _flujoSectorial = null;
+function _proyeccionHtml(o) {
+  // Fuente ÚNICA y canónica de la proyección: la predicción CONGELADA
+  // (la misma que audita Precisión de Magnitud) -- nunca se mezcla con
+  // `evidencia_historica` (recalculada en vivo) en esta pantalla.
+  const pred = o.prediccion_magnitud_congelada;
+  if (pred && typeof pred.predicted_pct === "number") {
+    return `<div class="proj-label">Proyección Atlas</div>
+            <div class="proj-val">+${fmtNum(pred.predicted_pct)}%</div>
+            <div class="proj-note">${pred.muestra_n ? `mediana de ${pred.muestra_n} casos similares` : "evidencia histórica"}</div>`;
   }
-  renderFlujoSectorial();
+  return `<div class="proj-label">Proyección Atlas</div>
+          <div class="proj-val proj-sin-dato">Sin evidencia suficiente</div>
+          <div class="proj-note">Atlas todavía no tiene un grupo comparable para esta condición</div>`;
 }
 
-function renderFlujoSectorial() {
-  const coberturaEl = document.getElementById("flujo-sectorial-cobertura");
-  const tableEl = document.getElementById("flujo-sectorial-table");
-  if (!coberturaEl || !tableEl) return;
-  if (!_flujoSectorial) {
-    coberturaEl.innerHTML = "";
-    tableEl.innerHTML = `<tbody><tr><td class="empty-state">No disponible.</td></tr></tbody>`;
-    return;
+function _porQueHtml(o) {
+  const razones = [];
+  if (o.gates_fired && o.gates_fired.length) {
+    razones.push(o.gates_fired[0].reason || o.gates_fired[0].name);
   }
-  coberturaEl.textContent = "Cobertura: " + (_flujoSectorial.cobertura || "—")
-    + (_flujoSectorial.generated_at ? " · Actualizado: " + fmtTimeSec(_flujoSectorial.generated_at) + " ET" : "");
-  const sectores = _flujoSectorial.sectores || [];
-  if (!sectores.length) {
-    tableEl.innerHTML = `<tbody><tr><td class="empty-state">Esperando el primer ciclo de escaneo...</td></tr></tbody>`;
-    return;
+  if (o.dinero_entra_sector && o.sector) {
+    razones.push(`sector ${o.sector} con flujo de dinero activo`);
   }
-  tableEl.innerHTML = `
-    <thead><tr><th>Sector</th><th style="text-align:right">Money Flow Score</th><th style="text-align:right">Δ% promedio</th><th style="text-align:right">RVOL promedio</th><th style="text-align:right"># acciones</th><th>Top acciones</th></tr></thead>
-    <tbody>${sectores.map((s, i) => `<tr>
-      <td>${i < 5 ? "💰 " : ""}${s.sector}</td>
-      <td style="text-align:right">${fmtNum(s.money_flow_score)}</td>
-      <td style="text-align:right">${fmtPct(s.avg_change_percent)}</td>
-      <td style="text-align:right">${fmtNum(s.avg_relative_volume)}x</td>
-      <td style="text-align:right">${s.stock_count}</td>
-      <td class="dim">${(s.top_stocks || []).join(", ")}</td>
-    </tr>`).join("")}</tbody>`;
+  if (!razones.length && o.motivo_estado_final) razones.push(o.motivo_estado_final);
+  return razones.length ? razones.join(" · ") : "Sin detalle adicional disponible.";
 }
 
-// Hito 4, Fase 4.4 (2026-09-04, autorizado explícitamente en Plan Mode) --
-// panel de solo lectura sobre /api/aprendizaje-seguridad-resumen (sin
-// token, solo conteos agregados -- ver learning_safety_summary.py).
-async function fetchSeguridadAprendizaje() {
-  try {
-    const res = await fetch("/api/aprendizaje-seguridad-resumen");
-    if (!res.ok) throw new Error("HTTP " + res.status);
-    _seguridadAprendizaje = await res.json();
-  } catch (err) {
-    console.error("fetchSeguridadAprendizaje:", err);
-    _seguridadAprendizaje = null;
-  }
-  renderSeguridadAprendizaje();
-}
-
-function _renderConteosTable(elId, conteos, emptyMsg) {
-  const tableEl = document.getElementById(elId);
-  if (!tableEl) return;
-  const entradas = Object.entries(conteos || {});
-  if (!entradas.length) {
-    tableEl.innerHTML = `<tbody><tr><td class="empty-state">${emptyMsg}</td></tr></tbody>`;
-    return;
-  }
-  tableEl.innerHTML = `
-    <thead><tr><th>Estado</th><th style="text-align:right">Conteo</th></tr></thead>
-    <tbody>${entradas.map(([estado, n]) => `<tr><td>${estado}</td><td style="text-align:right">${n}</td></tr>`).join("")}</tbody>`;
-}
-
-function renderSeguridadAprendizaje() {
-  const mecanismoEl = document.getElementById("seguridad-aprendizaje-mecanismo");
-  if (!mecanismoEl) return;
-  if (!_seguridadAprendizaje) {
-    mecanismoEl.innerHTML = `<span class="empty-state">No disponible.</span>`;
-    ["eligibilidad", "shadow", "activacion", "continua"].forEach(id =>
-      _renderConteosTable("seguridad-aprendizaje-" + id + "-table", {}, "No disponible."));
-    return;
-  }
-  const s = _seguridadAprendizaje;
-  const mecanismoOn = s.activation_mechanism_state === "ON_CONTROLADO";
-  mecanismoEl.innerHTML = `Mecanismo de activación: <b style="color:${mecanismoOn ? "var(--amber)" : "var(--green)"}">`
-    + `${mecanismoOn ? "🟡 ON_CONTROLADO" : "🟢 OFF"}</b>`
-    + (s.generated_at ? ` <span class="dim" style="font-size:12px">· Actualizado: ${fmtTimeSec(s.generated_at)} ET</span>` : "");
-
-  const elig = s.eligibilidad || {};
-  _renderConteosTable("seguridad-aprendizaje-eligibilidad-table", elig.conteos_por_estado,
-    "Sin evaluaciones de elegibilidad todavía.");
-
-  const shadow = s.shadow_observation || {};
-  const universo = shadow.universo_conocimiento_conteos || {};
-  _renderConteosTable("seguridad-aprendizaje-shadow-table", {
-    "Observaciones registradas (shadow_differs=True)": shadow.n_observaciones ?? 0,
-    "A · sin conocimiento elegible": universo.A_sin_elegible ?? 0,
-    "B · elegible, sin divergencia": universo.B_elegible_sin_divergencia ?? 0,
-    "C · elegible, con divergencia": universo.C_elegible_con_divergencia ?? 0,
-  }, "Sin observaciones todavía.");
-
-  const activ = s.activacion || {};
-  _renderConteosTable("seguridad-aprendizaje-activacion-table", {
-    ...(activ.conteos_por_estado || {}),
-    "Revocaciones registradas (histórico, nunca se deshacen)": activ.n_revocaciones_registradas ?? 0,
-  }, "Sin evaluaciones de activación todavía.");
-
-  const cont = s.evaluacion_continua || {};
-  _renderConteosTable("seguridad-aprendizaje-continua-table", {
-    ...(cont.conteos_por_estado || {}),
-    "Revocaciones disparadas por degradación": cont.n_revocaciones_disparadas ?? 0,
-  }, "Sin evaluaciones continuas todavía.");
-}
-
-// Event Status (2026-08-24, Segunda Fase -- "CUÁNDO es el evento", separado
-// de Trading Status "hay evidencia real para actuar HOY").
-const EVENT_STATUS_STYLE = {
-  HOY: { label: "🔥 Hoy", color: "var(--red)", bold: true },
-  MANANA: { label: "🟢 Mañana", color: "var(--green)", bold: true },
-  DOS_A_TRES_DIAS: { label: "🟡 2-3 días", color: "var(--amber)" },
-  CUATRO_A_SIETE_DIAS: { label: "🔵 4-7 días", color: "var(--accent)" },
-  FUTURO: { label: "⚪ Futuro", color: "var(--text-dim)" },
-  OCURRIDO: { label: "🔴 Ocurrido", color: "var(--red)" },
-  EXTENDIDA: { label: "🟠 Extendida", color: "var(--orange)", bold: true },
-};
-
-// Trading Status -- OPORTUNIDAD_PRIORITARIA/VIGILAR/PREPARACION/NO_TOCAR
-// vienen de priority_classifier.py (detección técnica real hoy);
-// PREPARAR/CALENDARIO son exclusivos de catalyst_status.py (sin
-// detección técnica, vocabulario deliberadamente distinto).
-const TRADING_STATUS_STYLE = {
-  OPORTUNIDAD_PRIORITARIA: { label: "🟢 Oportunidad Prioritaria", color: "var(--green)", bold: true },
-  PREPARAR: { label: "🟢 Preparar", color: "var(--green)" },
-  VIGILAR: { label: "🟡 Vigilar", color: "var(--amber)" },
-  PREPARACION: { label: "🔵 Preparación", color: "var(--accent)" },
-  CALENDARIO: { label: "⚪ Calendario", color: "var(--text-dim)" },
-  NO_TOCAR: { label: "🔴 No tocar", color: "var(--red)" },
-};
-
-function _catalystRowHtml(c) {
-  const ev = EVENT_STATUS_STYLE[c.event_status] || { label: c.event_status || "—", color: "var(--text-dim)" };
-  const tr = TRADING_STATUS_STYLE[c.trading_status] || { label: c.trading_status || "—", color: "var(--text-dim)" };
-  const market = c.market || {};
-  const mrnaTexto = c.mrna_similarity_status === "EN_EVALUACION"
-    ? '<span class="dim">EN EVALUACIÓN</span>'
-    : (c.mrna_similarity_score != null ? fmtNum(c.mrna_similarity_score, 0) : "—");
-  // Fase 1D (2026-08-24, auditoría de seguridad -- separación señal/
-  // ejecutable): `market.price` es precio de SEÑAL, `market.executable_price`
-  // es la única fuente de verdad sobre si hay contraparte de compra real.
-  // Nunca ocultar el precio -- solo advertir explícitamente cuando no es
-  // comprable (ver mismo criterio en el panel "Oportunidades Detectadas").
-  const priceNoEjecutable = market.price != null && market.executable_price == null;
-  const priceTitle = market.price_basis === "tradier_bid_only"
-    ? `Fuente: solo bid -- ask descartado (${market.bid_only_reason || "sin razón"}) -- PRECIO DE SEÑAL, NO EJECUTABLE`
-    : (priceNoEjecutable ? "PRECIO DE SEÑAL, NO EJECUTABLE" : "");
-  const priceWarningHtml = priceNoEjecutable
-    ? '<div style="color:var(--amber,#e0a800);font-size:10px;font-weight:700;white-space:nowrap">⚠ SEÑAL, NO EJECUTABLE</div>' : "";
-  return `<tr title="${(c.trading_status_motivo || "").replace(/"/g, "&quot;")}">
-    <td>${c.ticker}</td>
-    <td style="text-align:right" title="${priceTitle.replace(/"/g, "&quot;")}">${market.price != null ? "$" + fmtNum(market.price) : '<span class="dim">SIN DATOS</span>'}${priceWarningHtml}</td>
-    <td style="text-align:right">${market.change_pct != null ? fmtPct(market.change_pct) : "—"}</td>
-    <td style="text-align:right">${market.relative_volume != null ? fmtNum(market.relative_volume) + "x" : "—"}</td>
-    <td class="dim">${c.catalyst_type || "—"}</td>
-    <td>${c.event_date || "—"} ${c.event_time && c.event_time !== "TBD" ? `(${c.event_time})` : ""}</td>
-    <td><span style="color:${ev.color};font-weight:${ev.bold ? 700 : 600}">${ev.label}</span></td>
-    <td><span style="color:${tr.color};font-weight:${tr.bold ? 700 : 600}">${tr.label}</span></td>
-    <td style="text-align:right">${c.catalyst_opportunity_score != null ? fmtNum(c.catalyst_opportunity_score, 0) : "—"}</td>
-    <td style="text-align:right">${mrnaTexto}</td>
-  </tr>`;
-}
-
-const _CATALYST_TABLE_HEAD = `<thead><tr><th>Ticker</th><th style="text-align:right">Precio</th><th style="text-align:right">Cambio</th><th style="text-align:right">RVOL</th><th>Tipo</th><th>Fecha</th><th>Evento</th><th>Trading</th><th style="text-align:right">Opportunity Score</th><th style="text-align:right">MRNA Similarity</th></tr></thead>`;
-
-async function fetchCatalystEvents() {
-  try {
-    const res = await fetch("/api/catalyst-events");
-    if (!res.ok) throw new Error("HTTP " + res.status);
-    _catalystEvents = await res.json();
-  } catch (err) {
-    console.error("fetchCatalystEvents:", err);
-    _catalystEvents = null;
-  }
-  renderCatalystEvents();
-}
-
-function renderCatalystEvents() {
-  const saludEl = document.getElementById("catalizadores-salud");
-  const topTableEl = document.getElementById("catalizadores-top-table");
-  const catTableEl = document.getElementById("catalizadores-table");
-  const conteoEl = document.getElementById("catalizadores-calendario-conteo");
-  const newsTableEl = document.getElementById("catalizadores-noticias-table");
-  if (!saludEl || !topTableEl || !catTableEl || !newsTableEl) return;
-
-  if (!_catalystEvents) {
-    saludEl.innerHTML = `<span style="color:var(--text-dim)">No disponible.</span>`;
-    topTableEl.innerHTML = "";
-    catTableEl.innerHTML = "";
-    newsTableEl.innerHTML = "";
-    return;
-  }
-
-  const salud = _catalystEvents.provider_health || {};
-  const saludStyle = salud.status === "OK" ? "var(--green)" : (salud.status === "OFFLINE" ? "var(--red)" : "var(--text-dim)");
-  const saludLabel = salud.status === "OK" ? "🟢 En línea" : (salud.status === "OFFLINE" ? "🔴 NEWS/CATALYST DATA OFFLINE" : "⚪ Sin configurar");
-  saludEl.innerHTML = `<span style="color:${saludStyle};font-weight:700">${saludLabel}</span>`
-    + (salud.reason ? ` <span class="dim">— ${salud.reason}</span>` : "")
-    + (_catalystEvents.generated_at ? ` <span class="dim">· Actualizado: ${fmtTimeSec(_catalystEvents.generated_at)} ET</span>` : "");
-
-  const top = _catalystEvents.top_catalyst_opportunities || [];
-  if (!top.length) {
-    topTableEl.innerHTML = `<tbody><tr><td class="empty-state">Sin catalizadores con evidencia real de movimiento hoy -- ver el calendario completo abajo.</td></tr></tbody>`;
-  } else {
-    topTableEl.innerHTML = `${_CATALYST_TABLE_HEAD}<tbody>${top.map(_catalystRowHtml).join("")}</tbody>`;
-  }
-
-  const calendario = _catalystEvents.calendario_completo || [];
-  if (conteoEl) conteoEl.textContent = `${calendario.length} catalizador(es) con fecha en total -- ${top.length} en el ranking principal.`;
-  if (!calendario.length) {
-    catTableEl.innerHTML = `<tbody><tr><td class="empty-state">Sin catalizadores con fecha en los próximos/últimos 14 días.</td></tr></tbody>`;
-  } else {
-    catTableEl.innerHTML = `${_CATALYST_TABLE_HEAD}<tbody>${calendario.map(_catalystRowHtml).join("")}</tbody>`;
-  }
-
-  const noticias = _catalystEvents.noticias_recientes || [];
-  if (!noticias.length) {
-    newsTableEl.innerHTML = `<tbody><tr><td class="empty-state">Sin noticias procesadas todavía.</td></tr></tbody>`;
-  } else {
-    newsTableEl.innerHTML = `
-      <thead><tr><th>Hora</th><th>Ticker</th><th>Titular</th><th>Tipo</th><th>Importancia</th><th>Dirección</th><th>Fuente</th></tr></thead>
-      <tbody>${noticias.map(n => {
-        const dir = DIRECTION_STYLE[n.direction] || null;
-        const titular = n.url
-          ? `<a href="${n.url}" target="_blank" rel="noopener">${n.headline}</a>`
-          : n.headline;
-        return `<tr>
-          <td class="dim">${n.published_at ? fmtTimeSec(n.published_at) + " ET" : "—"}</td>
-          <td>${n.ticker}</td>
-          <td>${titular}</td>
-          <td class="dim">${n.catalyst_type || "—"}</td>
-          <td class="dim">${n.importance || "—"}</td>
-          <td>${dir ? `<span style="color:${dir.color}">${dir.label}</span>` : "—"}</td>
-          <td class="dim">${n.source || "—"}</td>
-        </tr>`;
-      }).join("")}</tbody>`;
-  }
-}
-
-function startPanelStatusPolling() {
-  const filtroEstadoEl = document.getElementById("oportunidades-filtro-estado");
-  if (filtroEstadoEl) filtroEstadoEl.addEventListener("change", renderAlertStages);
-  fetchRadarUniverso();
-  fetchAlertStages();
-  fetchFlujoSectorial();
-  fetchCatalystEvents();
-  fetchEstudio();
-  fetchSignals();
-  fetchExplosionHistory();
-  fetchExplosionBandsTradier();
-  fetchMemoryEngine();
-  fetchPredictionJournal();
-  fetchExitJournal();
-  fetchMissionControl();
-  fetchPerformance();
-  fetchEvolution();
-  fetchLearningMaturity();  // alimenta la barra superior (renderTopbarLearning) + Aprendizaje en Vivo + Madurez
-  fetchHistoricalReference();  // Base Histórica de Referencia, siempre separada
-  fetchSeguridadAprendizaje();  // Hito 4, Fase 4.4
-  setInterval(fetchMemoryEngine, PANEL_STATUS_POLL_MS);
-  setInterval(fetchPredictionJournal, PANEL_STATUS_POLL_MS);
-  setInterval(fetchExitJournal, PANEL_STATUS_POLL_MS);
-  setInterval(fetchMissionControl, PANEL_STATUS_POLL_MS);
-  setInterval(fetchPerformance, PANEL_STATUS_POLL_MS);
-  setInterval(fetchEvolution, PANEL_STATUS_POLL_MS);
-  setInterval(fetchLearningMaturity, PANEL_STATUS_POLL_MS);
-  setInterval(fetchHistoricalReference, PANEL_STATUS_POLL_MS);
-  setInterval(fetchExplosionHistory, PANEL_STATUS_POLL_MS);
-  setInterval(fetchExplosionBandsTradier, PANEL_STATUS_POLL_MS);
-  setInterval(fetchSignals, PANEL_STATUS_POLL_MS);
-  setInterval(fetchEstudio, PANEL_STATUS_POLL_MS);
-  setInterval(fetchRadarUniverso, PRICE_POLL_MS);
-  setInterval(fetchAlertStages, PRICE_POLL_MS);
-  setInterval(fetchFlujoSectorial, PRICE_POLL_MS);
-  setInterval(fetchCatalystEvents, PANEL_STATUS_POLL_MS);
-  setInterval(fetchSeguridadAprendizaje, PANEL_STATUS_POLL_MS);  // Hito 4, Fase 4.4
-}
-
-/* 📸 Guardar Estado del Día -- aprobado el 2026-08-02, último elemento
- * antes de la primera validación en mercado real. Solo captura el
- * estado ya calculado que la Cabina tiene en memoria en este instante
- * (las mismas variables que ya alimentan cada panel) y lo descarga como
- * JSON -- no recalcula, no analiza, no interpreta nada. Sirve para
- * comparar manualmente distintos momentos del día más tarde. */
-function collectDaySnapshot() {
-  // Fase 4/5: "oportunidad_del_dia" y "plan_b" usan el MISMO candidato
-  // canónico que renderHero()/renderPlanB() -- nunca candidates[0]/[1] crudo.
-  const oportunidad = _currentTopOpportunityCandidate();
-  const planB = _currentRunnerUpCandidate();
-  const explosivasAll = _explosivasReal();
-  const momentumAll = _momentumReal();
-  const noTocarAll = _noTocarReal();
-
-  return {
-    snapshot_taken_at: new Date().toISOString(),
-    ranking_generated_at: _memoryRanking.generated_at,
-    oportunidad_del_dia: oportunidad,
-    plan_b: planB,
-    top_explosivas: { total_count: explosivasAll.length, items: explosivasAll.slice(0, DASHBOARD_TOP_N) },
-    top_momentum: { total_count: momentumAll.length, items: momentumAll.slice(0, DASHBOARD_TOP_N) },
-    no_tocar: { total_count: noTocarAll.length, items: noTocarAll.slice(0, DASHBOARD_TOP_N) },
-    memory_engine: _memoryEngine,
-    prediction_journal: _predictionJournal,
-    exit_journal: { summaries: _exitJournalSummaries },
-    mission_control: { processes: _missionControlProcesses },
-    // Aprendizaje/confianza desde la MISMA fuente real que Evolución y la
-    // barra superior (/api/evolution) -- ya no el stub /api/learning-status.
-    aprendizaje: _evolution ? _evolution.evolucion_aprendizaje : null,
-    confianza: _evolution ? { precision_historica_pct: _evolution.precision_del_modelo.precision_historica_pct } : null,
-  };
-}
-
-function saveDaySnapshot() {
-  const snapshot = collectDaySnapshot();
-  const stamp = snapshot.snapshot_taken_at.replace(/[:.]/g, "-");
-  const blob = new Blob([JSON.stringify(snapshot, null, 2)], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `atlas_estado_${stamp}.json`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-}
-
-function renderHero() {
-  // Fase 3/5: Hero muestra la selección CANÓNICA (`current_top_opportunity`,
-  // decidida por `select_current_top_opportunity()`), nunca
-  // `candidates[0]` crudo -- `eligible_radar` de Radar Explosivo queda
-  // como informativo (se sigue mostrando en el badge), nunca como filtro
-  // de si Hero muestra algo: esa decisión ya la tomó Atlas Decision Core.
-  const o = _currentTopOpportunityCandidate();
-  const ctop = _memoryRanking.current_top_opportunity;
-  const decision = ctop ? ctop.decision : null;
-  const el = document.getElementById("dashboard-hero");
-  if (!o || !_isRecommendableDecision(decision)) {
-    el.innerHTML = `<div class="hero-empty">${_noOpportunityHtml(o, decision)}</div>`;
-    return;
-  }
-  el.innerHTML = `
-    <div class="hero-label">🎯 Atlas Recomienda</div>
-    <div class="hero-top">
-      <span class="hero-symbol">${o.symbol}</span>
-      <span class="hero-semaforo">${semaforoHtml(o.semaforo)}</span>
-      ${badgeHtml(o.market_cap_bucket === "micro" ? "MICROCAP" : (o.market_cap_bucket || "?").toUpperCase(), o.semaforo)}
-      <span class="hero-price" id="hero-price-value">${fmtMoney(o.price)}</span>
-      ${atlasDecisionBadge(o.atlas_decision)}
-    </div>
-    <div class="hero-price-context">${priceContextLine(o)}</div>
-    <div class="hot-fresh fresh-none" id="hot-fresh-hero"><span class="hot-fresh-dot">⚪</span><span class="hot-fresh-label">Refrescando precio en vivo…</span></div>
-    <div class="hero-metrics">
-      <div><div class="hero-metric-label">Score Radar</div><div class="hero-metric-value">${o.eligible_radar ? fmtNum(o.score) : "N/A"}</div></div>
-      <div><div class="hero-metric-label">Probabilidad</div><div class="hero-metric-value">${o.probability_pct !== null ? fmtNum(o.probability_pct) + "%" : '<span class="dim">sin evidencia</span>'}</div></div>
-      <div><div class="hero-metric-label">Confianza</div><div class="hero-metric-value">${o.confidence}</div></div>
-      ${entryWindowMetricsHtml()}
-    </div>
-    ${priceBreakdownHtml(o)}
-    <div class="hero-explain">${o.explanation}</div>
-    <a class="hero-link" data-view="oportunidad">Ver detalle completo de la oportunidad →</a>`;
-
-  // El link interno reutiliza la misma navegación que el menú lateral.
-  el.querySelector(".hero-link").addEventListener("click", () => {
-    document.querySelector('.nav-item[data-view="oportunidad"]').click();
-  });
-}
-
-function renderPlanB() {
-  // Fase 4/5: Plan B = runner_up del selector canónico, nunca candidates[1] crudo.
-  const b = _currentRunnerUpCandidate();
-  const el = document.getElementById("dashboard-plan-b");
-  const bDecision = b && b.atlas_decision ? b.atlas_decision.decision : null;
-  if (!b || !_isRecommendableDecision(bDecision)) {
-    el.innerHTML = `<div class="hero-empty">Sin Plan B disponible hoy.</div>`;
-    return;
-  }
-  el.innerHTML = `
-    <div class="plan-b-label">Plan B</div>
-    <div class="plan-b-top">
-      <span class="plan-b-symbol">${b.symbol}</span>
-      ${semaforoHtml(b.semaforo)}
-      <span class="plan-b-price" id="planb-price-value">${fmtMoney(b.price)}</span>
-    </div>
-    <div class="plan-b-price-context">${priceContextLine(b)}</div>
-    <div class="hot-fresh fresh-none" id="hot-fresh-planb"><span class="hot-fresh-dot">⚪</span><span class="hot-fresh-label">Refrescando precio en vivo…</span></div>
-    <div class="plan-b-metrics">
-      <div><div class="plan-b-metric-label">Prob.</div><div class="plan-b-metric-value">${b.probability_pct !== null ? fmtNum(b.probability_pct) + "%" : "--"}</div></div>
-      <div><div class="plan-b-metric-label">Confianza</div><div class="plan-b-metric-value">${b.confidence}</div></div>
-      <div><div class="plan-b-metric-label">ETA</div><div class="plan-b-metric-value dim" style="font-size:12px">s/d</div></div>
-    </div>
-    <div class="plan-b-explain">${b.explanation}</div>`;
-}
-
-/* "Atlas Opina" -> Resumen Factual (limpieza MOCK 2026-08-07). Atlas NO
- * genera opinión en lenguaje natural; este bloque arma un resumen
- * determinista SOLO con datos reales ya en pantalla (candidatos del Memory
- * Ranking + VIX real del contexto). Si no hay evidencia suficiente (sin
- * escaneo o sin candidatos), muestra un estado honesto, nunca un ejemplo. */
-function renderOpina() {
-  const el = document.getElementById("dashboard-opina");
-  const cands = (_memoryRanking && _memoryRanking.candidates) || [];
-  const scanned = _memoryRanking && _memoryRanking.generated_at !== null;
-  if (!scanned || cands.length === 0) {
-    el.textContent = "Sin evidencia suficiente para emitir un resumen.";
-    return;
-  }
-  const elegibles = cands.filter(c => c.eligible_radar);
-  const top = elegibles[0] || null;
-  const vix = _lastContext ? _lastContext.vix_price : null;
-  const partes = [];
-  partes.push(`${cands.length} candidatos analizados en el último escaneo; ${elegibles.length} superan Radar Explosivo y Memory Engine a la vez.`);
-  if (top) {
-    const wilson = (top.evidence_wilson_lower_bound_pct !== null && top.evidence_wilson_lower_bound_pct !== undefined)
-      ? `${top.evidence_wilson_lower_bound_pct.toFixed(1)}%` : "s/d";
-    partes.push(`El más fuerte es ${top.symbol} (confianza ${top.confidence}), por la condición "${top.evidence_condition || "s/d"}" con ${top.evidence_sample_size ?? "s/d"} observaciones de respaldo y límite inferior de Wilson ${wilson}.`);
-  } else {
-    partes.push("Ningún candidato pasa ambos filtros a la vez en este momento -- sin recomendación destacada.");
-  }
-  if (vix !== null && vix !== undefined) {
-    const nivel = vix >= VIX_HIGH ? "alta" : vix <= VIX_LOW ? "baja" : "normal";
-    partes.push(`VIX en ${vix.toFixed(1)} (volatilidad ${nivel}).`);
-  }
-  el.textContent = partes.join(" ");
-}
-
-/* "Alertas" -> SOLO eventos reales del motor (limpieza MOCK 2026-08-07):
- * cambios de estado de mercado y failover de proveedor que ya registra
- * Mission Control (timeline real). Cada alerta se justifica con su evento y
- * su hora reales. Si no hay eventos reales, estado honesto -- nunca ejemplos. */
-function renderAlerts() {
-  const el = document.getElementById("dashboard-alerts");
-  const events = [];
-  for (const h of _missionControlMarketStateHistory) {
-    const prev = h.previous_market_state;
-    const cur = h.market_state || "?";
-    events.push({
-      timestamp: h.timestamp,
-      semaforo: "amarillo",
-      tag: "Mercado",
-      msg: prev ? `Cambio de estado de mercado: ${prev} -> ${cur}` : `Estado de mercado: ${cur}`,
-    });
-  }
-  for (const f of _missionControlFailoverHistory) {
-    events.push({
-      timestamp: f.timestamp,
-      semaforo: f.severity === "warning" ? "rojo" : "amarillo",
-      tag: "Proveedor",
-      msg: f.message || `Failover de proveedor: ${f.previous_provider_source || "?"} -> ${f.provider_source || "?"}`,
-    });
-  }
-  events.sort((a, b) => (b.timestamp || "").localeCompare(a.timestamp || ""));
-  const top = events.slice(0, 12);
-  el.innerHTML = top.length
-    ? top.map(a => `
-        <div class="alert-item">
-          <span class="alert-time">${fmtTime(a.timestamp)}</span>
-          ${semaforoHtml(a.semaforo)}
-          <span class="alert-sym">${a.tag}</span>
-          <span class="alert-msg">${a.msg}</span>
-        </div>`).join("")
-    : `<div class="empty-state">Sin alertas registradas en esta sesión.</div>`;
-}
-
-/* Barra de actividad -> estado REAL del último ciclo de escaneo (limpieza
- * MOCK 2026-08-07). Sale de /api/ranking (`scanning`, `generated_at`,
- * `symbols_ok`/`symbols_scanned`, `last_error`), no de frases rotativas
- * inventadas. Estado honesto cuando no hay conexión o aún no corrió el
- * primer escaneo. */
-function renderActivity() {
-  const el = document.getElementById("activity-text");
+function renderOportunidades() {
+  const el = document.getElementById("opp-list");
   if (!el) return;
-  const s = _systemStatus;
-  if (s === null) {
-    el.textContent = "Sin conexión con el servidor de Atlas.";
+
+  const top = _ordenarOportunidades(_oportunidades).slice(0, MAX_OPORTUNIDADES_VISIBLES);
+
+  if (!top.length) {
+    el.innerHTML = `<div class="empty-state">Atlas no tiene oportunidades accionables en este momento.</div>`;
     return;
   }
-  const okTime = s.last_success_at ? s.last_success_at.slice(11, 19) + " UTC" : "nunca";
-  if (s.scanning) {
-    el.textContent = "Escaneando el universo de símbolos...";
-  } else if (s.last_cycle_status === "sin_datos") {
-    // 0 símbolos por el proveedor -- Atlas sigue vivo (ciclos completándose).
-    el.textContent = `El último ciclo terminó sin datos del proveedor (${s.cycles_total || 0} ciclos corridos, ${s.cycles_ok || 0} con datos). Atlas sigue activo; último ciclo con datos: ${okTime}.`;
-  } else if (s.last_cycle_status === "error") {
-    el.textContent = `El último ciclo terminó con una excepción${s.last_failure_reason ? ": " + s.last_failure_reason : ""}. El motor sigue corriendo; el próximo ciclo reintenta.`;
-  } else if ((s.generated_at === null) && ((s.cycles_total || 0) === 0)) {
-    el.textContent = "Esperando el primer escaneo del día...";
-  } else {
-    const hhmmss = (s.generated_at || "").slice(11, 19);
-    el.textContent = `Último ciclo: ${hhmmss} UTC · ${s.symbols_ok}/${s.symbols_scanned} símbolos con dato correcto · ${s.cycles_ok || 0}/${s.cycles_total || 0} ciclos con datos.`;
-  }
-}
 
-// Regla de consenso (2026-08-03, aprobada explícitamente por el usuario,
-// ver MEMORY_ENGINE.md): Radar Explosivo es el filtro de operabilidad,
-// el Memory Engine evalúa la evidencia histórica -- la recomendación
-// final SOLO existe cuando ambos están de acuerdo. Un candidato con
-// `eligible_radar === false` nunca puede aparecer como Explosiva,
-// Momentum, Hero ni Plan B, sin importar su semáforo o Ranking Score
-// (el servidor ya lo ordena por debajo de los elegibles -- este filtro
-// es la segunda capa de protección, explícita en la Cabina). Si
-// cualquiera de los dos sistemas rechaza un símbolo, va a "No tocar"
-// con el motivo real de cuál de los dos lo rechazó.
-function _explosivasReal() { return _memoryRanking.candidates.filter(c => c.eligible_radar && c.market_cap_bucket === "micro" && c.semaforo === "verde"); }
-function _momentumReal() { return _memoryRanking.candidates.filter(c => c.eligible_radar && c.semaforo === "amarillo"); }
-function _noTocarReal() { return _memoryRanking.candidates.filter(c => !c.eligible_radar || c.semaforo === "rojo"); }
+  el.innerHTML = top.map((o, i) => {
+    const chg = o.change_pct_actual;
+    const chgClass = chg > 0 ? "up" : chg < 0 ? "down" : "";
+    const rvol = o.relative_volume_hoy ?? o.relative_volume_at_detection;
+    const rank1 = i === 0 ? " rank-1" : i === 1 ? " rank-2" : "";
+    const detectadaHace = o.minutos_desde_deteccion != null ? `hace ${Math.round(o.minutos_desde_deteccion)} min` : "";
 
-// El Dashboard muestra como máximo DASHBOARD_TOP_N por columna -- hallazgo
-// real al conectar datos en vivo: con el universo completo, "Momentum"
-// puede tener más de 100 candidatos (la banda de evidencia más débil
-// matchea a casi cualquier símbolo con volumen relativo moderado). Mostrar
-// eso sin acotar rompe "Dashboard = solo lo necesario para decidir rápido".
-// Limpieza de menú (2026-08-27): las páginas completas de Explosivas/
-// Momentum/ETF/No tocar se retiraron de la navegación -- este resumen de
-// 3 columnas (`renderTripleColumns()`) queda como el único lugar donde
-// esas listas siguen siendo visibles, siempre acotadas a DASHBOARD_TOP_N.
-const DASHBOARD_TOP_N = 5;
-
-function renderTripleColumns() {
-  const explosivasAll = _explosivasReal();
-  const explosivas = explosivasAll.slice(0, DASHBOARD_TOP_N);
-  document.getElementById("explosivas-status").innerHTML = _memoryRanking.candidates.length
-    ? `<b style="color:var(--green)">${explosivasAll.length} candidato(s)</b> microcap con evidencia confiable ahora mismo${explosivasAll.length > DASHBOARD_TOP_N ? ` -- mostrando los ${DASHBOARD_TOP_N} más fuertes` : ""}.`
-    : `<span class="dim">Esperando datos del escaneo...</span>`;
-  document.getElementById("dashboard-explosivas").innerHTML = explosivas.length
-    ? explosivas.map(m => `
-        <div class="triple-item">
-          <span class="sym">${semaforoHtml(m.semaforo)} ${m.symbol}</span>
-          <span class="triple-detail">${fmtNum(m.probability_pct)}% · ${m.confidence}</span>
-        </div>`).join("")
-    : `<div class="empty-state">Ninguna microcap explosiva ahora.</div>`;
-
-  const momentumAll = _momentumReal();
-  const momentum = momentumAll.slice(0, DASHBOARD_TOP_N);
-  document.getElementById("momentum-status").innerHTML = _memoryRanking.candidates.length
-    ? `<b style="color:var(--amber)">${momentumAll.length} candidato(s)</b> con evidencia moderada (lift &lt;10x el baseline)${momentumAll.length > DASHBOARD_TOP_N ? ` -- mostrando los ${DASHBOARD_TOP_N} más fuertes` : ""}.`
-    : `<span class="dim">Esperando datos del escaneo...</span>`;
-  document.getElementById("dashboard-momentum").innerHTML = momentum.length
-    ? momentum.map(m => `
-        <div class="triple-item">
-          <span class="sym">${semaforoHtml(m.semaforo)} ${m.symbol}</span>
-          <span class="triple-detail">${fmtPct(m.change_pct)} · ${fmtNum(m.probability_pct)}%</span>
-        </div>`).join("")
-    : `<div class="empty-state">Sin candidatos de momentum.</div>`;
-
-  const noTocarAll = _noTocarReal();
-  const noTocar = noTocarAll.slice(0, DASHBOARD_TOP_N);
-  document.getElementById("no-tocar-status").innerHTML =
-    `<b style="color:var(--red)">${noTocarAll.length} símbolo(s)</b> sin evidencia histórica confiable hoy${noTocarAll.length > DASHBOARD_TOP_N ? ` -- mostrando ${DASHBOARD_TOP_N}` : ""}.`;
-  document.getElementById("dashboard-no-tocar").innerHTML = noTocar.length
-    ? noTocar.map(d => `
-        <div class="triple-item">
-          <span class="sym">🔴 ${d.symbol}</span>
-          <span class="triple-reason">${badgeHtml("Sin evidencia", "rojo")}<br>${d.explanation}</span>
-        </div>`).join("")
-    : `<div class="empty-state">Nada marcado para evitar hoy.</div>`;
-}
-
-/* ---------------- Oportunidad del día (detalle, Q5-Q8) ---------------- */
-
-function renderOportunidad() {
-  // Fase 3/5: mismo criterio que renderHero() -- detalle completo del
-  // MISMO candidato canónico, nunca `candidates[0]` crudo.
-  const o = _currentTopOpportunityCandidate();
-  const ctop = _memoryRanking.current_top_opportunity;
-  const decision = ctop ? ctop.decision : null;
-  const el = document.getElementById("oportunidad-detail");
-  if (!o || !_isRecommendableDecision(decision)) {
-    el.innerHTML = `<div class="empty-state">${_noOpportunityHtml(o, decision)}</div>`;
-    return;
-  }
-  el.innerHTML = `
-    <div class="detail-hero">
-      <div class="detail-hero-top">
-        <span class="detail-symbol">${o.symbol}</span>
-        ${semaforoHtml(o.semaforo)}
-        ${badgeHtml(o.market_cap_bucket === "micro" ? "MICROCAP" : (o.market_cap_bucket || "?").toUpperCase(), o.semaforo)}
-        <span class="dim">${fmtMoney(o.price)}</span>${bidOnlyWarningHtml(o)}
+    return `
+    <div class="opp-row${rank1}">
+      <div class="rank-badge">${i + 1}</div>
+      <div class="tk-col">
+        <div class="ticker">${o.ticker}</div>
+        <div class="meta">${detectadaHace}${o.racional_available ? " · Racional" : ""}</div>
       </div>
-      ${priceBreakdownHtml(o)}
-
-      <div class="detail-grid">
-        <div class="detail-metric">
-          <div class="detail-metric-label">5. Score Radar Explosivo</div>
-          <div class="detail-metric-value">${o.eligible_radar ? fmtNum(o.score) : "N/A (fuera del gate)"}</div>
-        </div>
-        <div class="detail-metric">
-          <div class="detail-metric-label">8. Confianza de Atlas</div>
-          <div class="detail-metric-value">${o.confidence}</div>
-        </div>
-        <div class="detail-metric">
-          <div class="detail-metric-label">Decisión Atlas (Decision Core, U3-B -- informativo)</div>
-          <div class="detail-metric-value">${atlasDecisionBadge(o.atlas_decision)}</div>
-        </div>
-        ${entryWindowMetricsHtml("detail-metric-label", "detail-metric-value", "detail-metric")}
+      <div class="px-col">
+        <div class="price">${o.price_actual != null ? "$" + fmtNum(o.price_actual, 2) : "--"}</div>
+        <div class="chg ${chgClass}">${fmtPct(chg)}</div>
       </div>
-
-      <div class="detail-explain">
-        <b>5. Por qué Atlas la recomienda:</b><br>${o.explanation}
+      <div class="vol-col">
+        <div class="vol-val">${rvol != null ? "RVOL " + fmtNum(rvol) + "x" : "--"}</div>
       </div>
-      <div class="detail-note">
-        6-7. Ventana óptima de entrada -- Motor Predictivo, capacidad <code>entry_window</code>
-        (${_entryWindow && _entryWindow.available ? _entryWindow.explanation : "todavía sin evidencia suficiente para este símbolo"}).
-      </div>
-
-      <div class="detail-grid" style="margin-top:6px">
-        <div class="detail-metric">
-          <div class="detail-metric-label">Evidencia histórica</div>
-          <div class="detail-metric-value" style="font-size:13px">${o.evidence_condition || '<span class="dim">sin condición confiable</span>'}</div>
-        </div>
-        <div class="detail-metric">
-          <div class="detail-metric-label">Muestra / Wilson (mínimo)</div>
-          <div class="detail-metric-value" style="font-size:13px">${o.evidence_sample_size ? `n=${o.evidence_sample_size} · ${fmtNum(o.evidence_wilson_lower_bound_pct)}%` : '<span class="dim">--</span>'}</div>
-        </div>
+      <div class="proj-col">${_proyeccionHtml(o)}</div>
+      <div class="why-col">
+        <div class="why-line">${_porQueHtml(o)}</div>
       </div>
     </div>`;
+  }).join("");
 }
 
-/* ---------------- Tablas genéricas ---------------- */
+/* ============================================================
+ * APRENDIZAJE -- chips dentro del encabezado de Oportunidades.
+ * Fuente: GET /api/learning-maturity (sin cambios de backend),
+ * campos hoy.precision / hoy.aciertos -- nunca recalculados acá.
+ * ============================================================ */
 
-// Orden ascendente/descendente por columna (2026-08-19, pedido explícito
-// del usuario) -- puramente de presentación en el navegador, no toca
-// ningún dato ni endpoint. Solo columnas con `sortValue` (el valor crudo
-// detrás del HTML de `render`) quedan ordenables; sin esa función la
-// columna se muestra igual que siempre, sin click. El estado de orden se
-// guarda por tabla (`elementId`) para que sobreviva los refrescos
-// automáticos del panel -- si no, el usuario perdería el orden elegido
-// cada 30-60s cuando el panel se vuelve a pedir solo.
-const _tableSortState = {};
-
-function renderGenericTable(elementId, rows, columns) {
-  const el = document.getElementById(elementId);
-  if (!rows.length) {
-    el.innerHTML = `<tbody><tr><td class="empty-state">Sin candidatos en esta categoría en este momento.</td></tr></tbody>`;
-    return;
-  }
-
-  const state = _tableSortState[elementId];
-  let sortedRows = rows;
-  const activeCol = state ? columns[state.colIndex] : null;
-  if (activeCol && activeCol.sortValue) {
-    sortedRows = [...rows].sort((a, b) => {
-      const va = activeCol.sortValue(a), vb = activeCol.sortValue(b);
-      if (va == null && vb == null) return 0;
-      if (va == null) return 1;   // sin dato siempre al final, sin importar la dirección
-      if (vb == null) return -1;
-      if (va < vb) return -1 * state.dir;
-      if (va > vb) return 1 * state.dir;
-      return 0;
-    });
-  }
-
-  const head = "<tr>" + columns.map((c, i) => {
-    if (!c.sortValue) return `<th>${c.label}</th>`;
-    const isActive = state && state.colIndex === i;
-    const arrow = isActive ? (state.dir === 1 ? " ▲" : " ▼") : "";
-    return `<th class="sortable-col" data-col-idx="${i}" style="cursor:pointer;user-select:none" title="Ordenar por ${c.label}">${c.label}${arrow}</th>`;
-  }).join("") + "</tr>";
-  const body = sortedRows.map(r => "<tr>" + columns.map(c => `<td>${c.render(r)}</td>`).join("") + "</tr>").join("");
-  el.innerHTML = `<thead>${head}</thead><tbody>${body}</tbody>`;
-
-  el.querySelectorAll("th.sortable-col").forEach(th => {
-    th.addEventListener("click", () => {
-      const idx = Number(th.dataset.colIdx);
-      const current = _tableSortState[elementId];
-      const dir = (current && current.colIndex === idx) ? -current.dir : 1;
-      _tableSortState[elementId] = { colIndex: idx, dir };
-      renderGenericTable(elementId, rows, columns);
-    });
-  });
-}
-
-function renderRadarCompleto() {
-  // Conteos honestos (2026-08-18, punto 6): ya NO se afirma "universo
-  // completo, sin filtrar" sin evidencia -- se muestran los números reales
-  // del último ciclo de scan_worker (mismo `_systemStatus` que ya trae
-  // fetchSystemStatus() de /api/ranking).
-  const statsEl = document.getElementById("radar-completo-stats");
-  if (statsEl) {
-    const s = _systemStatus;
-    if (!s) {
-      statsEl.textContent = "Esperando el primer ciclo de escaneo...";
-    } else {
-      statsEl.textContent =
-        `Símbolos recibidos: ${s.symbols_scanned ?? "--"} · ` +
-        `Con dato de Tradier: ${s.symbols_tradier_source ?? "--"} · ` +
-        `Con dato de respaldo (Yahoo/Finnhub): ${s.symbols_fallback_source ?? "--"} · ` +
-        `Sin datos (excluidos): ${s.errors ?? "--"}`;
-    }
-  }
-  renderGenericTable("radar-completo-table", _memoryRanking.candidates, [
-    { label: "Símbolo", render: r => `<span class="sym">${r.symbol}</span>`, sortValue: r => r.symbol },
-    { label: "Precio", render: r => `${fmtMoney(r.price)}<br>${priceContextLine(r)}`, sortValue: r => r.price },
-    { label: "Antigüedad", render: r => r.price_age_seconds != null ? fmtAge(r.price_age_seconds) : '<span class="dim">--</span>', sortValue: r => r.price_age_seconds },
-    { label: "Cambio", render: r => fmtPct(r.change_pct), sortValue: r => r.change_pct },
-    { label: "Score Radar", render: r => fmtNum(r.score), sortValue: r => r.score },
-    { label: "Elegible", render: r => r.eligible_radar
-        ? "Sí"
-        : `<span class="no-tocar-radar-reason">No -- ${r.radar_excluded_reason || "no elegible"}</span>`,
-      sortValue: r => r.eligible_radar ? 1 : 0 },
-    { label: "Probabilidad ME", render: r => r.probability_pct !== null ? fmtNum(r.probability_pct) + "%" : '<span class="dim">--</span>', sortValue: r => r.probability_pct },
-    { label: "Semáforo", render: r => semaforoHtml(r.semaforo), sortValue: r => r.semaforo },
-  ]);
-}
-
-function renderExitJournal() {
-  renderGenericTable("exit-journal-table", _exitJournalSummaries, [
-    { label: "Símbolo", render: r => `<span class="sym">${r.symbol}</span>`, sortValue: r => r.symbol },
-    { label: "Fecha", render: r => r.date, sortValue: r => r.date },
-    { label: "Detección", render: r => fmtTime(r.detected_at), sortValue: r => r.detected_at },
-    { label: "Entrada (sellado)", render: r => fmtTime(r.entry_at), sortValue: r => r.entry_at },
-    { label: "Máximo", render: r => r.peak_at ? `${fmtTime(r.peak_at)} (${fmtPct(r.peak_return_pct)})` : '<span class="dim">--</span>', sortValue: r => r.peak_return_pct },
-    { label: "Rendimiento final", render: r => r.final_return_pct !== null ? fmtPct(r.final_return_pct) : '<span class="dim">--</span>', sortValue: r => r.final_return_pct },
-    { label: "Muestras", render: r => r.sample_count, sortValue: r => r.sample_count },
-  ]);
-}
-
-/* Panel de Desempeño (2026-08-07, ver DECISION_LOG.md) -- Nivel 1
- * (Oportunidad Oficial del Día, Prediction Journal) y Nivel 2
- * (Rendimiento histórico, Exit Journal) nunca se mezclan en el mismo
- * número: "acierto del modelo" (¿pasó lo que Atlas predijo?) y
- * "rentabilidad" (¿fue rentable?) son dos conceptos separados, a
- * pedido explícito del usuario. */
-let _performance = null;
-
-async function fetchPerformance() {
+async function fetchAprendizaje() {
   try {
-    const res = await fetch("/api/performance");
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    _performance = await res.json();
+    const res = await fetch("/api/learning-maturity");
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
+    renderAprendizaje(data);
   } catch (err) {
-    console.error("fetchPerformance:", err);
-    _performance = null;
+    console.error("fetchAprendizaje:", err);
   }
-  renderPerformance();
 }
 
-function renderPerformance() {
-  const dia = _performance ? _performance.oportunidad_del_dia : null;
-  const g = _performance ? _performance.rendimiento_global : null;
+function renderAprendizaje(data) {
+  const hoy = (data && data.hoy) || {};
+  const pctEl = document.getElementById("chip-aprendizaje");
+  const pctSubEl = document.getElementById("chip-aprendizaje-sub");
+  const aciertosEl = document.getElementById("chip-aciertos");
+  const aciertosSubEl = document.getElementById("chip-aciertos-sub");
+  if (!pctEl || !aciertosEl) return;
 
-  const diaEl = document.getElementById("desempeno-dia");
-  if (!dia || !dia.available) {
-    diaEl.innerHTML = `<div class="empty-state">Sin ranking sellado ese día -- nada que mostrar todavía.</div>`;
-  } else {
-    diaEl.innerHTML = `
-      <div class="detail-grid">
-        <div class="detail-metric"><div class="detail-metric-label">Símbolo</div><div class="detail-metric-value">${dia.symbol}</div></div>
-        <div class="detail-metric"><div class="detail-metric-label">Resultado</div><div class="detail-metric-value">${dia.graded ? (dia.resultado || '<span class="dim">--</span>') : '<span class="dim">Sin calificar todavía</span>'}</div></div>
-        <div class="detail-metric"><div class="detail-metric-label">Rentabilidad</div><div class="detail-metric-value">${fmtPct(dia.rentabilidad_pct)}</div></div>
-        <div class="detail-metric"><div class="detail-metric-label">Tiempo hasta el objetivo</div><div class="detail-metric-value">${dia.tiempo_hasta_objetivo_min !== null ? dia.tiempo_hasta_objetivo_min.toFixed(0) + " min" : '<span class="dim">--</span>'}</div></div>
-      </div>
-      <div class="detail-explain" style="margin-top:12px"><b>Motivo:</b> ${dia.motivo || '<span class="dim">--</span>'}</div>`;
-  }
+  pctEl.textContent = hoy.precision != null ? `${fmtNum(hoy.precision)}%` : "--";
+  pctSubEl.textContent = hoy.evaluables != null ? `${hoy.evaluables} evaluados hoy` : "sin datos hoy";
 
-  if (!g) {
-    document.getElementById("desempeno-resumen").innerHTML = "";
-    document.getElementById("desempeno-precision").innerHTML = "";
-    document.getElementById("desempeno-financiero").innerHTML = "";
-    document.getElementById("desempeno-evolucion").innerHTML = "";
-    document.getElementById("desempeno-score").innerHTML = "";
-    return;
-  }
-
-  document.getElementById("desempeno-resumen").innerHTML = `
-    <div class="detail-metric"><div class="detail-metric-label">Recomendaciones hoy</div><div class="detail-metric-value">${g.recomendaciones_emitidas_hoy}</div></div>
-    <div class="detail-metric"><div class="detail-metric-label">Abiertas</div><div class="detail-metric-value">${g.operaciones_abiertas_hoy}</div></div>
-    <div class="detail-metric"><div class="detail-metric-label">Cerradas</div><div class="detail-metric-value">${g.operaciones_cerradas_hoy}</div></div>
-    <div class="detail-metric"><div class="detail-metric-label">Win Rate diario</div><div class="detail-metric-value">${g.win_rate_periodos.diario_pct !== null ? fmtNum(g.win_rate_periodos.diario_pct) + "%" : '<span class="dim">--</span>'}</div></div>
-    <div class="detail-metric"><div class="detail-metric-label">Win Rate semanal</div><div class="detail-metric-value">${g.win_rate_periodos.semanal_pct !== null ? fmtNum(g.win_rate_periodos.semanal_pct) + "%" : '<span class="dim">--</span>'}</div></div>
-    <div class="detail-metric"><div class="detail-metric-label">Win Rate mensual</div><div class="detail-metric-value">${g.win_rate_periodos.mensual_pct !== null ? fmtNum(g.win_rate_periodos.mensual_pct) + "%" : '<span class="dim">--</span>'}</div></div>`;
-
-  const p = g.precision_del_modelo;
-  const dva = p.detectadas_vs_acertadas;
-  document.getElementById("desempeno-precision").innerHTML = `
-    <div class="detail-grid">
-      <div class="detail-metric"><div class="detail-metric-label">Tasa de acierto</div><div class="detail-metric-value">${p.tasa_acierto_pct !== null ? fmtNum(p.tasa_acierto_pct) + "%" : '<span class="dim">--</span>'}</div></div>
-      <div class="detail-metric"><div class="detail-metric-label">Muestra (histórico)</div><div class="detail-metric-value">${p.muestra}</div></div>
-      <div class="detail-metric"><div class="detail-metric-label">Detectadas hoy</div><div class="detail-metric-value">${dva.detectadas}</div></div>
-      <div class="detail-metric"><div class="detail-metric-label">Acertadas hoy</div><div class="detail-metric-value">${dva.acertadas}</div></div>
-    </div>`;
-
-  const f = g.rendimiento_financiero;
-  document.getElementById("desempeno-financiero").innerHTML = `
-    <div class="detail-grid">
-      <div class="detail-metric"><div class="detail-metric-label">Win Rate (financiero)</div><div class="detail-metric-value">${f.win_rate_financiero_pct !== null ? fmtNum(f.win_rate_financiero_pct) + "%" : '<span class="dim">--</span>'}</div></div>
-      <div class="detail-metric"><div class="detail-metric-label">Profit Factor</div><div class="detail-metric-value">${f.profit_factor !== null ? fmtNum(f.profit_factor, 2) : '<span class="dim">--</span>'}</div></div>
-      <div class="detail-metric"><div class="detail-metric-label">Ganancia promedio</div><div class="detail-metric-value">${fmtPct(f.ganancia_promedio_pct)}</div></div>
-      <div class="detail-metric"><div class="detail-metric-label">Pérdida promedio</div><div class="detail-metric-value">${fmtPct(f.perdida_promedio_pct)}</div></div>
-      <div class="detail-metric"><div class="detail-metric-label">Expectativa matemática</div><div class="detail-metric-value">${fmtPct(f.expectativa_pct)}</div></div>
-      <div class="detail-metric"><div class="detail-metric-label">Máximo drawdown <span class="dim" style="font-size:10px">(hipotético)</span></div><div class="detail-metric-value">${f.drawdown_hipotetico_pct !== null ? fmtNum(f.drawdown_hipotetico_pct) + " pts" : '<span class="dim">--</span>'}</div></div>
-      <div class="detail-metric"><div class="detail-metric-label">Mejor operación hoy</div><div class="detail-metric-value">${fmtPct(f.mejor_operacion_hoy_pct)}</div></div>
-      <div class="detail-metric"><div class="detail-metric-label">Peor operación hoy</div><div class="detail-metric-value">${fmtPct(f.peor_operacion_hoy_pct)}</div></div>
-    </div>
-    <div class="detail-note" style="margin-top:10px">El drawdown es una curva de capital <b>hipotética</b> (una unidad fija por operación) -- no representa dinero real, Atlas no gestiona una cuenta.</div>`;
-
-  const evo = g.evolucion.slice(-30);
-  document.getElementById("desempeno-evolucion").innerHTML = `
-    <h3>Evolución del Win Rate (últimos ${evo.length} días con operaciones)</h3>
-    ${evo.length ? `<div class="table-wrap"><table class="data-table"><thead><tr><th>Fecha</th><th>Win Rate</th><th>Operaciones</th></tr></thead><tbody>
-      ${evo.map(e => `<tr><td>${e.fecha}</td><td>${e.win_rate_pct !== null ? fmtNum(e.win_rate_pct) + "%" : '<span class="dim">--</span>'}</td><td>${e.n}</td></tr>`).join("")}
-    </tbody></table></div>` : `<div class="empty-state">Sin operaciones cerradas todavía.</div>`}`;
-
-  const score = g.atlas_score;
-  document.getElementById("desempeno-score").innerHTML = `
-    <h3>Atlas Score</h3>
-    ${score.score !== null ? `
-      <div class="hero-metric-value" style="font-size:36px">${score.score} / 100</div>
-      <div class="detail-grid" style="margin-top:10px">
-        ${Object.entries(score.componentes).map(([k, v]) => `
-          <div class="detail-metric">
-            <div class="detail-metric-label">${k.replace(/_/g, " ")} (peso ${(score.pesos_usados[k] * 100).toFixed(0)}%)</div>
-            <div class="detail-metric-value">${v !== null ? v.toFixed(1) : '<span class="dim">sin dato</span>'}</div>
-          </div>`).join("")}
-      </div>
-      <div class="detail-note" style="margin-top:10px">Combinación configurable (<code>performance_config.json</code>) de los componentes de arriba -- nunca un juicio inventado. Cambiar los pesos queda registrado en <code>DECISION_LOG.md</code>.</div>
-    ` : `<div class="empty-state">Sin operaciones cerradas todavía -- el Atlas Score necesita evidencia real, no se fabrica.</div>`}`;
+  aciertosEl.textContent = hoy.aciertos != null ? hoy.aciertos : "--";
+  aciertosSubEl.textContent = hoy.fallos != null ? `${hoy.fallos} fallos` : "";
 }
 
-function renderMissionControl() {
-  // Historial de cambios de marketState (punto 5, 2026-08-02) -- hora
-  // exacta de cada transición detectada, para diagnóstico y para el
-  // futuro Learning Engine. Reutiliza el Timeline ya existente, no un
-  // mecanismo de registro nuevo.
-  const historyRows = _missionControlMarketStateHistory.map(h => `
-    <tr>
-      <td>${fmtTime(h.timestamp)} ET</td>
-      <td>${marketStateBadgeHtml(h.market_state)}</td>
-      <td>${h.previous_market_state ? marketStateBadgeHtml(h.previous_market_state) : '<span class="dim">-- (primer estado detectado)</span>'}</td>
-    </tr>`).join("");
-  document.getElementById("mission-control-market-state").innerHTML = `
-    <h3>Historial de sesión de mercado detectada</h3>
-    <div class="table-wrap">
-      <table class="data-table">
-        <thead><tr><th>Hora del cambio</th><th>Estado nuevo</th><th>Estado anterior</th></tr></thead>
-        <tbody>${historyRows || '<tr><td class="empty-state" colspan="3">Sin cambios de sesión detectados todavía.</td></tr>'}</tbody>
-      </table>
-    </div>`;
+/* ============================================================
+ * UNIVERSO -- panel secundario.
+ * Fuente: GET /api/universo-resumen (nuevo, aditivo, solo lectura --
+ * ver atlas_live/server.py::api_universo_resumen()).
+ * ============================================================ */
 
-  renderGenericTable("mission-control-table", _missionControlProcesses, [
-    { label: "Proceso", render: r => `${r.process_type} -- ${r.label}`, sortValue: r => r.process_type },
-    { label: "Estado", render: r => r.state, sortValue: r => r.state },
-    { label: "Último latido", render: r => fmtTime(r.last_heartbeat), sortValue: r => r.last_heartbeat },
-    { label: "Progreso", render: r => {
-        const p = r.progress || {};
-        return p.total ? `${p.done ?? 0} / ${p.total} ${p.unit || ""}` : '<span class="dim">--</span>';
-      }, sortValue: r => (r.progress && r.progress.total) ? (r.progress.done ?? 0) / r.progress.total : null },
-    { label: "CPU", render: r => r.cpu_percent !== undefined ? `${r.cpu_percent}%` : '<span class="dim">--</span>', sortValue: r => r.cpu_percent },
-    { label: "Memoria", render: r => r.memory_mb !== undefined ? `${r.memory_mb} MB` : '<span class="dim">--</span>', sortValue: r => r.memory_mb },
-  ]);
-}
-
-/* ---------------- Bloques a medida ---------------- */
-
-function renderMemoryEngine() {
-  const m = _memoryEngine;
-  if (!m) {
-    document.getElementById("memory-engine-body").innerHTML = `<div class="detail-note">Cargando estado del Memory Engine...</div>`;
-    return;
-  }
-  const rows = m.reliable_conditions.map(c => `
-    <tr>
-      <td class="dim">${c.label}</td>
-      <td>${fmtNum(c.win_rate_pct)}%</td>
-      <td>${fmtNum(c.wilson_lower_bound_pct)}%</td>
-      <td>${c.sample_size}</td>
-      <td class="num-pos">${c.lift !== null ? fmtNum(c.lift) + "x" : '<span class="dim">--</span>'}</td>
-    </tr>`).join("");
-
-  document.getElementById("memory-engine-body").innerHTML = `
-    <div class="info-block">
-      <h3>Estado de la evidencia -- Atlas Alpha 1.0</h3>
-      <div class="kv-row"><span class="k">Observaciones acumuladas</span><span class="v">${(m.observation_count ?? 0).toLocaleString()}</span></div>
-      <div class="kv-row"><span class="k">Días de evidencia histórica</span><span class="v">${m.days_backed ?? "--"}</span></div>
-      <div class="kv-row"><span class="k">Tasa base poblacional (EXPLOSION)</span><span class="v">${fmtNum(m.baseline_win_rate_pct)}%</span></div>
-      <div class="kv-row"><span class="k">Última recalibración</span><span class="v">${m.last_recalibrated_on || "--"}</span></div>
-    </div>
-    <div class="table-wrap">
-      <table class="data-table">
-        <thead><tr><th>Condición confiable</th><th>Win rate</th><th>Wilson (mínimo)</th><th>Muestra</th><th>Lift</th></tr></thead>
-        <tbody>${rows || '<tr><td class="empty-state" colspan="5">Sin condiciones confiables en esta evidencia.</td></tr>'}</tbody>
-      </table>
-    </div>`;
-}
-
-function renderPredictionJournal() {
-  const pj = _predictionJournal;
-  if (!pj) {
-    document.getElementById("prediction-journal-body").innerHTML = `<div class="detail-note">Cargando Prediction Journal...</div>`;
-    return;
-  }
-  const rows = pj.recent_days.map(d => `
-    <tr>
-      <td>${d.date}</td>
-      <td class="sym">${d.top_symbol}</td>
-      <td>${fmtNum(d.predicted_probability_pct)}%</td>
-      <td>${d.result_category || '<span class="dim">sin calificar</span>'}</td>
-      <td>${d.result_pct !== null ? fmtPct(d.result_pct) : '<span class="dim">--</span>'}</td>
-      <td>${d.anticipation_minutes !== null ? Math.round(d.anticipation_minutes) + " min" : '<span class="dim">--</span>'}</td>
-    </tr>`).join("");
-
-  const sellado = pj.sealed_today
-    ? `<div class="kv-row"><span class="k">Sellado a las</span><span class="v">${fmtTime(pj.sealed_today.sealed_at)}</span></div>
-       <div class="kv-row"><span class="k">Candidatos sellados</span><span class="v">${pj.sealed_today.candidate_count}</span></div>
-       <div class="kv-row"><span class="k">Top del día</span><span class="v">${pj.sealed_today.top_symbol || "--"}</span></div>`
-    : `<div class="detail-note">Todavía no se selló el ranking de hoy (${pj.date}) -- el sellado ocurre en la ventana 09:25-09:30 ET del premarket.</div>`;
-
-  document.getElementById("prediction-journal-body").innerHTML = `
-    <div class="info-block">
-      <h3>Ranking oficial de hoy</h3>
-      ${sellado}
-    </div>
-    <div class="table-wrap">
-      <table class="data-table">
-        <thead><tr><th>Fecha</th><th>Top símbolo</th><th>Prob. predicha</th><th>Resultado real</th><th>Rendimiento</th><th>Anticipación</th></tr></thead>
-        <tbody>${rows || '<tr><td class="empty-state" colspan="6">Todavía no hay días sellados.</td></tr>'}</tbody>
-      </table>
-    </div>`;
-}
-
-/* "Configuración" -> valores REALES de /api/config (limpieza MOCK
- * 2026-08-07): los lee de los propios módulos del backend (scan_worker,
- * classifier, explosive_config, market_hours), no de constantes
- * hardcodeadas en la interfaz. Estado honesto si el endpoint falla. */
-async function renderConfig() {
-  const el = document.getElementById("config-body");
-  let c;
+async function fetchUniverso() {
   try {
-    const res = await fetch("/api/config");
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    c = await res.json();
+    const res = await fetch("/api/universo-resumen");
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
+    renderUniverso(data);
   } catch (err) {
-    console.error("renderConfig:", err);
-    el.innerHTML = `<div class="empty-state">Configuración no disponible en este momento -- no se pudo leer del servidor.</div>`;
-    return;
+    console.error("fetchUniverso:", err);
   }
-  const mh = c.market_hours || {};
-  const microMM = c.microcap_ceiling_usd ? `US$${(c.microcap_ceiling_usd / 1e6).toFixed(0)}M` : "--";
-  const dollarVol = c.min_dollar_volume_usd ? `US$${(c.min_dollar_volume_usd / 1e6).toFixed(1)}M` : "--";
-  el.innerHTML = `
-    <div class="info-block">
-      <h3>Parámetros vigentes (valores reales del backend, solo lectura)</h3>
-      <div class="kv-row"><span class="k">Intervalo de escaneo</span><span class="v">${(c.refresh_interval_seconds / 60).toFixed(0)} min</span></div>
-      <div class="kv-row"><span class="k">Ventana de sellado</span><span class="v">${c.seal_window}</span></div>
-      <div class="kv-row"><span class="k">Horario de mercado</span><span class="v">Premarket ${mh.premarket} · Regular ${mh.regular} · Afterhours ${mh.afterhours} (${mh.timezone})</span></div>
-      <div class="kv-row"><span class="k">Umbral EXPLOSION</span><span class="v">&ge; ${c.explosion_threshold_pct}%</span></div>
-      <div class="kv-row"><span class="k">Techo FALSE_BREAKOUT</span><span class="v">&lt; ${c.false_breakout_ceiling_pct}%</span></div>
-      <div class="kv-row"><span class="k">Umbral LOSER</span><span class="v">&le; ${c.loser_threshold_pct}%</span></div>
-      <div class="kv-row"><span class="k">Techo microcap</span><span class="v">${microMM}</span></div>
-      <div class="kv-row"><span class="k">Precio mínimo</span><span class="v">US$${c.min_price_usd}</span></div>
-      <div class="kv-row"><span class="k">Volumen $ mínimo (liquidez)</span><span class="v">${dollarVol}</span></div>
-      <div class="kv-row"><span class="k">Top N publicado</span><span class="v">${c.top_n}</span></div>
-    </div>
-    <div class="detail-note">Estos valores se leen en vivo de los módulos del backend (scan_worker, classifier, explosive_config, market_hours) -- no están hardcodeados en la interfaz.</div>`;
 }
 
-/* ---------------- Arranque ---------------- */
+function renderUniverso(data) {
+  const statsEl = document.getElementById("uni-stats");
+  const volEl = document.getElementById("uni-volumen");
+  if (!statsEl || !volEl) return;
 
-/* ---------------- Mercado (2026-08-29, autorizado explícitamente) ----------
- * Ranking en vivo del universo EQUITY de Racional (1.646 símbolos, sin
- * ETFs/ETNs), ordenado por variación % del día -- vista de solo lectura,
- * consume `/api/mercado` (snapshot ya cacheado por el backend, esta
- * pantalla NUNCA dispara una consulta nueva a Tradier, sin importar la
- * frecuencia de polling). No participa en ninguna decisión de Atlas. */
+  statsEl.innerHTML = `
+    <div class="uni-stat"><div class="n">${data.universo_total ?? "--"}</div><div class="l">acciones en el universo</div></div>
+    <div class="uni-stat rac"><div class="n">${data.disponibles_racional ?? "--"}</div><div class="l">disponibles en Racional</div></div>`;
 
-const MERCADO_POLL_MS = 3000; // pedido explícito: refresco de pantalla cada ~3s
+  const top = data.top_volumen || [];
+  if (!top.length) {
+    volEl.innerHTML = `<div class="empty-state small">Sin datos de volumen todavía (el radar no barrió nada aún).</div>`;
+    return;
+  }
+  const maxVol = Math.max(...top.map((r) => r.volume || 0)) || 1;
+  volEl.innerHTML = top.map((r) => `
+    <div class="uni-row">
+      <span class="t">${r.ticker}</span>
+      <div class="bar"><span style="width:${Math.round((r.volume / maxVol) * 100)}%"></span></div>
+      <span class="vv">${r.volume != null ? Number(r.volume).toLocaleString("es") : "--"}${r.racional_available ? " · Rac." : ""}</span>
+    </div>`).join("");
+}
+
+/* ============================================================
+ * MERCADO -- panel secundario. Copia literal de la lógica anterior
+ * (fetch/render/sparkline/edad) -- CERO cambios de datos ni de cálculo,
+ * solo el intervalo de polling se acorta (ver nota junto a
+ * MERCADO_POLL_MS). Fuente: GET /api/mercado (snapshot ya cacheado por
+ * market_view.py -- este fetch nunca dispara una consulta nueva a
+ * Tradier, sin importar la frecuencia).
+ * ============================================================ */
+
+// Antes: 3000ms. La velocidad REAL de los datos la fija el ciclo de
+// fondo de market_view.py (auto-ajustado, piso 10s / techo 90s / margen
+// de seguridad 3x sobre la duración real del último ciclo) -- bajar el
+// polling del navegador no adelanta ese ciclo, solo reduce la demora
+// entre "el snapshot ya está listo" y "se ve en pantalla". Como
+// `/api/mercado` está documentado como de costo cero por request (solo
+// lee el snapshot cacheado, nunca contacta a Tradier), acortar el
+// polling acá es seguro y no genera carga ni ciclos concurrentes nuevos.
+// Bajar el piso/margen del ciclo de fondo en sí queda fuera de este
+// cambio -- requiere medir duraciones reales de un día de mercado activo
+// antes de tocar `market_view.py` (ver informe de la sesión).
+const MERCADO_POLL_MS = 1500;
 let _mercado = { generated_at: null, cycle_duration_s: null, rows: [] };
 let _mercadoSearch = "";
 
@@ -3048,16 +269,9 @@ function _mercadoAgeShort(ageSeconds) {
   return `${hours}h`;
 }
 
-// Sparkline SVG minimalista -- sin librerías externas, mismo criterio que
-// el resto de la Cabina. Puntos ya vienen del backend (buffer circular de
-// precios reales, `market_view.py`); acá solo se normalizan a un viewBox
-// fijo, ningún dato se inventa ni se interpola.
 function _sparklineSvg(points, isUp) {
-  // Colores propios del tema claro de Mercado (--mkt-up/--mkt-down,
-  // definidos en #view-mercado) -- nunca las variables oscuras globales
-  // de Atlas, para que el trazo se vea bien sobre fondo blanco.
   if (!points || points.length < 2) {
-    return `<svg class="mercado-spark" viewBox="0 0 100 30"><line x1="0" y1="15" x2="100" y2="15" stroke="var(--mkt-border,#e5e7eb)" stroke-width="1"/></svg>`;
+    return `<svg class="mercado-spark" viewBox="0 0 100 30"><line x1="0" y1="15" x2="100" y2="15" stroke="var(--border)" stroke-width="1"/></svg>`;
   }
   const min = Math.min(...points);
   const max = Math.max(...points);
@@ -3067,7 +281,7 @@ function _sparklineSvg(points, isUp) {
     const y = 28 - ((p - min) / span) * 26;
     return `${x.toFixed(1)},${y.toFixed(1)}`;
   }).join(" ");
-  const color = isUp ? "var(--mkt-up,#0f9d58)" : "var(--mkt-down,#d93025)";
+  const color = isUp ? "var(--green)" : "var(--red)";
   return `<svg class="mercado-spark" viewBox="0 0 100 30"><polyline points="${coords}" fill="none" stroke="${color}" stroke-width="2"/></svg>`;
 }
 
@@ -3078,41 +292,40 @@ function _mercadoInitials(symbol) {
 function renderMercado() {
   const listEl = document.getElementById("mercado-list");
   const metaEl = document.getElementById("mercado-meta");
+  const dotEl = document.getElementById("mkt-status-dot");
+  const textEl = document.getElementById("mkt-status-text");
   if (!listEl || !metaEl) return;
 
   const rows = _mercado.rows || [];
-  metaEl.innerHTML =
-    `Universo: ${_mercado.total_universe ?? "--"} instrumentos de Racional (EQUITY+ETF+ETN) -- ` +
-    `🟢 ${_mercado.frescos ?? _mercado.resueltos ?? 0} frescos · ⏱ ${_mercado.stale_cache ?? 0} antiguos · — ${_mercado.sin_datos ?? 0} sin dato · ` +
-    `${_mercadoAgeLabel(_mercado.generated_at)}` +
-    (_mercado.cycle_duration_s != null ? ` · último ciclo: ${_mercado.cycle_duration_s}s` : "");
+
+  if (dotEl && textEl) {
+    const hayDatos = rows.length > 0;
+    dotEl.className = "dot" + (hayDatos ? "" : " dot-off");
+    textEl.textContent = hayDatos ? _mercadoAgeLabel(_mercado.generated_at) : "Mercado sin datos";
+  }
+
+  metaEl.textContent = _mercado.total_universe
+    ? `${_mercado.total_universe} instrumentos · ${_mercadoAgeLabel(_mercado.generated_at)}`
+    : "sin cambios de lógica -- solo más rápido";
 
   if (!rows.length) {
-    listEl.innerHTML = `<div class="empty-state">${_mercado.ultimo_error ? "Error: " + _mercado.ultimo_error : "Esperando el primer ciclo de Mercado..."}</div>`;
+    listEl.innerHTML = `<div class="empty-state small">${_mercado.ultimo_error ? "Error: " + _mercado.ultimo_error : "Esperando el primer ciclo de Mercado..."}</div>`;
     return;
   }
 
   const q = _mercadoSearch.trim().toUpperCase();
   const filtered = q
-    ? rows.filter(r => r.symbol.toUpperCase().includes(q) || (r.name || "").toUpperCase().includes(q))
+    ? rows.filter((r) => r.symbol.toUpperCase().includes(q) || (r.name || "").toUpperCase().includes(q))
     : rows;
 
   if (!filtered.length) {
-    listEl.innerHTML = `<div class="empty-state">Sin resultados para "${_mercadoSearch}".</div>`;
+    listEl.innerHTML = `<div class="empty-state small">Sin resultados para "${_mercadoSearch}".</div>`;
     return;
   }
 
-  listEl.innerHTML = filtered.map(r => {
-    // Ajuste visual (2026-08-31, pedido explícito): todo el texto de
-    // Mercado es negro -- el ÚNICO color condicional es Cambio %
-    // (positivo=verde, negativo=rojo, cero=negro/neutro). Cambio $ queda
-    // siempre negro, nunca coloreado. `isUp` sigue usándose solo para el
-    // color del sparkline (no es texto).
+  listEl.innerHTML = filtered.map((r) => {
     const isUp = (r.change_pct ?? 0) >= 0;
     const priceText = r.price != null ? r.price.toFixed(2) : "--";
-    const changeAbsText = r.change_abs == null
-      ? "s/d"
-      : `${r.change_abs >= 0 ? "+" : ""}${r.change_abs.toFixed(2)}`;
     let pctClass = "";
     if (r.change_pct > 0) pctClass = "mercado-up";
     else if (r.change_pct < 0) pctClass = "mercado-down";
@@ -3120,18 +333,13 @@ function renderMercado() {
       ? "s/d"
       : `<span class="${pctClass}">${r.change_pct > 0 ? "+" : ""}${r.change_pct.toFixed(2)}%</span>`;
 
-    // Columna "Ext" -- indicador compacto de frescura del dato (pedido
-    // explícito: mostrar precio extendido/stale claramente, estilo
-    // Racional). 🟢 fresco de este ciclo, ⏱ antiguo (con antigüedad en
-    // tooltip), — sin dato todavía.
     let extIcon = '<span class="mercado-ext" title="Dato fresco de este ciclo">🟢</span>';
-    let staleTitle = "";
     if (r.data_status === "STALE") {
-      extIcon = `<span class="mercado-ext mercado-stale" title="Último dato conocido -- Tradier no respondió este ciclo (${_mercadoAgeShort(r.data_age_seconds)})">⏱</span>`;
+      extIcon = `<span class="mercado-ext mercado-stale" title="Último dato conocido (${_mercadoAgeShort(r.data_age_seconds)})">⏱</span>`;
     } else if (r.data_status === "SIN_DATO") {
-      extIcon = '<span class="mercado-ext mercado-sindato" title="Sin datos de Tradier todavía para este símbolo">—</span>';
+      extIcon = '<span class="mercado-ext mercado-sindato" title="Sin dato todavía">—</span>';
     } else if (r.price_is_stale) {
-      extIcon = '<span class="mercado-ext mercado-stale" title="Precio vencido -- fuera de sesión, no se finge un dato nuevo">⏱</span>';
+      extIcon = '<span class="mercado-ext mercado-stale" title="Precio vencido -- fuera de sesión">⏱</span>';
     }
 
     return `
@@ -3142,7 +350,6 @@ function renderMercado() {
           <div class="mercado-ticker">${r.symbol}</div>
         </div>
         <div class="mercado-price">${priceText}</div>
-        <div class="mercado-change-abs">${changeAbsText}</div>
         <div class="mercado-change-pct">${changePctText}</div>
         ${extIcon}
         ${_sparklineSvg(r.sparkline, isUp)}
@@ -3162,22 +369,20 @@ function startMercadoPolling() {
   }
 }
 
+/* ---------------- arranque ---------------- */
+
+const OPORTUNIDADES_POLL_MS = 30000;
+const UNIVERSO_POLL_MS = 60000;
+
 function init() {
-  setupNav();
-  renderGlobalStatus();      // barra de actividad + estado real (renderActivity)
-  renderActivity();          // estado honesto inmediato hasta el primer fetch
-  renderMarketQuality();
-  startMemoryRankingPolling(); // Hero, Plan B, Radar Completo
-  startHotChannel(); // Canal rápido (Plan A + Plan B): precio <=3s + indicadores de frescura
-  renderOpina();             // Resumen Factual (datos reales; honesto si no hay)
-  renderAlerts();            // solo eventos reales de Mission Control
-  renderWhyNot();            // descartes reales de /api/explosive-diagnostics
-  fetchExplosiveDiagnostics();
-  setInterval(fetchExplosiveDiagnostics, MEMORY_POLL_MS);
-  startPanelStatusPolling(); // Paneles 9-12: Memory Engine, Prediction Journal, Exit Journal, Mission Control
-  startMercadoPolling();     // Mercado: ranking en vivo del universo EQUITY de Racional
-  renderConfig();            // valores reales de /api/config
-  document.getElementById("btn-save-snapshot").addEventListener("click", saveDaySnapshot);
+  fetchOportunidades();
+  fetchAprendizaje();
+  fetchUniverso();
+  startMercadoPolling();
+
+  setInterval(fetchOportunidades, OPORTUNIDADES_POLL_MS);
+  setInterval(fetchAprendizaje, OPORTUNIDADES_POLL_MS);
+  setInterval(fetchUniverso, UNIVERSO_POLL_MS);
 }
 
 document.addEventListener("DOMContentLoaded", init);
