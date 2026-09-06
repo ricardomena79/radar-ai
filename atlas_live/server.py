@@ -619,6 +619,79 @@ def api_universo_resumen():
     })
 
 
+@app.route("/api/universo-yahoo")
+def api_universo_yahoo():
+    """Identidad completa del universo amplio (2026-09-06, Cabina -- Universo
+    Yahoo, aditivo, solo lectura). SEPARADO por completo de Racional -- esta
+    respuesta nunca incluye `racional_available` ni ningún campo derivado del
+    catálogo de Racional (pedido explícito: los dos universos son
+    independientes, sin comparación automática).
+
+    Reutiliza exclusivamente `fetch_broad_universe_meta()` (mismo caché en
+    disco que ya usa `/api/universo-resumen`/`radar_worker.py`) -- cero
+    llamadas nuevas a ningún proveedor. Devuelve symbol/name/exchange/type
+    para TODO el universo amplio (EQUITY + ETF + el resto de tipos
+    clasificados) de una sola vez, para que la Cabina lo cargue UNA vez y
+    busque 100% en el navegador -- nunca una consulta por letra tipeada."""
+    from atlas_live.market_study import universe as broad_universe
+
+    meta = broad_universe.fetch_broad_universe_meta()
+    instrumentos = [
+        {"symbol": symbol, "name": info.get("name"), "exchange": info.get("exchange"), "type": info.get("type")}
+        for symbol, info in sorted(meta.items())
+    ]
+    return jsonify({
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "total": len(instrumentos),
+        "instrumentos": instrumentos,
+    })
+
+
+@app.route("/api/universo-yahoo/<symbol>")
+def api_universo_yahoo_detalle(symbol):
+    """Cotización puntual de Yahoo para UN símbolo (2026-09-06, Cabina --
+    Universo Yahoo, "capa de detalle"). Se llama SOLO cuando el usuario hace
+    clic explícito sobre un resultado -- nunca automático, nunca en lote.
+
+    Usa EXCLUSIVAMENTE `YahooFinanceLiveProvider` (el único punto autorizado
+    para pedir un Quote de Yahoo en `atlas_live`, ver su propio docstring) a
+    través de `DataCollector` (caché en memoria de 5 min, evita repetir la
+    consulta si se vuelve a hacer clic en el mismo símbolo poco después).
+    Deliberadamente NO pasa por `AtlasScore`/`MomentumScore`/`MoneyFlowEngine`/
+    `DecisionEngine` -- a diferencia de `/api/symbol/<symbol>`, que sí los
+    invoca y por eso no se reutiliza acá."""
+    from atlas.data.collectors.data_collector import DataCollector
+    from atlas.data.providers.base import ProviderError, QuoteNotFoundError
+    from atlas_live.data_fusion.yahoo_finance_live_provider import YahooFinanceLiveProvider
+
+    collector = DataCollector(YahooFinanceLiveProvider())
+    try:
+        quote = collector.get_quote(symbol.upper())
+    except QuoteNotFoundError:
+        return jsonify({"error": "sin_dato", "symbol": symbol.upper()}), 404
+    except ProviderError as exc:
+        return jsonify({"error": "proveedor_no_disponible", "symbol": symbol.upper(), "detalle": str(exc)}), 502
+
+    return jsonify({
+        "symbol": quote.symbol,
+        "name": quote.name,
+        "last_price": quote.last_price,
+        "change_percent": quote.change_percent,
+        "volume": quote.volume,
+        "open": quote.open,
+        "high": quote.high,
+        "low": quote.low,
+        "previous_close": quote.previous_close,
+        "market_cap": quote.market_cap,
+        "sector": quote.sector,
+        "industry": quote.industry,
+        "average_volume": quote.average_volume,
+        "relative_volume": quote.relative_volume,
+        "price_type": quote.price_type,
+        "market_state": quote.market_state,
+    })
+
+
 @app.route("/api/radar-informe-dia")
 def api_radar_informe_dia():
     """Informe de cierre del radar (2026-08-14): condiciones en detección vs.

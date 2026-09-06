@@ -369,6 +369,124 @@ function startMercadoPolling() {
   }
 }
 
+/* ============================================================
+ * UNIVERSO YAHOO -- sector independiente de Universo Racional.
+ * Capa 1 (identidad, ~6.600+): GET /api/universo-yahoo, se carga UNA sola
+ * vez al abrir la Cabina; la búsqueda por ticker/nombre filtra 100% en el
+ * navegador, sin ninguna consulta nueva mientras se tipea.
+ * Capa 2 (detalle real de Yahoo): GET /api/universo-yahoo/<symbol>, SOLO
+ * al hacer clic explícito en un resultado -- nunca automático, nunca en
+ * lote. Nunca muestra ni compara disponibilidad en Racional (a propósito).
+ * ============================================================ */
+
+let _universoYahoo = [];
+const YAHOO_MAX_RESULTADOS = 50;
+
+async function fetchUniversoYahoo() {
+  const metaEl = document.getElementById("yahoo-universo-meta");
+  try {
+    const res = await fetch("/api/universo-yahoo");
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
+    _universoYahoo = data.instrumentos || [];
+    if (metaEl) metaEl.textContent = `${data.total ?? _universoYahoo.length} instrumentos cargados`;
+  } catch (err) {
+    console.error("fetchUniversoYahoo:", err);
+    if (metaEl) metaEl.textContent = "No se pudo cargar el universo";
+  }
+  renderUniversoYahooResultados(document.getElementById("yahoo-search")?.value || "");
+}
+
+function _filtrarUniversoYahoo(query) {
+  const q = query.trim().toUpperCase();
+  if (!q) return [];
+  return _universoYahoo
+    .filter((r) => r.symbol.toUpperCase().includes(q) || (r.name || "").toUpperCase().includes(q))
+    .slice(0, YAHOO_MAX_RESULTADOS);
+}
+
+function renderUniversoYahooResultados(query) {
+  const el = document.getElementById("yahoo-results");
+  if (!el) return;
+  if (!query.trim()) {
+    el.innerHTML = `<div class="empty-state small">Escribí un ticker o nombre para buscar entre ${_universoYahoo.length} instrumentos.</div>`;
+    return;
+  }
+  const matches = _filtrarUniversoYahoo(query);
+  if (!matches.length) {
+    el.innerHTML = `<div class="empty-state small">Sin resultados para "${query}".</div>`;
+    return;
+  }
+  el.innerHTML = matches.map((r) => `
+    <div class="yahoo-row" data-symbol="${r.symbol}">
+      <span class="yahoo-row-symbol">${r.symbol}</span>
+      <span class="yahoo-row-name">${r.name || ""}</span>
+      <span class="yahoo-row-exchange">${r.exchange || ""}</span>
+      <span class="yahoo-row-type">${r.type || ""}</span>
+    </div>`).join("");
+  el.querySelectorAll(".yahoo-row").forEach((row) => {
+    row.addEventListener("click", () => fetchUniversoYahooDetalle(row.dataset.symbol));
+  });
+}
+
+async function fetchUniversoYahooDetalle(symbol) {
+  const el = document.getElementById("yahoo-detail");
+  if (!el) return;
+  el.innerHTML = `<div class="empty-state small">Consultando Yahoo para ${symbol}...</div>`;
+  try {
+    const res = await fetch(`/api/universo-yahoo/${encodeURIComponent(symbol)}`);
+    if (res.status === 404) {
+      el.innerHTML = `<div class="empty-state small">Sin datos de Yahoo para ${symbol}.</div>`;
+      return;
+    }
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const q = await res.json();
+    renderUniversoYahooDetalle(q);
+  } catch (err) {
+    console.error("fetchUniversoYahooDetalle:", err);
+    el.innerHTML = `<div class="empty-state small">Error al consultar Yahoo para ${symbol}.</div>`;
+  }
+}
+
+function renderUniversoYahooDetalle(q) {
+  const el = document.getElementById("yahoo-detail");
+  if (!el) return;
+  const chg = q.change_percent;
+  const chgClass = chg > 0 ? "up" : chg < 0 ? "down" : "";
+  const campo = (label, value) => `<div class="yd-item"><span class="yd-k">${label}</span><span class="yd-v">${value}</span></div>`;
+  el.innerHTML = `
+    <div class="yahoo-detail-card">
+      <div class="yahoo-detail-head">
+        <span class="yahoo-detail-symbol">${q.symbol}</span>
+        <span class="yahoo-detail-name">${q.name || ""}</span>
+      </div>
+      <div class="yahoo-detail-grid">
+        ${campo("Precio", q.last_price != null ? "$" + fmtNum(q.last_price, 2) : "--")}
+        <div class="yd-item"><span class="yd-k">Cambio %</span><span class="yd-v ${chgClass}">${fmtPct(chg)}</span></div>
+        ${campo("Volumen", q.volume != null ? Number(q.volume).toLocaleString("es") : "--")}
+        ${campo("Vol. promedio", q.average_volume != null ? Number(q.average_volume).toLocaleString("es") : "--")}
+        ${campo("RVOL", q.relative_volume != null ? fmtNum(q.relative_volume) + "x" : "--")}
+        ${campo("Apertura", q.open != null ? "$" + fmtNum(q.open, 2) : "--")}
+        ${campo("Máximo", q.high != null ? "$" + fmtNum(q.high, 2) : "--")}
+        ${campo("Mínimo", q.low != null ? "$" + fmtNum(q.low, 2) : "--")}
+        ${campo("Cierre anterior", q.previous_close != null ? "$" + fmtNum(q.previous_close, 2) : "--")}
+        ${campo("Market Cap", q.market_cap != null ? Number(q.market_cap).toLocaleString("es") : "--")}
+        ${campo("Sector", q.sector || "--")}
+        ${campo("Industria", q.industry || "--")}
+        ${campo("Sesión", q.price_type || "--")}
+        ${campo("Estado mercado", q.market_state || "--")}
+      </div>
+    </div>`;
+}
+
+function initUniversoYahoo() {
+  fetchUniversoYahoo();
+  const input = document.getElementById("yahoo-search");
+  if (input) {
+    input.addEventListener("input", () => renderUniversoYahooResultados(input.value));
+  }
+}
+
 /* ---------------- arranque ---------------- */
 
 const OPORTUNIDADES_POLL_MS = 30000;
@@ -379,6 +497,7 @@ function init() {
   fetchAprendizaje();
   fetchUniverso();
   startMercadoPolling();
+  initUniversoYahoo();
 
   setInterval(fetchOportunidades, OPORTUNIDADES_POLL_MS);
   setInterval(fetchAprendizaje, OPORTUNIDADES_POLL_MS);

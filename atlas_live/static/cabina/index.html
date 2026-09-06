@@ -80,6 +80,22 @@
 
   </div>
 
+  <!-- ================= UNIVERSO YAHOO — sector independiente ================= -->
+  <!-- Cabina 2.0 (2026-09-06): universo amplio (~6.600+), completamente
+       separado de Universo Racional -- sin columna/indicador de Racional,
+       sin comparación automática. Carga la identidad UNA vez y busca 100%
+       local; solo al hacer clic en un resultado se pide su cotización real
+       de Yahoo (una única consulta puntual). -->
+  <div class="panel panel-full">
+    <div class="panel-head">
+      <span class="panel-title">Universo Yahoo</span>
+      <span class="panel-sub" id="yahoo-universo-meta">Cargando...</span>
+    </div>
+    <input type="text" id="yahoo-search" class="mercado-search" placeholder="Buscar por ticker o nombre...">
+    <div id="yahoo-results"><div class="empty-state small">Cargando universo...</div></div>
+    <div id="yahoo-detail"></div>
+  </div>
+
   <div class="footnote">Journals, Motor de Catalizadores, Flujo Sectorial, Seguridad del Aprendizaje y el resto de los paneles siguen activos en el backend.</div>
 
 </div>
