@@ -10,105 +10,218 @@
 </head>
 <body>
 
-<!-- Cabina 2.0 (2026-09-05, rediseño autorizado explícitamente): pantalla
-     única, sin sidebar -- Oportunidades es el bloque protagonista, con
-     Aprendizaje/Aciertos en su propio encabezado; Universo y Mercado son
-     los únicos 2 paneles secundarios. Todo lo demás (Journals, Motor de
-     Catalizadores, Flujo Sectorial, Seguridad del Aprendizaje, Mission
-     Control, etc.) sigue vivo en el backend -- solo dejó de tener un lugar
-     en esta interfaz; sus endpoints no se tocaron. -->
+<!-- Cabina 2.1 (2026-09-07, reestructuración con menú lateral, autorizada
+     explícitamente): mismos paneles/datos/endpoints de Cabina 2.0 +
+     6 paneles que ya existían en el backend (Prediction Journal, Exit
+     Journal, Marcador Histórico, Estudio Histórico, Mission Control,
+     Seguridad del Aprendizaje/Learning Maturity completo) reconectados a
+     una interfaz nueva y liviana -- ningún endpoint ni lógica de backend
+     se tocó. Navegación tipo SPA: un solo <script>, sin recarga; cada
+     sección se inicializa (fetch + polling, si aplica) UNA sola vez, la
+     primera vez que se abre -- ver `activateView()` en cabina.js. -->
 
-<div class="page">
+<div class="app">
 
-  <div class="topbar">
-    <div class="brand">
+  <aside class="sidebar">
+    <div class="sidebar-brand">
       <span class="mark">ATLAS</span>
       <span class="tag">cabina de operación</span>
     </div>
-    <div class="status-strip">
-      <div class="status-pill"><span class="dot" id="mkt-status-dot"></span><span id="mkt-status-text">Mercado</span></div>
-    </div>
-  </div>
+    <nav id="sidebar-nav">
+      <button class="nav-item active" data-view="inicio"><span class="nav-icon">🏠</span>Inicio</button>
+      <button class="nav-item" data-view="mercado"><span class="nav-icon">📈</span>Mercado</button>
+      <button class="nav-item" data-view="oportunidades"><span class="nav-icon">🎯</span>Oportunidades</button>
+      <button class="nav-item" data-view="learning"><span class="nav-icon">🧠</span>Learning</button>
+      <button class="nav-item" data-view="prediction-journal"><span class="nav-icon">📓</span>Prediction Journal</button>
+      <button class="nav-item" data-view="exit-journal"><span class="nav-icon">🚪</span>Exit Journal</button>
+      <button class="nav-item" data-view="marcador-historico"><span class="nav-icon">📊</span>Marcador Histórico</button>
+      <button class="nav-item" data-view="estudio-historico"><span class="nav-icon">🔬</span>Estudio Histórico</button>
+      <button class="nav-item" data-view="universo-atlas"><span class="nav-icon">🌎</span>Universo Atlas</button>
+      <button class="nav-item" data-view="universo-yahoo"><span class="nav-icon">🔎</span>Universo Yahoo</button>
+      <button class="nav-item" data-view="mission-control"><span class="nav-icon">🎛️</span>Mission Control</button>
+    </nav>
+  </aside>
 
-  <!-- ================= OPORTUNIDADES — bloque principal ================= -->
-  <div class="section-head">
-    <div>
-      <div class="eyebrow">Atlas detecta ahora</div>
-      <h1 class="section-title">Oportunidades</h1>
-    </div>
-    <div class="learn-chips" id="learn-chips">
-      <div class="chip">
-        <span class="k">Aprendizaje</span>
-        <span class="v" id="chip-aprendizaje">--</span>
-        <span class="sub" id="chip-aprendizaje-sub"></span>
+  <main class="main">
+    <div class="page">
+
+      <div class="topbar">
+        <div class="brand">
+          <span class="mark" id="topbar-view-title">Inicio</span>
+        </div>
+        <div class="status-strip">
+          <div class="status-pill"><span class="dot" id="mkt-status-dot"></span><span id="mkt-status-text">Mercado</span></div>
+        </div>
       </div>
-      <div class="chip">
-        <span class="k">Aciertos hoy</span>
-        <span class="v" id="chip-aciertos">--</span>
-        <span class="sub" id="chip-aciertos-sub"></span>
-      </div>
+
+      <!-- ================= INICIO ================= -->
+      <section id="view-inicio" class="view active">
+        <div class="section-head">
+          <div>
+            <div class="eyebrow">Atlas detecta ahora</div>
+            <h1 class="section-title">Resumen</h1>
+          </div>
+          <div class="learn-chips" id="inicio-chips">
+            <div class="chip">
+              <span class="k">Aprendizaje</span>
+              <span class="v" id="inicio-chip-aprendizaje">--</span>
+              <span class="sub" id="inicio-chip-aprendizaje-sub"></span>
+            </div>
+            <div class="chip">
+              <span class="k">Aciertos hoy</span>
+              <span class="v" id="inicio-chip-aciertos">--</span>
+              <span class="sub" id="inicio-chip-aciertos-sub"></span>
+            </div>
+          </div>
+        </div>
+        <div id="inicio-opp-preview" class="opp-list"><div class="empty-state">Cargando oportunidades...</div></div>
+        <div class="stat-cards" id="inicio-estado-general" style="margin-top:16px"></div>
+      </section>
+
+      <!-- ================= MERCADO ================= -->
+      <section id="view-mercado" class="view">
+        <div class="view-head">
+          <div class="eyebrow">Panel Mercado</div>
+          <h1>Mercado</h1>
+          <div class="view-sub" id="mercado-meta">sin cambios de lógica -- solo más rápido</div>
+        </div>
+        <div class="panel panel-full">
+          <input type="text" id="mercado-search" class="mercado-search" placeholder="Buscar símbolo...">
+          <div id="mercado-list"><div class="empty-state small">Esperando el primer ciclo de Mercado...</div></div>
+        </div>
+      </section>
+
+      <!-- ================= OPORTUNIDADES ================= -->
+      <section id="view-oportunidades" class="view">
+        <div class="view-head">
+          <div class="eyebrow">Radar de Oportunidades</div>
+          <h1>Oportunidades</h1>
+        </div>
+        <div class="opp-list" id="opp-list"><div class="empty-state">Cargando oportunidades...</div></div>
+      </section>
+
+      <!-- ================= LEARNING ================= -->
+      <section id="view-learning" class="view">
+        <div class="view-head">
+          <div class="eyebrow">Aprendizaje de Atlas</div>
+          <h1>Learning</h1>
+        </div>
+        <div class="stat-cards" id="learning-headline"></div>
+        <div class="panel panel-full">
+          <div class="panel-head"><span class="panel-title">Madurez -- 11 ejes</span></div>
+          <div id="learning-ejes"><div class="empty-state small">Cargando...</div></div>
+        </div>
+        <div class="panel panel-full">
+          <div class="panel-head">
+            <span class="panel-title">🛡️ Seguridad del Aprendizaje</span>
+            <span class="panel-sub" id="seguridad-mecanismo">Cargando...</span>
+          </div>
+          <div id="seguridad-aprendizaje-body"><div class="empty-state small">Cargando...</div></div>
+        </div>
+      </section>
+
+      <!-- ================= PREDICTION JOURNAL ================= -->
+      <section id="view-prediction-journal" class="view">
+        <div class="view-head">
+          <div class="eyebrow">Panel existente</div>
+          <h1>Prediction Journal</h1>
+        </div>
+        <div id="prediction-journal-body"><div class="empty-state small">Cargando...</div></div>
+      </section>
+
+      <!-- ================= EXIT JOURNAL ================= -->
+      <section id="view-exit-journal" class="view">
+        <div class="view-head">
+          <div class="eyebrow">Panel existente</div>
+          <h1>Exit Journal</h1>
+        </div>
+        <div id="exit-journal-body"><div class="empty-state small">Cargando...</div></div>
+      </section>
+
+      <!-- ================= MARCADOR HISTÓRICO ================= -->
+      <section id="view-marcador-historico" class="view">
+        <div class="view-head">
+          <div class="eyebrow">Panel existente</div>
+          <h1>Marcador Histórico</h1>
+        </div>
+        <div class="stat-cards" id="marcador-calidad"></div>
+        <div class="panel panel-full">
+          <div class="panel-head"><span class="panel-title">Bandas acumulativas</span></div>
+          <div class="stat-cards" id="marcador-bandas"></div>
+        </div>
+        <div class="panel panel-full">
+          <div class="panel-head"><span class="panel-title">Explosiones recientes</span></div>
+          <div id="marcador-lista"><div class="empty-state small">Cargando...</div></div>
+        </div>
+      </section>
+
+      <!-- ================= ESTUDIO HISTÓRICO ================= -->
+      <section id="view-estudio-historico" class="view">
+        <div class="view-head">
+          <div class="eyebrow">Panel existente</div>
+          <h1>Estudio Histórico</h1>
+        </div>
+        <div class="stat-cards" id="estudio-status"></div>
+        <div class="panel panel-full">
+          <div class="panel-head"><span class="panel-title">Top explosiones estudiadas</span></div>
+          <div id="estudio-lista"><div class="empty-state small">Cargando...</div></div>
+        </div>
+      </section>
+
+      <!-- ================= UNIVERSO ATLAS ================= -->
+      <section id="view-universo-atlas" class="view">
+        <div class="view-head">
+          <div class="eyebrow">Lo que Atlas sigue</div>
+          <h1>Universo Atlas</h1>
+        </div>
+        <div class="panel panel-full">
+          <div class="uni-stats" id="uni-stats"></div>
+          <div id="uni-volumen"><div class="empty-state small">Sin datos de volumen todavía.</div></div>
+        </div>
+      </section>
+
+      <!-- ================= UNIVERSO YAHOO ================= -->
+      <section id="view-universo-yahoo" class="view">
+        <div class="view-head">
+          <div class="eyebrow">Sector independiente de Racional</div>
+          <h1>Universo Yahoo</h1>
+          <div class="view-sub" id="yahoo-universo-meta">Cargando...</div>
+        </div>
+        <div class="panel panel-full">
+          <div class="yahoo-top-head">
+            <span class="yahoo-top-title">🔥 Top 100 en Movimiento</span>
+            <span class="yahoo-top-sub" id="yahoo-top-meta">Cargando...</span>
+          </div>
+          <div id="yahoo-top-results"><div class="empty-state small">Cargando ranking...</div></div>
+
+          <div class="yahoo-search-head">Buscar en el universo completo (12.700+)</div>
+          <input type="text" id="yahoo-search" class="mercado-search" placeholder="Buscar por ticker o nombre...">
+          <div id="yahoo-results"><div class="empty-state small">Cargando universo...</div></div>
+
+          <div id="yahoo-detail"></div>
+        </div>
+      </section>
+
+      <!-- ================= MISSION CONTROL ================= -->
+      <section id="view-mission-control" class="view">
+        <div class="view-head">
+          <div class="eyebrow">Panel existente</div>
+          <h1>Mission Control</h1>
+        </div>
+        <div class="panel panel-full">
+          <div class="panel-head"><span class="panel-title">Historial de sesión de mercado</span></div>
+          <div id="mission-control-market-state"><div class="empty-state small">Cargando...</div></div>
+        </div>
+        <div class="panel panel-full">
+          <div class="panel-head"><span class="panel-title">Procesos con heartbeat</span></div>
+          <div id="mission-control-procesos"><div class="empty-state small">Cargando...</div></div>
+        </div>
+      </section>
+
+      <div class="footnote">Memory Engine, Desempeño, Evolución, Señales, Flujo de Dinero, Motor de Catalizadores, Radar Completo y Configuración siguen activos en el backend (endpoints ya existentes) -- todavía sin vista propia en este menú.</div>
+
     </div>
-  </div>
-
-  <div class="opp-list" id="opp-list">
-    <div class="empty-state">Cargando oportunidades...</div>
-  </div>
-
-  <!-- ================= UNIVERSO + MERCADO — secundario ================= -->
-  <div class="secondary-grid">
-
-    <div class="panel">
-      <div class="panel-head">
-        <span class="panel-title">Universo</span>
-        <span class="panel-sub">lo que Atlas sigue</span>
-      </div>
-      <div class="uni-stats" id="uni-stats">
-        <div class="uni-stat"><div class="n">--</div><div class="l">acciones en el universo</div></div>
-        <div class="uni-stat rac"><div class="n">--</div><div class="l">disponibles en Racional</div></div>
-      </div>
-      <div id="uni-volumen"><div class="empty-state small">Sin datos de volumen todavía.</div></div>
-    </div>
-
-    <div class="panel">
-      <div class="panel-head">
-        <span class="panel-title">Mercado</span>
-        <span class="panel-sub" id="mercado-meta"></span>
-      </div>
-      <input type="text" id="mercado-search" class="mercado-search" placeholder="Buscar símbolo...">
-      <div id="mercado-list"><div class="empty-state small">Esperando el primer ciclo de Mercado...</div></div>
-    </div>
-
-  </div>
-
-  <!-- ================= UNIVERSO YAHOO — sector independiente ================= -->
-  <!-- Cabina 2.0 (2026-09-06): universo amplio (~12.700+), completamente
-       separado de Universo Racional -- sin columna/indicador de Racional,
-       sin comparación automática. El protagonista es el TOP 100 EN
-       MOVIMIENTO (ranking mecánico sobre quotes ya obtenidas por el radar,
-       cero llamadas nuevas) -- el buscador manual del universo completo
-       queda debajo, como herramienta secundaria. Solo al hacer clic en
-       una fila (del Top 100 o del buscador) se pide la cotización real de
-       Yahoo para ESE símbolo (una única consulta puntual). -->
-  <div class="panel panel-full">
-    <div class="panel-head">
-      <span class="panel-title">Universo Yahoo</span>
-      <span class="panel-sub" id="yahoo-universo-meta">Cargando...</span>
-    </div>
-
-    <div class="yahoo-top-head">
-      <span class="yahoo-top-title">🔥 Top 100 en Movimiento</span>
-      <span class="yahoo-top-sub" id="yahoo-top-meta">Cargando...</span>
-    </div>
-    <div id="yahoo-top-results"><div class="empty-state small">Cargando ranking...</div></div>
-
-    <div class="yahoo-search-head">Buscar en el universo completo (12.700+)</div>
-    <input type="text" id="yahoo-search" class="mercado-search" placeholder="Buscar por ticker o nombre...">
-    <div id="yahoo-results"><div class="empty-state small">Cargando universo...</div></div>
-
-    <div id="yahoo-detail"></div>
-  </div>
-
-  <div class="footnote">Journals, Motor de Catalizadores, Flujo Sectorial, Seguridad del Aprendizaje y el resto de los paneles siguen activos en el backend.</div>
+  </main>
 
 </div>
 

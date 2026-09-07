@@ -34,6 +34,23 @@ function fmtAge(seconds) {
   return `${Math.round(minutes / 60)} h`;
 }
 
+/* "Estado general" de Inicio (2026-09-07) -- tarjetas chicas alimentadas
+ * por los mismos fetch ya existentes (Universo/Mercado/Oportunidades),
+ * nunca una consulta nueva: cada render ya-existente llama a esta función
+ * con su propio dato apenas lo recibe. */
+let _inicioEstado = {};
+function _actualizarEstadoGeneralInicio(partial) {
+  Object.assign(_inicioEstado, partial);
+  const el = document.getElementById("inicio-estado-general");
+  if (!el) return;
+  const e = _inicioEstado;
+  el.innerHTML = `
+    <div class="stat-card"><div class="sc-icon">🌎</div><div class="sc-label">Universo Atlas</div><div class="sc-value">${e.universoAtlas ?? "--"}</div><div class="sc-sub">operativo</div></div>
+    <div class="stat-card"><div class="sc-icon">🤝</div><div class="sc-label">Racional conocido</div><div class="sc-value">${e.racionalConocido ?? "--"}</div><div class="sc-sub">catálogo parcial</div></div>
+    <div class="stat-card"><div class="sc-icon">📈</div><div class="sc-label">Mercado</div><div class="sc-value">${e.mercadoEstado ?? "--"}</div><div class="sc-sub">${e.mercadoSub ?? ""}</div></div>
+    <div class="stat-card"><div class="sc-icon">🎯</div><div class="sc-label">Oportunidades</div><div class="sc-value">${e.oportunidadesCount ?? "--"}</div><div class="sc-sub">accionables ahora</div></div>`;
+}
+
 /* ============================================================
  * OPORTUNIDADES -- bloque principal
  * Fuente: GET /api/radar-oportunidades (sin cambios de backend).
@@ -103,12 +120,8 @@ function _porQueHtml(o) {
   return razones.length ? razones.join(" · ") : "Sin detalle adicional disponible.";
 }
 
-function renderOportunidades() {
-  const el = document.getElementById("opp-list");
+function _renderOportunidadesEn(el, top) {
   if (!el) return;
-
-  const top = _ordenarOportunidades(_oportunidades).slice(0, MAX_OPORTUNIDADES_VISIBLES);
-
   if (!top.length) {
     el.innerHTML = `<div class="empty-state">Atlas no tiene oportunidades accionables en este momento.</div>`;
     return;
@@ -143,6 +156,19 @@ function renderOportunidades() {
   }).join("");
 }
 
+const MAX_OPORTUNIDADES_INICIO = 3;
+
+// Un solo cálculo (`_ordenarOportunidades`, sin cambios) alimenta DOS
+// vistas -- Oportunidades (hasta 6) e Inicio (hasta 3, preview) -- desde
+// el mismo fetch, nunca una consulta nueva por vista.
+function renderOportunidades() {
+  const accionables = _ordenarOportunidades(_oportunidades);
+  const top = accionables.slice(0, MAX_OPORTUNIDADES_VISIBLES);
+  _renderOportunidadesEn(document.getElementById("opp-list"), top);
+  _renderOportunidadesEn(document.getElementById("inicio-opp-preview"), top.slice(0, MAX_OPORTUNIDADES_INICIO));
+  _actualizarEstadoGeneralInicio({ oportunidadesCount: accionables.length });
+}
+
 /* ============================================================
  * APRENDIZAJE -- chips dentro del encabezado de Oportunidades.
  * Fuente: GET /api/learning-maturity (sin cambios de backend),
@@ -162,10 +188,10 @@ async function fetchAprendizaje() {
 
 function renderAprendizaje(data) {
   const hoy = (data && data.hoy) || {};
-  const pctEl = document.getElementById("chip-aprendizaje");
-  const pctSubEl = document.getElementById("chip-aprendizaje-sub");
-  const aciertosEl = document.getElementById("chip-aciertos");
-  const aciertosSubEl = document.getElementById("chip-aciertos-sub");
+  const pctEl = document.getElementById("inicio-chip-aprendizaje");
+  const pctSubEl = document.getElementById("inicio-chip-aprendizaje-sub");
+  const aciertosEl = document.getElementById("inicio-chip-aciertos");
+  const aciertosSubEl = document.getElementById("inicio-chip-aciertos-sub");
   if (!pctEl || !aciertosEl) return;
 
   pctEl.textContent = hoy.precision != null ? `${fmtNum(hoy.precision)}%` : "--";
@@ -197,9 +223,29 @@ function renderUniverso(data) {
   const volEl = document.getElementById("uni-volumen");
   if (!statsEl || !volEl) return;
 
+  // 3 conteos deliberadamente separados (2026-09-07, corrección de
+  // presentación autorizada explícitamente) -- "disponibles_racional" es
+  // la INTERSECCIÓN entre el universo operativo y el catálogo Racional
+  // conocido, nunca el tamaño de Racional en sí. Ver docstring de
+  // /api/universo-resumen (server.py) para la fuente exacta de cada dato.
   statsEl.innerHTML = `
-    <div class="uni-stat"><div class="n">${data.universo_total ?? "--"}</div><div class="l">acciones en el universo</div></div>
-    <div class="uni-stat rac"><div class="n">${data.disponibles_racional ?? "--"}</div><div class="l">disponibles en Racional</div></div>`;
+    <div class="uni-stat">
+      <div class="n">${data.universo_total ?? "--"}</div>
+      <div class="l">Universo Atlas operativo</div>
+      <div class="uni-stat-note">lo que el radar realmente escanea</div>
+    </div>
+    <div class="uni-stat rac">
+      <div class="n">${data.racional_catalogo_total ?? "--"}</div>
+      <div class="l">Catálogo Racional conocido<span class="uni-badge-parcial">PARCIAL</span></div>
+      <div class="uni-stat-note">${data.racional_declarado_app || "Racional declara un catálogo mayor en su App -- Atlas todavía no lo tiene completo"}</div>
+    </div>
+    <div class="uni-stat">
+      <div class="n">${data.disponibles_racional ?? "--"}</div>
+      <div class="l">Coincidencias Atlas ↔ Racional</div>
+      <div class="uni-stat-note">del universo operativo Atlas, cuántos están también en el catálogo Racional conocido -- NO es la cantidad de acciones de Racional</div>
+    </div>`;
+
+  _actualizarEstadoGeneralInicio({ universoAtlas: data.universo_total, racionalConocido: data.racional_catalogo_total });
 
   const top = data.top_volumen || [];
   if (!top.length) {
@@ -302,6 +348,10 @@ function renderMercado() {
     const hayDatos = rows.length > 0;
     dotEl.className = "dot" + (hayDatos ? "" : " dot-off");
     textEl.textContent = hayDatos ? _mercadoAgeLabel(_mercado.generated_at) : "Mercado sin datos";
+    _actualizarEstadoGeneralInicio({
+      mercadoEstado: hayDatos ? "Con datos" : "Sin datos",
+      mercadoSub: hayDatos ? _mercadoAgeLabel(_mercado.generated_at) : "esperando ciclo",
+    });
   }
 
   metaEl.textContent = _mercado.total_universe
@@ -549,12 +599,380 @@ function initUniversoYahoo() {
   setInterval(fetchUniversoYahooTop, TOP_MOVIMIENTO_POLL_MS);
 }
 
+/* ============================================================
+ * LEARNING (vista completa) -- reutiliza /api/learning-maturity, el
+ * MISMO endpoint que ya alimenta los chips de Inicio, más
+ * /api/aprendizaje-seguridad-resumen (Hito 4, ya existente). Fetch propio
+ * de esta vista -- no duplica el polling de los chips de Inicio, que
+ * siguen viniendo de fetchAprendizaje().
+ * ============================================================ */
+
+const statCard = (icon, label, value, sub) => `
+  <div class="stat-card">
+    <div class="sc-icon">${icon}</div>
+    <div class="sc-label">${label}</div>
+    <div class="sc-value">${value ?? '<span class="dim">--</span>'}</div>
+    ${sub ? `<div class="sc-sub">${sub}</div>` : ""}
+  </div>`;
+
+async function fetchLearningFull() {
+  try {
+    const res = await fetch("/api/learning-maturity");
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    renderLearningFull(await res.json());
+  } catch (err) {
+    console.error("fetchLearningFull:", err);
+  }
+}
+
+function renderLearningFull(data) {
+  const el = document.getElementById("learning-headline");
+  const ejesEl = document.getElementById("learning-ejes");
+  if (!el || !ejesEl) return;
+  const hoy = data.hoy || {}, acum = data.acumulada || {}, rec = data.reciente || {}, m = data.madurez || {};
+  const pctTxt = (v) => v != null ? `${fmtNum(v)}%` : "--";
+
+  el.innerHTML =
+    statCard("🔎", "Estudiadas hoy", hoy.estudiadas, "universo escaneado") +
+    statCard("🕵️", "Candidatas hoy", hoy.candidatas) +
+    statCard("✅", "Señales hoy", hoy.senales, "sobrevivieron confirmación") +
+    statCard("📋", "Evaluables hoy", hoy.evaluables, "con resultado cerrado") +
+    statCard("🎯", "Aciertos hoy", hoy.aciertos, `${hoy.fallos ?? "--"} fallos`) +
+    statCard("📊", "Precisión del día", pctTxt(hoy.precision)) +
+    statCard("📊", "Precisión acumulada", pctTxt(acum.precision), acum.dias ? `${acum.dias} días` : "") +
+    statCard("📊", "Precisión reciente", pctTxt(rec.precision), rec.dias_incluidos ? `últimos ${rec.dias_incluidos} días` : "") +
+    statCard("🧠", "Madurez actual", m.estado || "Sin evidencia", m.eje_limitante ? `limita: ${m.eje_limitante}` : "");
+
+  const ejes = (m.ejes || []);
+  ejesEl.innerHTML = ejes.length ? `
+    <div class="table-scroll"><table class="simple-table">
+      <thead><tr><th>Eje</th><th>Estado</th><th>Evidencia</th></tr></thead>
+      <tbody>${ejes.map((a) => `<tr><td>${a.nombre}${a.nombre === m.eje_limitante ? " ⛔" : ""}</td><td>${a.estado}</td><td>${a.explicacion || ""}</td></tr>`).join("")}</tbody>
+    </table></div>` : `<div class="empty-state small">Sin datos.</div>`;
+}
+
+async function fetchSeguridadAprendizaje() {
+  try {
+    const res = await fetch("/api/aprendizaje-seguridad-resumen");
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    renderSeguridadAprendizaje(await res.json());
+  } catch (err) {
+    console.error("fetchSeguridadAprendizaje:", err);
+  }
+}
+
+function renderSeguridadAprendizaje(data) {
+  const el = document.getElementById("seguridad-aprendizaje-body");
+  const mecEl = document.getElementById("seguridad-mecanismo");
+  if (!el) return;
+  if (mecEl) mecEl.textContent = `Mecanismo: ${data.activation_mechanism_state || "OFF"}`;
+
+  const conteoCards = (titulo, obj) => {
+    if (!obj || !obj.ok) return statCard("⚠️", titulo, "sin datos");
+    const partes = Object.entries(obj.conteos_por_estado || {}).map(([k, v]) => `${k}: ${v}`).join(" · ");
+    return statCard("🛡️", titulo, obj.n_eventos ?? 0, partes || "sin eventos");
+  };
+
+  el.innerHTML = `<div class="stat-cards">
+    ${conteoCards("Elegibilidad (Hito 3.3)", data.eligibilidad)}
+    ${conteoCards("Observación Shadow (3.4)", data.shadow_observation)}
+    ${conteoCards("Activación (3.5)", data.activacion)}
+    ${conteoCards("Evaluación continua (3.6)", data.evaluacion_continua)}
+  </div>`;
+}
+
+function initLearningView() {
+  fetchLearningFull();
+  fetchSeguridadAprendizaje();
+  setInterval(fetchLearningFull, UNIVERSO_POLL_MS);
+  setInterval(fetchSeguridadAprendizaje, UNIVERSO_POLL_MS);
+}
+
+/* ============================================================
+ * PREDICTION JOURNAL -- panel existente, reconectado.
+ * Fuente: GET /api/prediction-journal (sin cambios de backend).
+ * ============================================================ */
+
+async function fetchPredictionJournal() {
+  try {
+    const res = await fetch("/api/prediction-journal");
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    renderPredictionJournal(await res.json());
+  } catch (err) {
+    console.error("fetchPredictionJournal:", err);
+  }
+}
+
+function renderPredictionJournal(pj) {
+  const el = document.getElementById("prediction-journal-body");
+  if (!el) return;
+  const sellado = pj.sealed_today
+    ? `<div class="stat-cards">
+        ${statCard("🕐", "Sellado a las", fmtTimeSimple(pj.sealed_today.sealed_at))}
+        ${statCard("📋", "Candidatos sellados", pj.sealed_today.candidate_count)}
+        ${statCard("🏆", "Top del día", pj.sealed_today.top_symbol || "--")}
+      </div>`
+    : `<div class="empty-state small">Todavía no se selló el ranking de hoy (${pj.date}) -- el sellado ocurre 09:25-09:30 ET.</div>`;
+
+  const rows = pj.recent_days || [];
+  el.innerHTML = sellado + `
+    <div class="panel panel-full">
+      <div class="panel-head"><span class="panel-title">Últimos días sellados</span></div>
+      <div class="table-scroll"><table class="simple-table">
+        <thead><tr><th>Fecha</th><th>Top símbolo</th><th>Prob. predicha</th><th>Resultado</th><th>Rendimiento</th><th>Anticipación</th></tr></thead>
+        <tbody>${rows.length ? rows.map((d) => `<tr>
+          <td>${d.date}</td><td>${d.top_symbol || "--"}</td>
+          <td>${d.predicted_probability_pct != null ? fmtNum(d.predicted_probability_pct) + "%" : "--"}</td>
+          <td>${d.result_category || "sin calificar"}</td>
+          <td>${d.result_pct != null ? fmtPct(d.result_pct) : "--"}</td>
+          <td>${d.anticipation_minutes != null ? Math.round(d.anticipation_minutes) + " min" : "--"}</td>
+        </tr>`).join("") : '<tr><td colspan="6" class="empty-state small">Sin días sellados todavía.</td></tr>'}</tbody>
+      </table></div>
+    </div>`;
+}
+
+function initPredictionJournalView() {
+  fetchPredictionJournal();
+  setInterval(fetchPredictionJournal, UNIVERSO_POLL_MS);
+}
+
+/* ============================================================
+ * EXIT JOURNAL -- panel existente, reconectado.
+ * Fuente: GET /api/exit-journal (sin cambios de backend).
+ * ============================================================ */
+
+async function fetchExitJournal() {
+  try {
+    const res = await fetch("/api/exit-journal");
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
+    renderExitJournal(data.summaries || []);
+  } catch (err) {
+    console.error("fetchExitJournal:", err);
+  }
+}
+
+function renderExitJournal(summaries) {
+  const el = document.getElementById("exit-journal-body");
+  if (!el) return;
+  el.innerHTML = `<div class="table-scroll"><table class="simple-table">
+    <thead><tr><th>Símbolo</th><th>Fecha</th><th>Detección</th><th>Entrada (sellado)</th><th>Máximo</th><th>Rendimiento final</th><th>Muestras</th></tr></thead>
+    <tbody>${summaries.length ? summaries.map((r) => `<tr>
+      <td>${r.symbol}</td><td>${r.date}</td>
+      <td>${fmtTimeSimple(r.detected_at)}</td><td>${fmtTimeSimple(r.entry_at)}</td>
+      <td>${r.peak_at ? `${fmtTimeSimple(r.peak_at)} (${fmtPct(r.peak_return_pct)})` : "--"}</td>
+      <td>${r.final_return_pct != null ? fmtPct(r.final_return_pct) : "--"}</td>
+      <td>${r.sample_count ?? "--"}</td>
+    </tr>`).join("") : '<tr><td colspan="7" class="empty-state small">Sin resúmenes todavía.</td></tr>'}</tbody>
+  </table></div>`;
+}
+
+function initExitJournalView() {
+  fetchExitJournal();
+  setInterval(fetchExitJournal, UNIVERSO_POLL_MS);
+}
+
+/* ============================================================
+ * MARCADOR HISTÓRICO -- panel existente, reconectado (versión
+ * simplificada: calidad + bandas acumulativas + últimos eventos; el
+ * detalle de grupos A/B/C/D y discriminación sigue disponible en el
+ * propio /api/explosion-history para quien lo consulte directo).
+ * ============================================================ */
+
+async function fetchExplosionHistory() {
+  try {
+    const res = await fetch("/api/explosion-history");
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    renderExplosionHistory(await res.json());
+  } catch (err) {
+    console.error("fetchExplosionHistory:", err);
+  }
+}
+
+function renderExplosionHistory(data) {
+  const calEl = document.getElementById("marcador-calidad");
+  const bandEl = document.getElementById("marcador-bandas");
+  const listEl = document.getElementById("marcador-lista");
+  if (!calEl || !bandEl || !listEl) return;
+  const cal = (data.por_banda && data.por_banda.calidad) || {};
+  calEl.innerHTML =
+    statCard("🔥", "Explosiones (≥30%)", cal.eventos_incluidos, "no artefactos") +
+    statCard("✅", "Limpias", cal.limpias_start_observado, "start observado") +
+    statCard("⏭", "Pre-iniciadas", cal.pre_iniciadas) +
+    statCard("🚫", "Artefactos excluidos", cal.artefactos_excluidos);
+
+  const bandas = (data.por_banda && data.por_banda.por_banda_acumulativa) || {};
+  bandEl.innerHTML = ["30", "50", "100", "150", "200"].map((b) => {
+    const d = bandas[b];
+    return statCard("📈", `≥ +${b}%`, d && d.n ? d.n : "0", d && d.n ? `máx ${d.max_absoluto_pct}%` : "");
+  }).join("");
+
+  const eventos = (data.eventos || []).slice(0, 30);
+  listEl.innerHTML = eventos.length ? `<div class="table-scroll"><table class="simple-table">
+    <thead><tr><th>Símbolo</th><th>Día</th><th>Cal.</th><th>Máx</th><th>Duración</th></tr></thead>
+    <tbody>${eventos.map((e) => `<tr>
+      <td>${e.symbol}</td><td>${e.date}</td>
+      <td>${e.quality === "limpia" ? "✅" : e.quality === "pre_iniciada" ? "⏭" : "?"}</td>
+      <td>+${e.max_return_pct}%</td>
+      <td>${e.duracion_movimiento_min != null ? e.duracion_movimiento_min + " min" : "--"}</td>
+    </tr>`).join("")}</tbody>
+  </table></div>` : `<div class="empty-state small">Sin explosiones ≥30% en el histórico disponible.</div>`;
+}
+
+function initMarcadorHistoricoView() {
+  fetchExplosionHistory();
+  setInterval(fetchExplosionHistory, UNIVERSO_POLL_MS);
+}
+
+/* ============================================================
+ * ESTUDIO HISTÓRICO -- panel existente, reconectado.
+ * Fuente: GET /api/market-study (sin cambios de backend).
+ * ============================================================ */
+
+async function fetchMarketStudy() {
+  try {
+    const res = await fetch("/api/market-study");
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    renderMarketStudy(await res.json());
+  } catch (err) {
+    console.error("fetchMarketStudy:", err);
+  }
+}
+
+function renderMarketStudy(data) {
+  const statusEl = document.getElementById("estudio-status");
+  const listEl = document.getElementById("estudio-lista");
+  if (!statusEl || !listEl) return;
+  const s = data.status || {};
+  statusEl.innerHTML =
+    statCard("⚙️", "Estado", s.state || "IDLE") +
+    statCard("📚", "Procesados", s.procesados, s.universe_total ? `de ${s.universe_total}` : "") +
+    statCard("📈", "Progreso", s.progreso_pct != null ? `${s.progreso_pct}%` : "--") +
+    statCard("🔥", "Explosiones totales", s.explosiones_totales) +
+    statCard("🤝", "En Racional", s.en_racional) +
+    statCard("🌎", "Fuera de Racional", s.fuera_de_racional);
+
+  const top = (data.top_explosions || []).slice(0, 25);
+  listEl.innerHTML = top.length ? `<div class="table-scroll"><table class="simple-table">
+    <thead><tr><th>Símbolo</th><th>Nombre</th><th>Fecha</th><th>Máx. intradía</th><th>Banda</th><th>Racional</th></tr></thead>
+    <tbody>${top.map((r) => `<tr>
+      <td>${r.ticker}</td><td>${r.name || "--"}</td><td>${r.date}</td>
+      <td>${r.max_intraday_pct != null ? "+" + r.max_intraday_pct + "%" : "--"}</td>
+      <td>${r.band || "--"}</td><td>${r.available_in_racional ? "Sí" : "No"}</td>
+    </tr>`).join("")}</tbody>
+  </table></div>` : `<div class="empty-state small">Sin explosiones estudiadas todavía.</div>`;
+}
+
+function initEstudioHistoricoView() {
+  fetchMarketStudy();
+  setInterval(fetchMarketStudy, UNIVERSO_POLL_MS);
+}
+
+/* ============================================================
+ * MISSION CONTROL -- panel existente, reconectado.
+ * Fuente: GET /api/mission-control (sin cambios de backend).
+ * ============================================================ */
+
+async function fetchMissionControl() {
+  try {
+    const res = await fetch("/api/mission-control");
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    renderMissionControl(await res.json());
+  } catch (err) {
+    console.error("fetchMissionControl:", err);
+  }
+}
+
+function renderMissionControl(data) {
+  const histEl = document.getElementById("mission-control-market-state");
+  const procEl = document.getElementById("mission-control-procesos");
+  if (!histEl || !procEl) return;
+
+  const hist = (data.market_state_history || []).slice(0, 20);
+  histEl.innerHTML = hist.length ? `<div class="table-scroll"><table class="simple-table">
+    <thead><tr><th>Hora del cambio</th><th>Estado nuevo</th><th>Estado anterior</th></tr></thead>
+    <tbody>${hist.map((h) => `<tr><td>${fmtTimeSimple(h.timestamp)}</td><td>${h.market_state || "--"}</td><td>${h.previous_market_state || "-- (primer estado)"}</td></tr>`).join("")}</tbody>
+  </table></div>` : `<div class="empty-state small">Sin cambios de sesión detectados todavía.</div>`;
+
+  const procs = data.processes || [];
+  procEl.innerHTML = procs.length ? `<div class="table-scroll"><table class="simple-table">
+    <thead><tr><th>Proceso</th><th>Estado</th><th>Último latido</th><th>Progreso</th></tr></thead>
+    <tbody>${procs.map((r) => {
+      const p = r.progress || {};
+      return `<tr><td>${r.process_type || ""} -- ${r.label || ""}</td><td>${r.state || "--"}</td><td>${fmtTimeSimple(r.last_heartbeat)}</td><td>${p.total ? `${p.done ?? 0} / ${p.total} ${p.unit || ""}` : "--"}</td></tr>`;
+    }).join("")}</tbody>
+  </table></div>` : `<div class="empty-state small">Sin procesos con heartbeat activo.</div>`;
+}
+
+function initMissionControlView() {
+  fetchMissionControl();
+  setInterval(fetchMissionControl, UNIVERSO_POLL_MS);
+}
+
+function fmtTimeSimple(iso) {
+  if (!iso) return "--";
+  try {
+    return new Date(iso).toLocaleString("es", { hour: "2-digit", minute: "2-digit", day: "2-digit", month: "2-digit" });
+  } catch (e) {
+    return iso;
+  }
+}
+
+/* ============================================================
+ * SIDEBAR -- navegación tipo SPA (2026-09-07, reestructuración
+ * autorizada explícitamente). `activateView()` solo muestra/oculta
+ * secciones -- Oportunidades/Aprendizaje/Universo/Mercado/Universo Yahoo
+ * siguen exactamente igual que en Cabina 2.0 (arrancan y sondean desde
+ * `init()`, sin importar la vista activa -- "mantener el polling vivo").
+ * Los 6 paneles reconectados (Learning completo, Prediction Journal,
+ * Exit Journal, Marcador Histórico, Estudio Histórico, Mission Control)
+ * son de carga PEREZOSA: su fetch + su propio setInterval arrancan la
+ * PRIMERA vez que se abre esa sección -- `_initializedViews` (un Set)
+ * garantiza que esto ocurra una única vez por sección durante toda la
+ * sesión, sin importar cuántas veces se vuelva a esa sección -- nunca se
+ * duplica un timer ni un listener. */
+const LAZY_VIEW_INIT = {
+  "learning": initLearningView,
+  "prediction-journal": initPredictionJournalView,
+  "exit-journal": initExitJournalView,
+  "marcador-historico": initMarcadorHistoricoView,
+  "estudio-historico": initEstudioHistoricoView,
+  "mission-control": initMissionControlView,
+};
+const _initializedViews = new Set();
+
+function activateView(viewId) {
+  document.querySelectorAll(".view").forEach((el) => el.classList.remove("active"));
+  document.querySelectorAll(".nav-item").forEach((el) => el.classList.remove("active"));
+  const viewEl = document.getElementById(`view-${viewId}`);
+  const navEl = document.querySelector(`.nav-item[data-view="${viewId}"]`);
+  if (viewEl) viewEl.classList.add("active");
+  if (navEl) navEl.classList.add("active");
+  const titleEl = document.getElementById("topbar-view-title");
+  if (titleEl && navEl) titleEl.textContent = navEl.textContent.trim();
+
+  if (!_initializedViews.has(viewId)) {
+    _initializedViews.add(viewId);
+    const initFn = LAZY_VIEW_INIT[viewId];
+    if (initFn) initFn();
+  }
+}
+
+function setupSidebar() {
+  document.querySelectorAll(".nav-item").forEach((btn) => {
+    btn.addEventListener("click", () => activateView(btn.dataset.view));
+  });
+}
+
 /* ---------------- arranque ---------------- */
 
 const OPORTUNIDADES_POLL_MS = 30000;
 const UNIVERSO_POLL_MS = 60000;
 
 function init() {
+  setupSidebar();
+  activateView("inicio");
+
   fetchOportunidades();
   fetchAprendizaje();
   fetchUniverso();
