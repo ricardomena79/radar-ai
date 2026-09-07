@@ -34,11 +34,9 @@
       <button class="nav-item" data-view="learning"><span class="nav-icon">🧠</span>Learning</button>
       <button class="nav-item" data-view="prediction-journal"><span class="nav-icon">📓</span>Prediction Journal</button>
       <button class="nav-item" data-view="exit-journal"><span class="nav-icon">🚪</span>Exit Journal</button>
-      <button class="nav-item" data-view="marcador-historico"><span class="nav-icon">📊</span>Marcador Histórico</button>
-      <button class="nav-item" data-view="estudio-historico"><span class="nav-icon">🔬</span>Estudio Histórico</button>
+      <button class="nav-item" data-view="historico"><span class="nav-icon">📊</span>Histórico</button>
       <button class="nav-item" data-view="universo-atlas"><span class="nav-icon">🌎</span>Universo Atlas</button>
       <button class="nav-item" data-view="universo-yahoo"><span class="nav-icon">🔎</span>Universo Yahoo</button>
-      <button class="nav-item" data-view="mission-control"><span class="nav-icon">🎛️</span>Mission Control</button>
     </nav>
   </aside>
 
@@ -138,33 +136,43 @@
         <div id="exit-journal-body"><div class="empty-state small">Cargando...</div></div>
       </section>
 
-      <!-- ================= MARCADOR HISTÓRICO ================= -->
-      <section id="view-marcador-historico" class="view">
+      <!-- ================= HISTÓRICO (2026-09-07, fusión de menú
+           autorizada explícitamente: Marcador Histórico y Estudio Histórico
+           NO son la misma información -- Marcador analiza lo que Atlas
+           mismo detectó en vivo (Exit Journal); Estudio es un batch amplio
+           sobre todo el mercado, dentro y fuera de Racional. Se fusiona
+           SOLO el punto de entrada del menú -- cada dato sigue viniendo de
+           su propio endpoint (/api/explosion-history, /api/market-study),
+           sin mezclarse. ================= -->
+      <section id="view-historico" class="view">
         <div class="view-head">
-          <div class="eyebrow">Panel existente</div>
-          <h1>Marcador Histórico</h1>
+          <div class="eyebrow">Dos estudios distintos, un solo lugar</div>
+          <h1>Histórico</h1>
+          <div class="view-sub">Marcador: lo que Atlas detectó y siguió en vivo. Estudio: un barrido amplio de todo el mercado, esté o no en Racional.</div>
         </div>
-        <div class="stat-cards" id="marcador-calidad"></div>
-        <div class="panel panel-full">
-          <div class="panel-head"><span class="panel-title">Bandas acumulativas</span></div>
-          <div class="stat-cards" id="marcador-bandas"></div>
+        <div class="historico-tabs">
+          <button class="historico-tab active" data-historico-tab="marcador">📊 Marcador Histórico</button>
+          <button class="historico-tab" data-historico-tab="estudio">🔬 Estudio Histórico</button>
         </div>
-        <div class="panel panel-full">
-          <div class="panel-head"><span class="panel-title">Explosiones recientes</span></div>
-          <div id="marcador-lista"><div class="empty-state small">Cargando...</div></div>
-        </div>
-      </section>
 
-      <!-- ================= ESTUDIO HISTÓRICO ================= -->
-      <section id="view-estudio-historico" class="view">
-        <div class="view-head">
-          <div class="eyebrow">Panel existente</div>
-          <h1>Estudio Histórico</h1>
+        <div id="historico-tab-marcador" class="historico-tab-panel active">
+          <div class="stat-cards" id="marcador-calidad"></div>
+          <div class="panel panel-full">
+            <div class="panel-head"><span class="panel-title">Bandas acumulativas</span></div>
+            <div class="stat-cards" id="marcador-bandas"></div>
+          </div>
+          <div class="panel panel-full">
+            <div class="panel-head"><span class="panel-title">Explosiones recientes</span></div>
+            <div id="marcador-lista"><div class="empty-state small">Cargando...</div></div>
+          </div>
         </div>
-        <div class="stat-cards" id="estudio-status"></div>
-        <div class="panel panel-full">
-          <div class="panel-head"><span class="panel-title">Top explosiones estudiadas</span></div>
-          <div id="estudio-lista"><div class="empty-state small">Cargando...</div></div>
+
+        <div id="historico-tab-estudio" class="historico-tab-panel">
+          <div class="stat-cards" id="estudio-status"></div>
+          <div class="panel panel-full">
+            <div class="panel-head"><span class="panel-title">Top explosiones estudiadas</span></div>
+            <div id="estudio-lista"><div class="empty-state small">Cargando...</div></div>
+          </div>
         </div>
       </section>
 

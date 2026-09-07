@@ -931,12 +931,16 @@ function fmtTimeSimple(iso) {
  * garantiza que esto ocurra una única vez por sección durante toda la
  * sesión, sin importar cuántas veces se vuelva a esa sección -- nunca se
  * duplica un timer ni un listener. */
+function initHistoricoView() {
+  initMarcadorHistoricoView();
+  initEstudioHistoricoView();
+}
+
 const LAZY_VIEW_INIT = {
   "learning": initLearningView,
   "prediction-journal": initPredictionJournalView,
   "exit-journal": initExitJournalView,
-  "marcador-historico": initMarcadorHistoricoView,
-  "estudio-historico": initEstudioHistoricoView,
+  "historico": initHistoricoView,
   "mission-control": initMissionControlView,
 };
 const _initializedViews = new Set();
@@ -964,6 +968,22 @@ function setupSidebar() {
   });
 }
 
+/* Tabs internos de "Histórico" (2026-09-07) -- puramente de presentación:
+ * alternan qué bloque se ve, nunca vuelven a pedir datos (ambos ya se
+ * cargaron una vez al abrir "Histórico", ver initHistoricoView()). */
+function setupHistoricoTabs() {
+  document.querySelectorAll(".historico-tab").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const tabId = btn.dataset.historicoTab;
+      document.querySelectorAll(".historico-tab").forEach((b) => b.classList.remove("active"));
+      document.querySelectorAll(".historico-tab-panel").forEach((p) => p.classList.remove("active"));
+      btn.classList.add("active");
+      const panel = document.getElementById(`historico-tab-${tabId}`);
+      if (panel) panel.classList.add("active");
+    });
+  });
+}
+
 /* ---------------- arranque ---------------- */
 
 const OPORTUNIDADES_POLL_MS = 30000;
@@ -971,6 +991,7 @@ const UNIVERSO_POLL_MS = 60000;
 
 function init() {
   setupSidebar();
+  setupHistoricoTabs();
   activateView("inicio");
 
   fetchOportunidades();
