@@ -230,6 +230,324 @@ def test_E_no_se_re_ejecuta_el_mismo_dia_si_ya_se_genero():
 
 
 # ---------------------------------------------------------------------------
+# Compaction automática de candidate_observation tras el EOD (2026-09-07,
+# autorizado explícitamente -- SOLO conecta el mecanismo ya existente de
+# candidate_observation_compaction.py, mismo patrón exacto que
+# _maybe_generate_experience_knowledge de arriba: marcador propio +
+# try/except aislado que nunca puede tumbar el radar).
+# ---------------------------------------------------------------------------
+
+import tempfile as _tempfile
+import uuid as _uuid2
+from datetime import date as _date, timedelta as _timedelta
+
+from atlas_live.radar import candidate_observation_compaction as _coc
+from atlas_live.radar import raw_data_consolidation_registry as _rdc_registry
+
+_ORIG_RDC_DB = _rdc_registry.DB_PATH
+
+
+def _fresh_compaction():
+    _rdc_registry.DB_PATH = Path(_tempfile.gettempdir()) / f"atlas_test_radar_worker_rdc_{_uuid2.uuid4().hex}.db"
+
+
+def _restore_compaction():
+    _rdc_registry.DB_PATH = _ORIG_RDC_DB
+
+
+def _seed_obs(market_date, ticker="AAA", n=2):
+    with reg._connect() as conn:
+        for i in range(n):
+            conn.execute(
+                """INSERT INTO candidate_observation
+                   (ticker, market_date, observed_at, sweep_id, price, change_pct, volume,
+                    relative_volume, gates_fired_now, vwap, created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                (ticker, market_date, f"{market_date}T10:{i:02d}:00+00:00", f"s{i}",
+                 10.0 + i, 5.0, 1000, 2.0, "[]", None, f"{market_date}T10:{i:02d}:00+00:00"),
+            )
+        conn.commit()
+
+
+TODAY_W = "2026-09-07"
+OBJETIVO_90D = (_date.fromisoformat(TODAY_W) - _timedelta(days=_coc.RETENTION_DAYS)).isoformat()
+
+
+def test_F_compaction_exitosa_de_punta_a_punta_desde_cero():
+    _fresh()
+    _fresh_compaction()
+    try:
+        _seed_obs(OBJETIVO_90D, n=3)
+        w._maybe_run_observation_compaction(TODAY_W)
+
+        meta = reg.get_meta()
+        assert meta.get("observation_compaction_ejecutada_para") == TODAY_W
+        resultado = meta.get("observation_compaction_ultimo_resultado")
+        assert resultado["objetivo"] == OBJETIVO_90D
+        assert resultado["compacted"]["ok"] is True
+        assert resultado["compacted"]["deleted_row_count"] == 3
+
+        with reg._connect() as conn:
+            n = conn.execute(
+                "SELECT COUNT(*) FROM candidate_observation WHERE market_date=?", (OBJETIVO_90D,)
+            ).fetchone()[0]
+        assert n == 0
+    finally:
+        _restore_compaction()
+        _restore()
+
+
+def test_F_falla_de_compaction_no_tumba_el_radar_ni_marca_exito():
+    """Simula un error real dentro del pipeline de compaction -- el radar
+    (esta función, y por extensión maybe_run_eod_evaluation) NUNCA debe
+    lanzar, y el marcador de 'ya se ejecutó' NUNCA debe ponerse cuando en
+    realidad falló (misma garantía que el test E de conocimiento)."""
+    _fresh()
+    _fresh_compaction()
+    try:
+        _seed_obs(OBJETIVO_90D, n=1)
+        orig = _coc.run_provisional_for_date
+
+        def _boom(*a, **k):
+            raise RuntimeError("fallo simulado -- SQLite inaccesible durante compaction")
+
+        _coc.run_provisional_for_date = _boom
+        try:
+            w._maybe_run_observation_compaction(TODAY_W)  # NO debe lanzar
+        finally:
+            _coc.run_provisional_for_date = orig
+
+        meta = reg.get_meta()
+        assert "RuntimeError" in (meta.get("observation_compaction_ultimo_error") or "")
+        assert meta.get("observation_compaction_ejecutada_para") != TODAY_W
+
+        # los datos crudos siguen intactos -- la falla no borró nada a medias
+        with reg._connect() as conn:
+            n = conn.execute(
+                "SELECT COUNT(*) FROM candidate_observation WHERE market_date=?", (OBJETIVO_90D,)
+            ).fetchone()[0]
+        assert n == 1
+    finally:
+        _restore_compaction()
+        _restore()
+
+
+def test_F_no_se_re_ejecuta_el_mismo_dia_si_ya_corrio():
+    _fresh()
+    _fresh_compaction()
+    try:
+        reg.set_meta(observation_compaction_ejecutada_para=TODAY_W)
+        llamadas = []
+        orig = _coc.run_provisional_for_date
+        _coc.run_provisional_for_date = lambda *a, **k: llamadas.append(a) or {"ok": True}
+        try:
+            w._maybe_run_observation_compaction(TODAY_W)
+        finally:
+            _coc.run_provisional_for_date = orig
+        assert llamadas == []
+    finally:
+        _restore_compaction()
+        _restore()
+
+
+def test_F_dia_actual_y_menos_de_90_dias_nunca_se_compactan():
+    """Confirma, a través del hook completo, que ni el día actual ni un
+    día reciente (<90d) se compactan -- los guards de
+    candidate_observation_compaction.py deciden esto, este test confirma
+    que el hook los respeta sin intentar saltárselos."""
+    _fresh()
+    _fresh_compaction()
+    try:
+        reciente = (_date.fromisoformat(TODAY_W) - _timedelta(days=30)).isoformat()
+        _seed_obs(TODAY_W, ticker="HOY", n=2)
+        _seed_obs(reciente, ticker="RECIENTE", n=2)
+
+        # target de este ciclo es OBJETIVO_90D, no TODAY_W/reciente -- pero
+        # confirmamos ademas que llamar directo al modulo de compaction
+        # sobre esas 2 fechas efectivamente las bloquea (garantía de fondo).
+        r_hoy = _coc.run_provisional_for_date(TODAY_W, today=TODAY_W)
+        r_reciente = _coc.run_provisional_for_date(reciente, today=TODAY_W)
+        assert r_hoy["ok"] is False
+        assert r_reciente["ok"] is False
+
+        w._maybe_run_observation_compaction(TODAY_W)
+        with reg._connect() as conn:
+            n_hoy = conn.execute("SELECT COUNT(*) FROM candidate_observation WHERE market_date=?", (TODAY_W,)).fetchone()[0]
+            n_reciente = conn.execute("SELECT COUNT(*) FROM candidate_observation WHERE market_date=?", (reciente,)).fetchone()[0]
+        assert n_hoy == 2
+        assert n_reciente == 2
+    finally:
+        _restore_compaction()
+        _restore()
+
+
+def test_F_candidate_detection_y_outcome_intactas_tras_el_hook():
+    _fresh()
+    _fresh_compaction()
+    try:
+        _seed_obs(OBJETIVO_90D, n=2)
+        reg.record_detection(
+            "AAA", OBJETIVO_90D, "regular", f"{OBJETIVO_90D}T09:31:00+00:00", "sweep0",
+            10.0, 5.0, 1000, 500, 2.0, 10000.0, [{"name": "gate_x", "reason": "r", "value": 1.0}],
+        )
+        reg.record_outcome(
+            ticker="AAA", market_date=OBJETIVO_90D, run_up_before_detection_pct=None,
+            max_price_after_detection=12.0, max_return_after_detection_pct=20.0, minutes_to_max=30.0,
+            reached_20=True, reached_50=False, reached_100=False, category="FINAL", is_final=True,
+        )
+        w._maybe_run_observation_compaction(TODAY_W)
+
+        with reg._connect() as conn:
+            det = conn.execute("SELECT COUNT(*) FROM candidate_detection WHERE market_date=?", (OBJETIVO_90D,)).fetchone()[0]
+            out = conn.execute("SELECT COUNT(*) FROM candidate_outcome WHERE market_date=?", (OBJETIVO_90D,)).fetchone()[0]
+            obs = conn.execute("SELECT COUNT(*) FROM candidate_observation WHERE market_date=?", (OBJETIVO_90D,)).fetchone()[0]
+        assert det == 1
+        assert out == 1
+        assert obs == 0  # esta si se compacto
+    finally:
+        _restore_compaction()
+        _restore()
+
+
+def test_F_reinicio_desde_estado_intermedio_verified_continua_seguro():
+    """El caso central de esta tarea: un intento anterior (proceso que
+    murio, o una corrida previa) dejo el bloque en 'verified' pero nunca
+    llego a autorizar/compactar. El hook debe DETECTAR eso y terminar el
+    trabajo, sin repetir provisional/verificacion desde cero ni saltarse
+    la autorizacion."""
+    _fresh()
+    _fresh_compaction()
+    try:
+        _seed_obs(OBJETIVO_90D, n=4)
+        _coc.run_provisional_for_date(OBJETIVO_90D, today=TODAY_W)
+        _coc.run_verification_for_date(OBJETIVO_90D)
+        # simula el "reinicio" -- nada en memoria, solo lo que ya quedo en
+        # el manifiesto persistido (verified, sin autorizar ni compactar).
+
+        w._maybe_run_observation_compaction(TODAY_W)
+
+        meta = reg.get_meta()
+        resultado = meta["observation_compaction_ultimo_resultado"]
+        assert resultado["estado_inicial"] == "verified"
+        assert "provisional" not in resultado  # no se repitio, ya existia
+        assert resultado["authorized"]["ok"] is True
+        assert resultado["compacted"]["ok"] is True
+        assert resultado["compacted"]["deleted_row_count"] == 4
+    finally:
+        _restore_compaction()
+        _restore()
+
+
+def test_F_reinicio_desde_compaction_authorized_termina_el_delete():
+    _fresh()
+    _fresh_compaction()
+    try:
+        _seed_obs(OBJETIVO_90D, n=5)
+        _coc.run_provisional_for_date(OBJETIVO_90D, today=TODAY_W)
+        _coc.run_verification_for_date(OBJETIVO_90D)
+        _coc.authorize_compaction_for_date(OBJETIVO_90D)
+        # "reinicio" -- quedo compaction_authorized, el DELETE nunca corrio.
+
+        w._maybe_run_observation_compaction(TODAY_W)
+
+        meta = reg.get_meta()
+        resultado = meta["observation_compaction_ultimo_resultado"]
+        assert resultado["estado_inicial"] == "compaction_authorized"
+        assert "provisional" not in resultado
+        assert "verified" not in resultado
+        assert "authorized" not in resultado
+        assert resultado["compacted"]["ok"] is True
+        assert resultado["compacted"]["deleted_row_count"] == 5
+    finally:
+        _restore_compaction()
+        _restore()
+
+
+def test_F_bloque_ya_compactado_es_no_op_total():
+    """Idempotencia extrema: si el bloque ya llego a 'compacted' en un
+    ciclo EOD anterior (marcador de fecha distinto, ej. el proceso corrio
+    ayer y hoy el objetivo es otro dia mas viejo) y por algun motivo se
+    volviera a apuntar al mismo objetivo, el hook no debe intentar NINGUNA
+    etapa nueva."""
+    _fresh()
+    _fresh_compaction()
+    try:
+        _seed_obs(OBJETIVO_90D, n=2)
+        _coc.run_provisional_for_date(OBJETIVO_90D, today=TODAY_W)
+        _coc.run_verification_for_date(OBJETIVO_90D)
+        _coc.authorize_compaction_for_date(OBJETIVO_90D)
+        _coc.compact_block(OBJETIVO_90D, today=TODAY_W)
+
+        # forzar que el hook vuelva a intentar el MISMO objetivo (normalmente
+        # no pasaria el mismo dia real, pero prueba la garantia de fondo).
+        reg.set_meta(observation_compaction_ejecutada_para=None)
+        w._maybe_run_observation_compaction(TODAY_W)
+
+        meta = reg.get_meta()
+        resultado = meta["observation_compaction_ultimo_resultado"]
+        assert resultado["estado_inicial"] == "compacted"
+        assert "provisional" not in resultado
+        assert "verified" not in resultado
+        assert "authorized" not in resultado
+        assert "compacted" not in resultado  # no se re-ejecuta compact_block
+    finally:
+        _restore_compaction()
+        _restore()
+
+
+def test_F_maybe_run_eod_evaluation_completo_sigue_devolviendo_true_pese_a_fallo_de_compaction():
+    """Integración contra la función PÚBLICA real (`maybe_run_eod_evaluation`):
+    un fallo REAL dentro de la compaction (no un mock que reemplace toda la
+    protección) debe quedar contenido por el try/except propio de
+    `_maybe_run_observation_compaction()` -- la función completa sigue
+    devolviendo True (el EOD en sí fue exitoso), exactamente la garantía de
+    aislamiento pedida. Si esta prueba fallara devolviendo False, sería la
+    señal de que la protección INTERNA del hook dejó de funcionar y el
+    error se escapó hasta el try/except externo de
+    `maybe_run_eod_evaluation` (que sí marca el EOD entero como fallido)."""
+    _fresh()
+    _fresh_compaction()
+    saved = _install_fakes(session="afterhours", quotes={})
+    try:
+        market_date = market_hours.market_date()
+        reg.set_meta(current_market_date=market_date)
+
+        from atlas_live.radar import eod_report as eod_mod
+
+        orig_eod = eod_mod.run_eod_evaluation
+        eod_mod.run_eod_evaluation = lambda *a, **k: SimpleNamespace(
+            market_date=market_date, n_estudiadas=0, n_candidatas=0, n_senales=0, n_evaluadas=0,
+            n_aciertos=0, n_reached_20=0, n_reached_50=0, n_reached_100=0, n_falsas_senales=0,
+            n_deteccion_tardia=0, n_direccion_correcta=0, n_direccion_incorrecta=0,
+            mejores_oportunidades=[], posibles_no_detectadas=[],
+        )
+
+        orig_provisional = _coc.run_provisional_for_date
+        llamado = {"n": 0}
+
+        def _boom(*a, **k):
+            llamado["n"] += 1
+            raise RuntimeError("fallo real simulado dentro de la compaction")
+
+        _coc.run_provisional_for_date = _boom
+        try:
+            resultado = w.maybe_run_eod_evaluation()
+        finally:
+            _coc.run_provisional_for_date = orig_provisional
+            eod_mod.run_eod_evaluation = orig_eod
+
+        assert llamado["n"] == 1  # la compaction SI se intento y SI fallo
+        assert resultado is True  # pero el EOD completo se reporta exitoso igual
+        meta = reg.get_meta()
+        assert meta.get("state") == "EOD_COMPLETO"
+        assert "RuntimeError" in (meta.get("observation_compaction_ultimo_error") or "")
+    finally:
+        _restore_compaction()
+        _uninstall_fakes(saved)
+        _restore()
+
+
+# ---------------------------------------------------------------------------
 # Blindaje del loop (2026-08-31) -- reconstrucción del incidente real de
 # producción: el 31/08 una excepción original en process_sweep() fue
 # atrapada por run_sweep_once(), pero el propio manejador de error

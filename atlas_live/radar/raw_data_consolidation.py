@@ -115,3 +115,78 @@ def _compute_checksum(source_table: str, ticker: str, market_date: str, row: sql
         f"{row['max_ts']}|{row['max_price']}|{row['sum_volume']}"
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def analyze_daily_block(source_table: str, market_date: str) -> Optional[Dict[str, Any]]:
+    """Análisis por DÍA COMPLETO -- 2026-09-07, extensión autorizada
+    explícitamente para la compaction de `candidate_observation`
+    (`candidate_observation_compaction.py`). A diferencia de
+    `analyze_block()` (un bloque por CADA ticker), acá el bloque es UN
+    día de mercado completo (todos los tickers juntos) -- exactamente la
+    granularidad pedida ("bloque diario cerrado"), evitando miles de
+    filas de manifiesto por día (una por ticker) cuando lo que se
+    compacta es el día entero de una sola vez.
+
+    Nota de rendimiento, declarada explícitamente: a diferencia de
+    `analyze_block()` (que sí usa el índice `idx_obs_ticker_date` por
+    empezar con `ticker=?`), esta consulta filtra SOLO por
+    `market_date` -- el índice compuesto `(ticker, market_date)` no sirve
+    de prefijo acá, así que SQLite recorre la tabla completa filtrando por
+    fecha. Aceptable porque esto se llama UNA vez por día, después del
+    cierre (nunca por sweep, nunca en el camino caliente del radar) sobre,
+    como mucho, unas pocas centenas de miles de filas de un solo día --
+    no la tabla completa acumulada.
+
+    `None` si el día no tiene ninguna fila -- nunca se inventa un resumen
+    vacío, mismo criterio que `analyze_block()`."""
+    if source_table not in _TABLE_CONFIG:
+        raise ValueError(f"source_table inválida: {source_table!r}. Debe ser una de {tuple(_TABLE_CONFIG)}")
+    cfg = _TABLE_CONFIG[source_table]
+    db_path = cfg["db_path_getter"]()
+    ts_col, price_col, vol_col = cfg["timestamp_col"], cfg["price_col"], cfg["volume_col"]
+
+    with _ro_connect(db_path) as conn:
+        row = conn.execute(
+            f"""SELECT COUNT(*) AS n, COUNT(DISTINCT ticker) AS n_tickers,
+                       MIN({ts_col}) AS min_ts, MAX({ts_col}) AS max_ts,
+                       MAX({price_col}) AS max_price, SUM({vol_col}) AS sum_volume
+                FROM {source_table} WHERE market_date=?""",  # nosec: source_table/columnas de allowlist fija
+            (market_date,),
+        ).fetchone()
+
+    if row is None or row["n"] == 0:
+        return None
+
+    summary = {
+        "n_observaciones": row["n"],
+        "n_tickers_distintos": row["n_tickers"],
+        "max_price_visto": row["max_price"],
+        "sum_volume": row["sum_volume"],
+        "primer_timestamp": row["min_ts"],
+        "ultimo_timestamp": row["max_ts"],
+    }
+    checksum = _compute_daily_checksum(source_table, market_date, row)
+
+    return {
+        "source_table": source_table,
+        "block_key": market_date,
+        "block_granularity": "market_date",
+        "row_count_covered": row["n"],
+        "min_timestamp_covered": row["min_ts"],
+        "max_timestamp_covered": row["max_ts"],
+        "summary": summary,
+        "raw_data_checksum": checksum,
+        "methodology_version": METHODOLOGY_VERSION,
+    }
+
+
+def _compute_daily_checksum(source_table: str, market_date: str, row: sqlite3.Row) -> str:
+    """Misma idea que `_compute_checksum()`, sin `ticker` (el bloque cubre
+    TODOS los tickers de ese día) -- agrega `n_tickers` al fingerprint para
+    que un cambio en la CANTIDAD de tickers distintos (no solo en el total
+    de filas) también invalide el checksum."""
+    payload = (
+        f"{source_table}|{market_date}|{row['n']}|{row['n_tickers']}|{row['min_ts']}|"
+        f"{row['max_ts']}|{row['max_price']}|{row['sum_volume']}"
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()

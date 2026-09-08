@@ -60,6 +60,21 @@ body{
 .stat-card .sc-value{font-family:"Sora",sans-serif;font-size:18px;font-weight:700;margin-top:2px;}
 .stat-card .sc-sub{font-size:10.5px;color:var(--text-faint);margin-top:2px;}
 
+/* ---------- Capacity Monitor (2026-09-07, indicador en Inicio) ---------- */
+.capacity-widget{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:12px 16px;}
+.capacity-widget .cw-head{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:6px;}
+.capacity-widget .cw-title{font-size:10.5px;font-weight:700;letter-spacing:.04em;color:var(--text-faint);text-transform:uppercase;}
+.capacity-widget .cw-pct{font-family:"Sora",sans-serif;font-size:15px;font-weight:700;}
+.capacity-widget .cw-pct.status-ok{color:var(--green);}
+.capacity-widget .cw-pct.status-warning{color:var(--gold);}
+.capacity-widget .cw-pct.status-critical{color:var(--red);}
+.capacity-bar{height:8px;border-radius:5px;background:var(--surface-2);border:1px solid var(--border);overflow:hidden;margin-bottom:6px;}
+.capacity-bar-fill{height:100%;border-radius:5px 0 0 5px;background:var(--green);}
+.capacity-bar-fill.status-warning{background:var(--gold);}
+.capacity-bar-fill.status-critical{background:var(--red);}
+.capacity-widget .cw-detail{font-size:11px;color:var(--text-dim);display:flex;flex-wrap:wrap;gap:4px 14px;}
+.capacity-widget .cw-detail .dim{color:var(--text-faint);}
+
 /* ---------- tabs internos de "Histórico" (2026-09-07, fusión de menú) ---------- */
 .historico-tabs{display:flex;gap:6px;margin-bottom:16px;border-bottom:1px solid var(--border);}
 .historico-tab{

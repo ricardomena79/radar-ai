@@ -984,10 +984,64 @@ function setupHistoricoTabs() {
   });
 }
 
+/* ============================================================
+ * CAPACITY MONITOR (2026-09-07) -- indicador permanente en Inicio, NO una
+ * sección de sidebar nueva (Mission Control sigue sin reintroducirse).
+ * Fuente: GET /api/capacidad-resumen (público, sin token -- Cabina nunca
+ * maneja ATLAS_ADMIN_TOKEN). Polling deliberadamente lento (10 min): la
+ * capacidad del disco cambia despacio, no hace falta pedirla seguido.
+ * ============================================================ */
+
+function _fmtGB(bytes) {
+  if (bytes == null) return "--";
+  return (bytes / (1024 * 1024 * 1024)).toFixed(2) + " GB";
+}
+
+async function fetchCapacidad() {
+  try {
+    const res = await fetch("/api/capacidad-resumen");
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    renderCapacidad(await res.json());
+  } catch (err) {
+    console.error("fetchCapacidad:", err);
+  }
+}
+
+function renderCapacidad(data) {
+  const el = document.getElementById("capacity-widget");
+  if (!el) return;
+  const pct = data.used_pct;
+  const statusClass = "status-" + (data.status || "ok").toLowerCase();
+  const barPct = pct != null ? Math.min(100, Math.max(0, pct)) : 0;
+
+  const crecimientoTxt = data.growth && data.growth.history_status === "ok"
+    ? `+${data.growth.mb_per_day} MB/día`
+    : "calculando...";
+
+  const proj = data.projection || {};
+  const proyeccionTxt = proj.days_to_80_pct != null
+    ? `${proj.days_to_80_pct} días al 80%`
+    : "disponible cuando exista histórico suficiente";
+
+  el.innerHTML = `
+    <div class="cw-head">
+      <span class="cw-title">Capacidad Atlas</span>
+      <span class="cw-pct ${statusClass}">${pct != null ? pct + "%" : "--"}</span>
+    </div>
+    <div class="capacity-bar"><div class="capacity-bar-fill ${statusClass}" style="width:${barPct}%"></div></div>
+    <div class="cw-detail">
+      <span>${_fmtGB(data.used_bytes)} / ${_fmtGB(data.total_bytes)}</span>
+      <span class="dim">Libre: ${_fmtGB(data.free_bytes)}</span>
+      <span class="dim">Crecimiento: ${crecimientoTxt}</span>
+      <span class="dim">Proyección: ${proyeccionTxt}</span>
+    </div>`;
+}
+
 /* ---------------- arranque ---------------- */
 
 const OPORTUNIDADES_POLL_MS = 30000;
 const UNIVERSO_POLL_MS = 60000;
+const CAPACITY_POLL_MS = 600000; // 10 min -- la capacidad cambia despacio
 
 function init() {
   setupSidebar();
@@ -999,10 +1053,12 @@ function init() {
   fetchUniverso();
   startMercadoPolling();
   initUniversoYahoo();
+  fetchCapacidad();
 
   setInterval(fetchOportunidades, OPORTUNIDADES_POLL_MS);
   setInterval(fetchAprendizaje, OPORTUNIDADES_POLL_MS);
   setInterval(fetchUniverso, UNIVERSO_POLL_MS);
+  setInterval(fetchCapacidad, CAPACITY_POLL_MS);
 }
 
 document.addEventListener("DOMContentLoaded", init);

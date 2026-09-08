@@ -273,32 +273,66 @@ def test_mark_verified_no_hace_nada_si_ya_no_esta_provisional():
         _restore()
 
 
-def test_status_nunca_avanza_a_compaction_authorized_ni_compacted_automaticamente():
-    """Ningún código de este módulo (ni de raw_data_consolidation_pipeline.py)
-    ESCRIBE 'compaction_authorized' ni 'compacted' -- busca el patrón real
-    de asignación/SQL (`status='...'`), no cualquier mención en prosa
-    (ambos nombres aparecen legítimamente en los docstrings, explicando
-    qué NO se escribe en esta fase)."""
+def test_status_nunca_avanza_automaticamente_en_raw_data_consolidation_pipeline():
+    """`raw_data_consolidation_pipeline.py` sigue siendo SOLO consolidación
+    (Hito 2 original, sin tocar en esta extensión) -- nunca escribe
+    'compaction_authorized' ni 'compacted', ni tiene ninguna función que
+    pueda hacerlo. `raw_data_consolidation_registry.py` SÍ ganó esas 2
+    funciones (2026-09-07, autorizado explícitamente para
+    `candidate_observation_compaction.py`) -- ver el test siguiente para
+    la garantía real que las reemplaza: que solo avanzan bajo el guard de
+    estado correcto, nunca en automático ni saltando un paso."""
     import inspect
 
-    src_registry = inspect.getsource(registry)
     src_pipeline = inspect.getsource(pipeline)
     patrones_prohibidos = (
         "status='compaction_authorized'", 'status="compaction_authorized"',
         "status='compacted'", 'status="compacted"',
-        "SET status='compaction_authorized'", "SET status='compacted'",
     )
-    for modulo_src, nombre in ((src_registry, "registry"), (src_pipeline, "pipeline")):
-        for patron in patrones_prohibidos:
-            assert patron not in modulo_src, f"{nombre}: encontrado patrón de escritura prohibido {patron!r}"
+    for patron in patrones_prohibidos:
+        assert patron not in src_pipeline, f"pipeline: encontrado patrón de escritura prohibido {patron!r}"
 
-    # Comportamiento real, no solo texto: no existe ninguna función pública
-    # que pueda escribir esos 2 estados -- solo `record_provisional`
-    # ('provisional') y `mark_verified` ('verified') escriben `status` en
-    # todo el módulo.
-    funciones_publicas = [n for n in dir(registry) if not n.startswith("_") and callable(getattr(registry, n))]
+    funciones_publicas = [n for n in dir(pipeline) if not n.startswith("_") and callable(getattr(pipeline, n))]
     for nombre_prohibido in ("mark_compaction_authorized", "mark_compacted", "authorize_compaction", "compact"):
         assert nombre_prohibido not in funciones_publicas
+
+
+def test_mark_compaction_authorized_y_compacted_solo_avanzan_bajo_guard_de_estado():
+    """2026-09-07, autorizado explícitamente (compaction de
+    `candidate_observation`): `mark_compaction_authorized()`/
+    `mark_compacted()` existen -- pero, igual que `mark_verified()` ya
+    probado arriba, cada uno exige el estado EXACTO anterior (`WHERE
+    status='verified'`/`WHERE status='compaction_authorized'`) -- no
+    pueden saltarse un paso ni retroceder. Confirmado con comportamiento
+    real, no solo lectura de código."""
+    _fresh()
+    try:
+        registry.record_provisional(
+            source_table="candidate_observation", block_key="2026-01-01", block_granularity="market_date",
+            row_count_covered=5, min_timestamp_covered=None, max_timestamp_covered=None,
+            summary={}, raw_data_checksum="chk1", methodology_version="v1",
+        )
+        # no puede saltar de 'provisional' directo a 'compaction_authorized'
+        assert registry.mark_compaction_authorized("candidate_observation", "2026-01-01", "v1") is False
+        assert registry.get_block("candidate_observation", "2026-01-01", "v1")["status"] == "provisional"
+
+        registry.mark_verified("candidate_observation", "2026-01-01", "v1")
+        assert registry.mark_compaction_authorized("candidate_observation", "2026-01-01", "v1") is True
+        assert registry.get_block("candidate_observation", "2026-01-01", "v1")["status"] == "compaction_authorized"
+
+        # no puede saltar de 'compaction_authorized' directo si se reintenta mark_verified
+        assert registry.mark_verified("candidate_observation", "2026-01-01", "v1") is False
+
+        assert registry.mark_compacted("candidate_observation", "2026-01-01", "v1", deleted_row_count=5) is True
+        bloque = registry.get_block("candidate_observation", "2026-01-01", "v1")
+        assert bloque["status"] == "compacted"
+        assert bloque["deleted_row_count"] == 5
+        assert bloque["compacted_at"] is not None
+
+        # nunca retrocede: un segundo mark_compaction_authorized sobre un bloque ya compacted es no-op
+        assert registry.mark_compaction_authorized("candidate_observation", "2026-01-01", "v1") is False
+    finally:
+        _restore()
 
 
 def test_get_block_inexistente_devuelve_none():

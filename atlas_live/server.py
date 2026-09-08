@@ -1517,6 +1517,42 @@ def api_aprendizaje_seguridad_resumen():
     return jsonify(lss.build_safety_summary())
 
 
+@app.route("/api/admin/capacity")
+def api_admin_capacity():
+    """Capacity Monitor de Atlas (2026-09-07, autorizado explícitamente):
+    reporte COMPLETO de capacidad del Volume (`ATLAS_DATA_DIR`) -- tamaño
+    real vía `shutil.disk_usage()` (nunca hardcodeado, se adapta solo si
+    Railway cambia el tamaño del Volume), top consumidores por archivo
+    (incluye `.db`/`.db-wal`/`.db-shm`), crecimiento reciente (regresión
+    lineal sobre snapshots ya persistidos) y proyección de días hasta
+    80/90/95/100% -- `"insufficient_history"` explícito si todavía no hay
+    evidencia suficiente, nunca una tasa inventada. Ver
+    `atlas_live/capacity_monitor.py`. Protegido con ATLAS_ADMIN_TOKEN,
+    mismo patrón que el resto de `/api/admin/*` -- expone rutas de archivo
+    del Volume (`top_consumers`), por eso no es público (ver
+    `/api/capacidad-resumen` para la versión sin ese detalle)."""
+    if not _admin_token_ok():
+        return jsonify({"error": "no autorizado"}), 403
+    from atlas_live import capacity_monitor as cm
+
+    return jsonify(cm.capacity_report())
+
+
+@app.route("/api/capacidad-resumen")
+def api_capacidad_resumen():
+    """Versión pública y SEGURA del Capacity Monitor (2026-09-07, mismo
+    criterio que `/api/aprendizaje-seguridad-resumen`, Hito 4.3): mismos
+    campos agregados (`used_pct`/`growth`/`projection`/`status`) que
+    `/api/admin/capacity`, pero SIN `top_consumers` (rutas de archivo del
+    Volume) -- así Cabina puede mostrar el indicador de capacidad sin
+    manejar `ATLAS_ADMIN_TOKEN` en ningún momento. Reutiliza
+    `capacity_monitor.capacity_summary_public()` tal cual, cero cómputo
+    nuevo acá."""
+    from atlas_live import capacity_monitor as cm
+
+    return jsonify(cm.capacity_summary_public())
+
+
 @app.route("/api/learning-maturity")
 def api_learning_maturity():
     """Aprendizaje en Vivo + Madurez (2026-08-15, ver

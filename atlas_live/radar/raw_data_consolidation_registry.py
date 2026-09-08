@@ -61,12 +61,27 @@ CREATE INDEX IF NOT EXISTS idx_rdc_block ON raw_data_consolidation(source_table,
 """
 
 
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, decl: str) -> None:
+    """Migración aditiva y segura (2026-09-07, extensión para compaction de
+    `candidate_observation` -- ver `candidate_observation_compaction.py`):
+    mismo patrón exacto que `candidate_registry._ensure_column()`. No toca
+    ni una fila de datos existente."""
+    cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+
+
 def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH, timeout=15)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=15000")
     conn.executescript(_SCHEMA)  # CREATE TABLE/INDEX IF NOT EXISTS -- nunca DROP, nunca recrea
+    # Columnas nuevas (2026-09-07) -- SOLO se completan cuando el DELETE
+    # real ya ocurrió (`mark_compacted()`), nunca antes. Nullable, no
+    # rompen ninguna fila `provisional`/`verified` ya existente.
+    _ensure_column(conn, "raw_data_consolidation", "compacted_at", "TEXT")
+    _ensure_column(conn, "raw_data_consolidation", "deleted_row_count", "INTEGER")
     return conn
 
 
@@ -146,6 +161,46 @@ def mark_verified(source_table: str, block_key: str, methodology_version: str) -
             """UPDATE raw_data_consolidation SET status='verified', verified_at=?
                WHERE source_table=? AND block_key=? AND methodology_version=? AND status='provisional'""",
             (_now(), source_table, block_key, methodology_version),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def mark_compaction_authorized(source_table: str, block_key: str, methodology_version: str) -> bool:
+    """Avanza `verified -> compaction_authorized` (2026-09-07, extensión
+    para compaction de `candidate_observation`, autorizada explícitamente
+    -- completa la máquina de estados que Hito 2 dejó preparada en el
+    schema pero nunca implementó). Mismo criterio EXACTO que
+    `mark_verified()`: el `WHERE status='verified'` hace que sea un no-op
+    seguro si ya avanzó, y estructuralmente imposible saltarse `verified`
+    o retroceder desde `compacted`. Esto NUNCA borra nada -- solo marca
+    que un humano/proceso separado autorizó que ESTE bloque, específico,
+    puede compactarse -- el DELETE real vive en
+    `candidate_observation_compaction.py`, nunca acá."""
+    _validate_source_table(source_table)
+    with _connect() as conn:
+        cur = conn.execute(
+            """UPDATE raw_data_consolidation SET status='compaction_authorized'
+               WHERE source_table=? AND block_key=? AND methodology_version=? AND status='verified'""",
+            (source_table, block_key, methodology_version),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def mark_compacted(source_table: str, block_key: str, methodology_version: str, deleted_row_count: int) -> bool:
+    """Avanza `compaction_authorized -> compacted` -- SOLO debe llamarse
+    DESPUÉS de que el DELETE real ya se ejecutó con éxito (ver
+    `candidate_observation_compaction.py::compact_block()`). Este módulo
+    en sí NUNCA ejecuta el DELETE -- solo registra, con
+    `deleted_row_count` real, que ya ocurrió. Mismo guard de estado que
+    las otras 2 transiciones: `WHERE status='compaction_authorized'`."""
+    _validate_source_table(source_table)
+    with _connect() as conn:
+        cur = conn.execute(
+            """UPDATE raw_data_consolidation SET status='compacted', compacted_at=?, deleted_row_count=?
+               WHERE source_table=? AND block_key=? AND methodology_version=? AND status='compaction_authorized'""",
+            (_now(), deleted_row_count, source_table, block_key, methodology_version),
         )
         conn.commit()
         return cur.rowcount > 0

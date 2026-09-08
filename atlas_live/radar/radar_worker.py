@@ -274,6 +274,75 @@ def _maybe_generate_experience_knowledge(market_date: str) -> None:
         _record_error("experience_knowledge", exc, {"conocimiento_ultimo_error": f"{type(exc).__name__}: {exc}"})
 
 
+def _maybe_run_observation_compaction(market_date: str) -> None:
+    """Compaction de `candidate_observation` (2026-09-07, autorizado
+    explícitamente -- SOLO conecta el mecanismo ya existente de
+    `candidate_observation_compaction.py`, sin rediseñar ningún guard ni
+    cambiar la retención de 90 días ya definida ahí). Se llama SOLO
+    después de que `maybe_run_eod_evaluation()` ya confirmó que
+    `market_date` (HOY) cerró -- mismo punto exacto y mismo patrón EXACTO
+    que `_maybe_generate_experience_knowledge()`: marcador propio
+    (`observation_compaction_ejecutada_para`, independiente de
+    `eod_ejecutado_para`/`conocimiento_generado_para`) + try/except propio
+    que NUNCA puede escapar hacia `maybe_run_eod_evaluation()` ni hacia
+    `_loop()` -- una falla acá (import roto, checksum que no coincide,
+    excepción inesperada de SQLite) se registra y el radar sigue
+    exactamente igual, `candidate_detection`/`candidate_outcome`/H3-H6/la
+    cadencia del radar nunca se enteran de que esto existe.
+
+    Día objetivo: `market_date - RETENTION_DAYS` -- el único bloque que
+    recién cruza el umbral de retención en ESTE ciclo. Si Atlas estuvo
+    caído varios días, el catch-up es gradual (un día más se compacta en
+    cada EOD posterior) -- declarado así explícitamente, no se agregó un
+    escaneo masivo de días atrasados (fuera del alcance pedido: 'solo
+    conectar el mecanismo existente').
+
+    Reinicio a mitad de pipeline: en vez de usar
+    `candidate_observation_compaction.run_daily_pipeline()` (que asume que
+    arranca desde cero -- confirmado que NO retoma correctamente si el
+    bloque ya quedó en `verified`/`compaction_authorized` de un intento
+    anterior interrumpido, porque cada etapa exige el status EXACTO
+    anterior), este hook lee el estado REAL del manifiesto primero y
+    dispara SOLO las etapas que faltan -- sin tocar ni un guard de
+    `candidate_observation_compaction.py` (se siguen llamando sus mismas
+    4 funciones de siempre, cada una revalidando todo por su cuenta)."""
+    meta = reg.get_meta()
+    if meta.get("observation_compaction_ejecutada_para") == market_date:
+        return
+    try:
+        from datetime import date, timedelta
+
+        from atlas_live.radar import candidate_observation_compaction as coc
+        from atlas_live.radar import raw_data_consolidation as rdc
+        from atlas_live.radar import raw_data_consolidation_registry as rdc_registry
+
+        objetivo = (date.fromisoformat(market_date) - timedelta(days=coc.RETENTION_DAYS)).isoformat()
+
+        bloque = rdc_registry.get_block(coc.SOURCE_TABLE, objetivo, rdc.METHODOLOGY_VERSION)
+        estado = bloque["status"] if bloque else None
+        resultado: Dict[str, object] = {"objetivo": objetivo, "estado_inicial": estado}
+
+        if estado is None:
+            resultado["provisional"] = coc.run_provisional_for_date(objetivo, today=market_date)
+            estado = "provisional" if resultado["provisional"]["ok"] else None
+        if estado == "provisional":
+            resultado["verified"] = coc.run_verification_for_date(objetivo)
+            estado = "verified" if resultado["verified"]["ok"] else estado
+        if estado == "verified":
+            resultado["authorized"] = coc.authorize_compaction_for_date(objetivo)
+            estado = "compaction_authorized" if resultado["authorized"]["ok"] else estado
+        if estado == "compaction_authorized":
+            resultado["compacted"] = coc.compact_block(objetivo, today=market_date)
+
+        reg.set_meta(
+            observation_compaction_ejecutada_para=market_date,
+            observation_compaction_ultimo_objetivo=objetivo,
+            observation_compaction_ultimo_resultado=resultado,
+        )
+    except Exception as exc:
+        _record_error("observation_compaction", exc, {"observation_compaction_ultimo_error": f"{type(exc).__name__}: {exc}"})
+
+
 def maybe_run_eod_evaluation() -> bool:
     """Si el mercado regular ya cerró y todavía no se corrió la evaluación
     de HOY, la corre. Idempotente vía `candidate_registry` (una sola vez
@@ -319,6 +388,7 @@ def maybe_run_eod_evaluation() -> bool:
             },
         )
         _maybe_generate_experience_knowledge(market_date)
+        _maybe_run_observation_compaction(market_date)
         return True
     except Exception as exc:
         _record_error("maybe_run_eod_evaluation", exc, {"ultimo_error_eod": f"{type(exc).__name__}: {exc}"})
