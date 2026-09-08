@@ -32,7 +32,9 @@ body{
 .sidebar{
   width:232px;flex-shrink:0;background:var(--surface);border-right:1px solid var(--border);
   padding:16px 10px;position:sticky;top:0;height:100vh;overflow-y:auto;box-sizing:border-box;
+  display:flex;flex-direction:column;
 }
+#sidebar-nav{flex-shrink:0;}
 .sidebar-brand{padding:6px 10px 16px;}
 .sidebar-brand .mark{font-family:"Sora",sans-serif;font-weight:700;font-size:18px;letter-spacing:.01em;}
 .sidebar-brand .tag{font-size:10.5px;color:var(--text-faint);display:block;margin-top:1px;}
@@ -74,6 +76,15 @@ body{
 .capacity-bar-fill.status-critical{background:var(--red);}
 .capacity-widget .cw-detail{font-size:11px;color:var(--text-dim);display:flex;flex-wrap:wrap;gap:4px 14px;}
 .capacity-widget .cw-detail .dim{color:var(--text-faint);}
+.capacity-widget.sin-datos{color:var(--text-faint);font-size:11.5px;font-weight:500;padding:10px 12px;}
+
+/* Version compacta, siempre visible, anclada abajo del sidebar (2026-09-08) --
+   MISMO widget/campos que antes vivian solo en Inicio, reutiliza las mismas
+   clases -- solo se achica el padding/tipografia para el ancho del sidebar. */
+.sidebar-capacity{margin-top:auto;flex-shrink:0;padding:10px 12px;font-size:10.5px;}
+.sidebar-capacity .cw-title{font-size:9.5px;}
+.sidebar-capacity .cw-pct{font-size:13px;}
+.sidebar-capacity .cw-detail{font-size:10px;gap:1px 0;flex-direction:column;}
 
 /* ---------- tabs internos de "Histórico" (2026-09-07, fusión de menú) ---------- */
 .historico-tabs{display:flex;gap:6px;margin-bottom:16px;border-bottom:1px solid var(--border);}

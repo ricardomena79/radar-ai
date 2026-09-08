@@ -985,16 +985,26 @@ function setupHistoricoTabs() {
 }
 
 /* ============================================================
- * CAPACITY MONITOR (2026-09-07) -- indicador permanente en Inicio, NO una
- * sección de sidebar nueva (Mission Control sigue sin reintroducirse).
- * Fuente: GET /api/capacidad-resumen (público, sin token -- Cabina nunca
- * maneja ATLAS_ADMIN_TOKEN). Polling deliberadamente lento (10 min): la
+ * CAPACITY MONITOR (2026-09-07, movido al sidebar el mismo día -- marcador
+ * PERMANENTE, visible en cualquier vista, no solo Inicio). Sigue sin ser
+ * una sección propia -- Mission Control sigue sin reintroducirse. Fuente:
+ * GET /api/capacidad-resumen (público, sin token -- Cabina nunca maneja
+ * ATLAS_ADMIN_TOKEN). Polling deliberadamente lento (10 min): la
  * capacidad del disco cambia despacio, no hace falta pedirla seguido.
+ * Umbrales OK/WARNING/CRITICAL: NUNCA se calculan acá -- vienen ya
+ * resueltos en `data.status` desde `capacity_monitor.py`.
  * ============================================================ */
 
 function _fmtGB(bytes) {
   if (bytes == null) return "--";
   return (bytes / (1024 * 1024 * 1024)).toFixed(2) + " GB";
+}
+
+function renderCapacidadSinDatos() {
+  const el = document.getElementById("capacity-widget");
+  if (!el) return;
+  el.classList.add("sin-datos");
+  el.textContent = "Capacidad: sin datos";
 }
 
 async function fetchCapacidad() {
@@ -1004,12 +1014,14 @@ async function fetchCapacidad() {
     renderCapacidad(await res.json());
   } catch (err) {
     console.error("fetchCapacidad:", err);
+    renderCapacidadSinDatos();
   }
 }
 
 function renderCapacidad(data) {
   const el = document.getElementById("capacity-widget");
   if (!el) return;
+  el.classList.remove("sin-datos");
   const pct = data.used_pct;
   const statusClass = "status-" + (data.status || "ok").toLowerCase();
   const barPct = pct != null ? Math.min(100, Math.max(0, pct)) : 0;
