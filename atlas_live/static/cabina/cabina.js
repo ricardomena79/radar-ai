@@ -63,6 +63,55 @@ function _actualizarEstadoGeneralInicio(partial) {
 const FINAL_STATE_ORDER = ["OPORTUNIDAD_PRIORITARIA", "VIGILAR", "PREPARACION", "NO_TOCAR"];
 const MAX_OPORTUNIDADES_VISIBLES = 6;
 
+/* Vigencia de la señal (2026-09-08, autorizado explícitamente) -- capa
+ * PURAMENTE de presentación, calculada en el navegador sobre campos que
+ * el backend YA envía (`stage_observed_at`/`detected_at`). NUNCA toca
+ * `estado_final`/`priority_classifier.py` -- una oportunidad "antigua"
+ * sigue siendo exactamente la misma candidata, con el mismo bucket, solo
+ * se le agrega una etiqueta y se reordena DENTRO de su propio bucket.
+ * 90 min = umbral inicial, declarado explícitamente como calibrable con
+ * datos reales (mismo criterio que el resto de los umbrales del
+ * proyecto), no una constante definitiva. */
+const VIGENCIA_UMBRAL_MINUTOS = 90;
+
+// Minutos desde la última RECONFIRMACIÓN de la señal -- `stage_observed_at`
+// (se reescribe solo cuando la etapa cambió, ver alert_stage_log) si
+// existe; si la candidata nunca cambió de etapa desde que se detectó,
+// cae a `detected_at`. Nunca se persiste, se recalcula en cada render.
+function _minutosSinConfirmar(o) {
+  const ts = o.stage_observed_at || o.detected_at;
+  if (!ts) return null;
+  const then = new Date(ts).getTime();
+  if (Number.isNaN(then)) return null;
+  return (Date.now() - then) / 60000;
+}
+
+function _esAntigua(o) {
+  const m = _minutosSinConfirmar(o);
+  return m != null && m > VIGENCIA_UMBRAL_MINUTOS;
+}
+
+// Motivos por los que el volumen premarket (NUNCA "RVOL" -- no usa
+// average_volume, ver candidate_gates.py::PM_VALIDATION_STATES) puede no
+// tener un percentil válido todavía -- se muestra el motivo real, nunca
+// se inventa un número.
+const PM_STATE_LABELS = {
+  NOT_PREMARKET: "fuera de premarket",
+  INSUFFICIENT_UNIVERSE: "universo insuficiente",
+  INSUFFICIENT_HISTORY: "sin historial suficiente",
+  INSUFFICIENT_VOLUME: "volumen insuficiente",
+  NO_DATA: "sin datos",
+};
+
+function _pmVolumenHtml(o) {
+  const state = o.premarket_volume_percentile_state;
+  if (state === "VALID" && o.premarket_volume_percentile != null) {
+    return `<div class="vol-pm">Vol. premarket: percentil ${fmtNum(o.premarket_volume_percentile, 0)}</div>`;
+  }
+  const label = PM_STATE_LABELS[state] || (state ? state.toLowerCase() : "sin dato");
+  return `<div class="vol-pm dim">Vol. premarket: ${label}</div>`;
+}
+
 let _oportunidades = [];
 
 async function fetchOportunidades() {
@@ -89,6 +138,14 @@ function _ordenarOportunidades(oportunidades) {
   return [...accionables].sort((a, b) => {
     const diff = FINAL_STATE_ORDER.indexOf(a.estado_final) - FINAL_STATE_ORDER.indexOf(b.estado_final);
     if (diff !== 0) return diff;
+    // Tie-break de PRESENTACIÓN (2026-09-08, autorizado explícitamente,
+    // Opción B+C) -- nunca cambia el bucket (`estado_final`, arriba, sin
+    // tocar) ni el ranking del backend: dentro del MISMO bucket, las
+    // señales "antiguas" (sin reconfirmación de etapa hace más de
+    // VIGENCIA_UMBRAL_MINUTOS) bajan al final -- las vigentes conservan
+    // el orden por detección más reciente que ya existía.
+    const antiguaDiff = Number(_esAntigua(a)) - Number(_esAntigua(b));
+    if (antiguaDiff !== 0) return antiguaDiff;
     return (b.detected_at || "").localeCompare(a.detected_at || "");
   });
 }
@@ -99,9 +156,20 @@ function _proyeccionHtml(o) {
   // `evidencia_historica` (recalculada en vivo) en esta pantalla.
   const pred = o.prediccion_magnitud_congelada;
   if (pred && typeof pred.predicted_pct === "number") {
+    // Aviso de cohorte amplia (2026-09-08, autorizado explícitamente):
+    // `bucket` ya viaja en el JSON -- "poblacion_total" significa que la
+    // predicción cayó al fallback más ancho (solo direction+timing, sin
+    // volatilidad/rango) de historical_scoring.py, nunca una condición
+    // específica de este ticker. No cambia `predicted_pct`/`muestra_n`,
+    // solo aclara qué representan.
+    const esAmplia = pred.bucket === "poblacion_total";
+    const notaAmplia = esAmplia
+      ? `<div class="proj-note proj-note-amplia">Evidencia general del mercado -- no específica de ${o.ticker}</div>`
+      : "";
     return `<div class="proj-label">Proyección Atlas</div>
             <div class="proj-val">+${fmtNum(pred.predicted_pct)}%</div>
-            <div class="proj-note">${pred.muestra_n ? `mediana de ${pred.muestra_n} casos similares` : "evidencia histórica"}</div>`;
+            <div class="proj-note">${pred.muestra_n ? `mediana de ${pred.muestra_n} casos similares` : "evidencia histórica"}</div>
+            ${notaAmplia}`;
   }
   return `<div class="proj-label">Proyección Atlas</div>
           <div class="proj-val proj-sin-dato">Sin evidencia suficiente</div>
@@ -134,12 +202,21 @@ function _renderOportunidadesEn(el, top) {
     const rank1 = i === 0 ? " rank-1" : i === 1 ? " rank-2" : "";
     const detectadaHace = o.minutos_desde_deteccion != null ? `hace ${Math.round(o.minutos_desde_deteccion)} min` : "";
 
+    // Vigencia (2026-09-08, autorizado explícitamente): NUNCA saca a la
+    // candidata de la lista ni de su bucket -- solo agrega este badge.
+    const minsSinConfirmar = _minutosSinConfirmar(o);
+    const antigua = _esAntigua(o);
+    const badgeAntigua = antigua
+      ? `<div class="badge-antigua" title="Sin reconfirmación de etapa reciente">⏱ Sin confirmación hace ${Math.round(minsSinConfirmar)} min</div>`
+      : "";
+
     return `
-    <div class="opp-row${rank1}">
+    <div class="opp-row${rank1}${antigua ? " opp-antigua" : ""}">
       <div class="rank-badge">${i + 1}</div>
       <div class="tk-col">
         <div class="ticker">${o.ticker}</div>
         <div class="meta">${detectadaHace}${o.racional_available ? " · Racional" : ""}</div>
+        ${badgeAntigua}
       </div>
       <div class="px-col">
         <div class="price">${o.price_actual != null ? "$" + fmtNum(o.price_actual, 2) : "--"}</div>
@@ -147,6 +224,7 @@ function _renderOportunidadesEn(el, top) {
       </div>
       <div class="vol-col">
         <div class="vol-val">${rvol != null ? "RVOL " + fmtNum(rvol) + "x" : "--"}</div>
+        ${_pmVolumenHtml(o)}
       </div>
       <div class="proj-col">${_proyeccionHtml(o)}</div>
       <div class="why-col">
