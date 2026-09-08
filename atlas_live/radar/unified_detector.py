@@ -40,6 +40,7 @@ tras la verificación -- ver informe U3-C2):
 from __future__ import annotations
 
 import dataclasses
+import os
 import threading
 import time
 from datetime import datetime, timezone
@@ -56,6 +57,27 @@ from atlas_live.radar.sweep_history import SweepHistory, SweepSnapshot
 
 SHADOW_LOOP_INTERVAL_SECONDS = 60.0
 AFTERHOURS_MIN_INTERVAL_SECONDS = 300.0
+
+# Contención de crecimiento de almacenamiento (2026-09-08, autorizado
+# explícitamente -- ver ethereal-mixing-anchor.md, "Contención urgente de
+# crecimiento de storage"): `shadow_candidate_detection` es append-only,
+# sin deduplicación, sin límite y sin retención conectada -- confirmado
+# como el origen estructural principal del crecimiento acelerado de
+# `/data`. Este flag pausa ÚNICAMENTE la escritura (el único INSERT de
+# todo el módulo, dentro de `run_shadow_sweep_once()`) -- el detector
+# sigue evaluando las 7 puertas sobre el universo completo cada
+# `SHADOW_LOOP_INTERVAL_SECONDS`, `_history` se sigue actualizando, y la
+# observabilidad (`_last_successful_sweep_at`/`_error_count`, expuesta en
+# `/api/admin/unified-detector-shadow`) sigue reflejando que el detector
+# está vivo. Default "true" (comportamiento actual, sin cambios) -- este
+# deploy por sí solo no activa la pausa; requiere setear
+# ATLAS_SHADOW_DETECTOR_PERSIST_ENABLED=false en Railway como acción
+# aparte y explícita. Reversible sin redeploy: volver a "true" (o borrar
+# la variable) reanuda la escritura tal cual estaba, sin pérdida de datos
+# ni cambio de esquema -- append-only, nada se borra en ningún sentido.
+SHADOW_PERSISTENCE_ENABLED = os.environ.get(
+    "ATLAS_SHADOW_DETECTOR_PERSIST_ENABLED", "true"
+).lower() != "false"
 
 _lock = threading.Lock()
 _stop = threading.Event()
@@ -157,23 +179,28 @@ def run_shadow_sweep_once() -> Optional[Dict[str, Any]]:
             _history.push(ticker, snapshot)
             fired = gates.fired_gates(results)
             if fired:
-                registry.record_shadow_detection(
-                    ticker=ticker,
-                    market_date=market_date,
-                    session=session,
-                    price=snapshot.price,
-                    change_pct=snapshot.change_pct,
-                    volume=snapshot.volume,
-                    average_volume=snapshot.average_volume,
-                    relative_volume=snapshot.relative_volume,
-                    dollar_volume=snapshot.dollar_volume,
-                    price_source=getattr(quote, "source", None),
-                    price_basis=getattr(quote, "price_basis", None),
-                    price_is_stale=getattr(quote, "price_is_stale", None),
-                    universe_source=universe_source,
-                    gates_fired=[{"gate": g.name, "reason": g.reason, "value": g.value} for g in fired],
-                    snapshot=dataclasses.asdict(snapshot),
-                )
+                # Contención de storage (ver comentario de
+                # SHADOW_PERSISTENCE_ENABLED arriba): SOLO se omite el
+                # INSERT -- la detección en sí (evaluación de puertas,
+                # historial, conteo) sigue corriendo exactamente igual.
+                if SHADOW_PERSISTENCE_ENABLED:
+                    registry.record_shadow_detection(
+                        ticker=ticker,
+                        market_date=market_date,
+                        session=session,
+                        price=snapshot.price,
+                        change_pct=snapshot.change_pct,
+                        volume=snapshot.volume,
+                        average_volume=snapshot.average_volume,
+                        relative_volume=snapshot.relative_volume,
+                        dollar_volume=snapshot.dollar_volume,
+                        price_source=getattr(quote, "source", None),
+                        price_basis=getattr(quote, "price_basis", None),
+                        price_is_stale=getattr(quote, "price_is_stale", None),
+                        universe_source=universe_source,
+                        gates_fired=[{"gate": g.name, "reason": g.reason, "value": g.value} for g in fired],
+                        snapshot=dataclasses.asdict(snapshot),
+                    )
                 detecciones += 1
 
         return {
