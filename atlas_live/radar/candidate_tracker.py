@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 from atlas.data.models.quote import Quote
+from atlas_live import storage_guard
 from atlas_live.learning import historical_scoring as hsc
 from atlas_live.radar import alert_stage as als
 from atlas_live.radar import candidate_gates as gates
@@ -290,6 +291,17 @@ def process_sweep(
     ]
     pm_universe_size = len(pm_universe_dollar_volumes)
 
+    # Segundo nivel del airbag de storage (2026-09-09, autorizado
+    # explícitamente): UN solo chequeo por sweep (nunca por símbolo --
+    # mismo patrón ya usado en `unified_detector.py`), reutilizando
+    # `storage_guard.py` TAL CUAL -- mismos umbrales (85/90/87), misma
+    # histéresis, sin ningún sistema de umbrales nuevo. Protege
+    # ÚNICAMENTE `reg.record_observation()` (las 2 llamadas de abajo) --
+    # `record_detection()`, `mark_as_signal()`, `_tag_alert_stage()`
+    # (alert_stage_log) y `compute_interim_outcome()` siguen ejecutándose
+    # exactamente igual en EMERGENCY, sin ninguna condición nueva.
+    nivel_storage = storage_guard.check_and_get_level()
+
     for symbol, quote in quotes.items():
         prior_history = history.get(symbol)
         current = _quote_to_snapshot(sweep_id, observed_at, quote, session)
@@ -351,11 +363,14 @@ def process_sweep(
                 # UN barrido; señal = sigue activa en un barrido posterior,
                 # no fue un parpadeo de un solo tick).
                 reg.mark_as_signal(symbol, market_date)
-            reg.record_observation(
-                symbol, market_date, observed_at, sweep_id,
-                current.price, current.change_pct, current.volume, current.relative_volume,
-                gates_fired_payload,
-            )
+            # Airbag nivel 2: SOLO se omite este INSERT -- detección,
+            # etapa y resultado en curso (abajo) siguen sin cambios.
+            if nivel_storage != "EMERGENCY":
+                reg.record_observation(
+                    symbol, market_date, observed_at, sweep_id,
+                    current.price, current.change_pct, current.volume, current.relative_volume,
+                    gates_fired_payload,
+                )
             _tag_alert_stage(symbol, market_date, observed_at, quote, gates_fired_payload, session)
             reg.compute_interim_outcome(symbol, market_date)
             n_obs += 1
@@ -366,11 +381,13 @@ def process_sweep(
             # Por la misma razón que arriba, este es al menos el 2do barrido
             # en que se la ve -> también cuenta como señal.
             reg.mark_as_signal(symbol, market_date)
-            reg.record_observation(
-                symbol, market_date, observed_at, sweep_id,
-                current.price, current.change_pct, current.volume, current.relative_volume,
-                [],
-            )
+            # Airbag nivel 2 (misma condición que arriba, ver comentario).
+            if nivel_storage != "EMERGENCY":
+                reg.record_observation(
+                    symbol, market_date, observed_at, sweep_id,
+                    current.price, current.change_pct, current.volume, current.relative_volume,
+                    [],
+                )
             _tag_alert_stage(symbol, market_date, observed_at, quote, [], session)
             reg.compute_interim_outcome(symbol, market_date)
             n_obs += 1

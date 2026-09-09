@@ -732,6 +732,253 @@ def test_candidata_en_preparacion_no_congela_prediccion_sin_evidencia_accionable
         _restore()
 
 
+# ---------------------------------------------------------------------------
+# Airbag de storage, nivel 2 (2026-09-09, autorizado explícitamente):
+# protege ÚNICAMENTE reg.record_observation() -- candidate_detection,
+# alert_stage_log y el resto del pipeline deben seguir funcionando igual
+# en EMERGENCY. Reutiliza storage_guard.py tal cual, sin ningún umbral
+# nuevo.
+# ---------------------------------------------------------------------------
+
+import threading
+
+from atlas_live import storage_guard as sg
+
+
+def _reset_storage_guard():
+    with sg._lock:
+        sg._emergency_active = False
+        sg._last_level = None
+        sg._last_checked_at = None
+        sg._last_used_pct = None
+        sg._last_transition_at = None
+        sg._last_transition_reason = None
+
+
+def test_airbag_storage_bajo_90_candidate_observation_escribe_normal():
+    _fresh()
+    _reset_storage_guard()
+    orig = sg._current_used_pct
+    try:
+        sg._current_used_pct = lambda: 50.0
+        h = SweepHistory()
+        tracker.process_sweep({"AIR1": _quote("AIR1", 10.0, 4.0, rvol=1.0)}, h, "2026-09-09", "regular", _now())
+        # 2do barrido -- rama `elif reg.is_detected(...)`, el otro call site.
+        tracker.process_sweep({"AIR1": _quote("AIR1", 10.0, 0.0, rvol=1.0)}, h, "2026-09-09", "regular", _now())
+        assert len(reg.get_observations("AIR1", "2026-09-09")) == 2, "con storage OK, ambas escrituras deben pasar"
+    finally:
+        sg._current_used_pct = orig
+        _restore()
+        _reset_storage_guard()
+
+
+def test_airbag_storage_exactamente_90_bloquea_candidate_observation():
+    _fresh()
+    _reset_storage_guard()
+    orig = sg._current_used_pct
+    try:
+        sg._current_used_pct = lambda: 90.0
+        h = SweepHistory()
+        tracker.process_sweep({"AIR2": _quote("AIR2", 10.0, 4.0, rvol=1.0)}, h, "2026-09-09", "regular", _now())
+        assert reg.get_observations("AIR2", "2026-09-09") == [], "90% ya debe disparar EMERGENCY (>=90)"
+    finally:
+        sg._current_used_pct = orig
+        _restore()
+        _reset_storage_guard()
+
+
+def test_airbag_storage_sobre_90_sigue_bloqueado():
+    _fresh()
+    _reset_storage_guard()
+    orig = sg._current_used_pct
+    try:
+        sg._current_used_pct = lambda: 96.5
+        h = SweepHistory()
+        tracker.process_sweep({"AIR3": _quote("AIR3", 10.0, 4.0, rvol=1.0)}, h, "2026-09-09", "regular", _now())
+        assert reg.get_observations("AIR3", "2026-09-09") == []
+    finally:
+        sg._current_used_pct = orig
+        _restore()
+        _reset_storage_guard()
+
+
+def test_airbag_storage_baja_de_87_reanuda_candidate_observation():
+    _fresh()
+    _reset_storage_guard()
+    orig = sg._current_used_pct
+    try:
+        h = SweepHistory()
+        sg._current_used_pct = lambda: 95.0
+        tracker.process_sweep({"AIR4": _quote("AIR4", 10.0, 4.0, rvol=1.0)}, h, "2026-09-09", "regular", _now())
+        assert reg.get_observations("AIR4", "2026-09-09") == [], "debe empezar bloqueado en EMERGENCY"
+
+        sg._current_used_pct = lambda: 88.0  # bajo 90 pero sobre RESUME_THRESHOLD_PCT=87 -- sigue bloqueado
+        tracker.process_sweep({"AIR4": _quote("AIR4", 10.0, 0.0, rvol=1.0)}, h, "2026-09-09", "regular", _now())
+        assert reg.get_observations("AIR4", "2026-09-09") == [], "no debe reanudar hasta cruzar RESUME_THRESHOLD_PCT"
+
+        sg._current_used_pct = lambda: 86.9  # cruza el umbral de reanudación
+        tracker.process_sweep({"AIR4": _quote("AIR4", 10.0, 0.0, rvol=1.0)}, h, "2026-09-09", "regular", _now())
+        assert len(reg.get_observations("AIR4", "2026-09-09")) == 1, "debe reanudar la escritura tras bajar de 87%"
+    finally:
+        sg._current_used_pct = orig
+        _restore()
+        _reset_storage_guard()
+
+
+def test_airbag_emergency_candidate_detection_sigue_funcionando():
+    _fresh()
+    _reset_storage_guard()
+    orig = sg._current_used_pct
+    try:
+        sg._current_used_pct = lambda: 99.0
+        h = SweepHistory()
+        result = tracker.process_sweep({"AIR5": _quote("AIR5", 10.0, 6.0, rvol=1.0)}, h, "2026-09-09", "regular", _now())
+        assert "AIR5" in result.n_nuevas_detecciones
+        det = reg.get_detection("AIR5", "2026-09-09")
+        assert det is not None, "candidate_detection debe seguir escribiendo en EMERGENCY"
+        assert reg.get_observations("AIR5", "2026-09-09") == [], "pero candidate_observation debe seguir bloqueada"
+    finally:
+        sg._current_used_pct = orig
+        _restore()
+        _reset_storage_guard()
+
+
+def test_airbag_emergency_alert_stage_log_sigue_funcionando():
+    """Mismo fixture que test_tag_alert_stage_registra_preparacion_con_volatilidad_elevada
+    (volatilidad de régimen alta, sin volumen elevado) -- garantiza que
+    classify_alert_stage() realmente produzca una etapa, para poder
+    confirmar que se sigue escribiendo en EMERGENCY."""
+    _fresh()
+    _reset_storage_guard()
+    orig = sg._current_used_pct
+    try:
+        from atlas_live.reference import reference_registry as ref_reg
+
+        orig_vol = ref_reg.latest_volatility_14d_pct
+        orig_recent = ref_reg.recent_daily_features
+        orig_pct = ref_reg.percentile_change_pct
+        ref_reg.latest_volatility_14d_pct = lambda symbol: 15.0
+        ref_reg.recent_daily_features = lambda symbol, n=5: []
+        ref_reg.percentile_change_pct = lambda symbol, p: None
+        try:
+            sg._current_used_pct = lambda: 99.0
+            h = SweepHistory()
+            tracker.process_sweep({"AIR6": _quote("AIR6", 10.0, 5.0, rvol=1.0)}, h, "2026-09-09", "regular", _now())
+            assert reg.latest_alert_stage("AIR6", "2026-09-09") == "PREPARACION", "alert_stage_log debe seguir escribiendo en EMERGENCY"
+            assert reg.get_observations("AIR6", "2026-09-09") == [], "candidate_observation debe seguir bloqueada"
+        finally:
+            ref_reg.latest_volatility_14d_pct = orig_vol
+            ref_reg.recent_daily_features = orig_recent
+            ref_reg.percentile_change_pct = orig_pct
+    finally:
+        sg._current_used_pct = orig
+        _restore()
+        _reset_storage_guard()
+
+
+def test_airbag_process_sweep_no_falla_en_emergency_radar_sigue_vivo():
+    """Radar sigue ejecutando sweeps -- process_sweep() nunca lanza ni
+    devuelve un resultado inválido solo porque el airbag esté activo."""
+    _fresh()
+    _reset_storage_guard()
+    orig = sg._current_used_pct
+    try:
+        sg._current_used_pct = lambda: 99.9
+        h = SweepHistory()
+        result = tracker.process_sweep(
+            {"AIR7": _quote("AIR7", 10.0, 4.0, rvol=1.0), "AIR8": _quote("AIR8", 20.0, -0.5, rvol=1.0)},
+            h, "2026-09-09", "regular", _now(),
+        )
+        assert result.n_evaluados == 2
+        assert result.sweep_id
+    finally:
+        sg._current_used_pct = orig
+        _restore()
+        _reset_storage_guard()
+
+
+def test_airbag_concurrencia_chequeos_del_guard_sin_carrera():
+    """En producción `process_sweep()` NUNCA se llama de forma concurrente
+    -- `radar_worker.py` lo protege con su propio lock no-reentrante
+    (`_lock.acquire(blocking=False)`). Verificado por separado, SIN
+    ningún cambio de este airbag involucrado: llamar a `process_sweep()`
+    real desde 3 hilos a la vez sobre el mismo archivo SQLite ya produce
+    'database is locked' -- una limitación preexistente de SQLite bajo
+    escritura concurrente en esta plataforma (Windows), NO introducida
+    por este cambio (que no agrega ninguna escritura nueva). Por eso esta
+    prueba de concurrencia se enfoca en lo que SÍ es responsabilidad del
+    airbag -- que `storage_guard.check_and_get_level()` (la única pieza
+    que varios productores podrían consultar al mismo tiempo, ej. Radar y
+    Shadow) sea consistente y sin flapping bajo llamadas concurrentes --
+    ya cubierto exhaustivamente en `test_storage_guard.py`, reconfirmado
+    acá en el contexto real de `candidate_tracker.py`."""
+    _reset_storage_guard()
+    orig = sg._current_used_pct
+    try:
+        sg._current_used_pct = lambda: 92.0  # EMERGENCY estable durante toda la prueba
+        niveles_vistos = []
+        lock_resultados = threading.Lock()
+
+        def _worker():
+            nivel = sg.check_and_get_level()
+            with lock_resultados:
+                niveles_vistos.append(nivel)
+
+        hilos = [threading.Thread(target=_worker) for _ in range(20)]
+        for t in hilos:
+            t.start()
+        for t in hilos:
+            t.join()
+
+        assert len(niveles_vistos) == 20
+        assert all(n == "EMERGENCY" for n in niveles_vistos), "el guard no debe flapear bajo consulta concurrente"
+
+        # Secuencia RÁPIDA (no concurrente) de sweeps -- el patrón real de
+        # uso en producción -- confirma que la decisión se sigue aplicando
+        # correctamente sweep tras sweep, sin ningún estado que se pierda
+        # entre llamadas sucesivas.
+        _fresh()
+        try:
+            h = SweepHistory()
+            for i in range(5):
+                tracker.process_sweep({f"AIRSEQ{i}": _quote(f"AIRSEQ{i}", 10.0, 4.0, rvol=1.0)}, h, "2026-09-09", "regular", _now())
+            for i in range(5):
+                assert reg.get_observations(f"AIRSEQ{i}", "2026-09-09") == [], "cada sweep sucesivo debe seguir bloqueado en EMERGENCY"
+        finally:
+            _restore()
+    finally:
+        sg._current_used_pct = orig
+        _reset_storage_guard()
+
+
+def test_airbag_fail_safe_medicion_fallida_no_bloquea_radar():
+    """Sin poder medir el disco y sin emergencia previa -- storage_guard
+    devuelve 'OK' (fail-safe ya probado en test_storage_guard.py) -- acá
+    se confirma que candidate_tracker.py hereda ese fail-safe: nunca
+    bloquea candidate_observation por una medición fallida sola."""
+    _fresh()
+    _reset_storage_guard()
+    orig = sg._current_used_pct
+    try:
+        sg._current_used_pct = lambda: None
+        h = SweepHistory()
+        tracker.process_sweep({"AIR9": _quote("AIR9", 10.0, 4.0, rvol=1.0)}, h, "2026-09-09", "regular", _now())
+        assert len(reg.get_observations("AIR9", "2026-09-09")) == 1, "sin evidencia de emergencia, no debe bloquear"
+    finally:
+        sg._current_used_pct = orig
+        _restore()
+        _reset_storage_guard()
+
+
+def test_airbag_ninguna_sentencia_destructiva_en_candidate_tracker():
+    import inspect
+
+    fuente = inspect.getsource(tracker)
+    prohibidas = ("DELETE ", "VACUUM", "TRUNCATE", " DROP ", "ALTER TABLE")
+    encontradas = [p for p in prohibidas if p in fuente.upper()]
+    assert not encontradas, f"candidate_tracker.py no debe contener SQL destructivo: {encontradas}"
+
+
 if __name__ == "__main__":
     import traceback
 
