@@ -1553,6 +1553,22 @@ def api_capacidad_resumen():
     return jsonify(cm.capacity_summary_public())
 
 
+@app.route("/api/storage-guard-status")
+def api_storage_guard_status():
+    """Estado read-only del kill-switch automático de emergencia por disco
+    (2026-09-09, autorizado explícitamente -- "airbag"). Público, sin
+    token -- expone únicamente `emergency_active`/nivel/umbrales/última
+    medición, nunca rutas de archivo ni nada del Volume. Ver
+    `atlas_live/storage_guard.py`. NUNCA fuerza una medición nueva del
+    disco por sí solo -- muestra la última que ya hizo el productor
+    (Shadow) en su propio ciclo; si el mecanismo nunca corrió todavía
+    (ej. sesión `closed`), los campos de medición quedan `null`
+    explícitos, nunca inventados."""
+    from atlas_live import storage_guard as sg
+
+    return jsonify(sg.status())
+
+
 @app.route("/api/learning-maturity")
 def api_learning_maturity():
     """Aprendizaje en Vivo + Madurez (2026-08-15, ver

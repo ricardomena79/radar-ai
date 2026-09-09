@@ -47,6 +47,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from atlas.data.universe import universe as racional_universe
+from atlas_live import storage_guard
 from atlas_live.data_fusion.registry import get_default_provider
 from atlas_live.data_fusion.universe_quotes import build_tradier_provider, fetch_universe_quotes
 from atlas_live.memory import market_hours
@@ -171,6 +172,18 @@ def run_shadow_sweep_once() -> Optional[Dict[str, Any]]:
         if _history.current_market_date != market_date:
             _history.reset_for_new_day(market_date)
 
+        # Kill-switch automático de emergencia por disco (2026-09-09,
+        # autorizado explícitamente -- "airbag"): UN solo chequeo por
+        # sweep (nunca por ticker -- barato, pero no hace falta medir el
+        # disco miles de veces en el mismo ciclo). Prioridad explícita:
+        # Shadow es el primer productor a frenar frente a la
+        # disponibilidad de Atlas -- ver `storage_guard.py`. Igual que
+        # `SHADOW_PERSISTENCE_ENABLED`, SOLO afecta el INSERT -- la
+        # evaluación de puertas/historial/conteo sigue igual, para que
+        # `detecciones` siga reflejando la actividad real del mercado
+        # aunque la persistencia esté pausada por espacio.
+        nivel_storage = storage_guard.check_and_get_level()
+
         detecciones = 0
         for ticker, quote in quotes.items():
             snapshot = _quote_to_snapshot(quote, session)
@@ -183,7 +196,7 @@ def run_shadow_sweep_once() -> Optional[Dict[str, Any]]:
                 # SHADOW_PERSISTENCE_ENABLED arriba): SOLO se omite el
                 # INSERT -- la detección en sí (evaluación de puertas,
                 # historial, conteo) sigue corriendo exactamente igual.
-                if SHADOW_PERSISTENCE_ENABLED:
+                if SHADOW_PERSISTENCE_ENABLED and nivel_storage != "EMERGENCY":
                     registry.record_shadow_detection(
                         ticker=ticker,
                         market_date=market_date,
@@ -206,6 +219,7 @@ def run_shadow_sweep_once() -> Optional[Dict[str, Any]]:
         return {
             "session": session, "universe_source": universe_source,
             "universe_size": len(quotes), "detecciones": detecciones,
+            "storage_guard_level": nivel_storage,
         }
     finally:
         _lock.release()

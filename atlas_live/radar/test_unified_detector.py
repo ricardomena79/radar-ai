@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from atlas.data.models.quote import Quote
+from atlas_live import storage_guard as sg
 from atlas_live.memory import market_hours
 from atlas_live.radar import candidate_gates as gates
 from atlas_live.radar import candidate_registry as reg
@@ -266,6 +267,73 @@ def test_A_dedup_universe_no_duplica_simbolos():
     finally:
         ud.racional_universe.get_equities = orig_equities
         ud.racional_universe.get_etfs = orig_etfs
+
+
+# --- M/N: kill-switch de storage (2026-09-09, "airbag") --------------------
+
+def _reset_storage_guard():
+    with sg._lock:
+        sg._emergency_active = False
+        sg._last_level = None
+        sg._last_checked_at = None
+        sg._last_used_pct = None
+        sg._last_transition_at = None
+        sg._last_transition_reason = None
+
+
+def test_M_storage_EMERGENCY_bloquea_el_insert_pero_no_la_deteccion():
+    """Con el disco en EMERGENCY: cero filas nuevas en shadow_candidate_detection,
+    pero la evaluacion de puertas/historial/conteo sigue exactamente igual
+    -- mismo criterio ya probado para SHADOW_PERSISTENCE_ENABLED."""
+    _fresh()
+    _reset_storage_guard()
+    orig_session = market_hours.get_session
+    orig_last_quotes = radar_worker.get_last_quotes
+    orig_check = sg.check_and_get_level
+    try:
+        market_hours.get_session = lambda now=None: "regular"
+        radar_worker.get_last_quotes = lambda: {"AAPL": _fake_quote("AAPL", change_pct=6.0)}
+        sg.check_and_get_level = lambda: "EMERGENCY"
+
+        resultado = ud.run_shadow_sweep_once()
+
+        assert resultado is not None
+        assert resultado["storage_guard_level"] == "EMERGENCY"
+        assert resultado["detecciones"] == 1, "el conteo debe reflejar la deteccion real, aunque no se persista"
+        assert ud._history.symbols_tracked() == 1, "el historial debe actualizarse igual"
+        assert sreg.list_shadow_detections(market_hours.market_date()) == [], "NUNCA debe insertar con EMERGENCY activo"
+    finally:
+        market_hours.get_session = orig_session
+        radar_worker.get_last_quotes = orig_last_quotes
+        sg.check_and_get_level = orig_check
+        _restore()
+        _reset_storage_guard()
+
+
+def test_N_storage_OK_persiste_normalmente_sin_cambio_de_comportamiento():
+    """Regresion: con el disco en OK, el kill-switch no cambia nada del
+    comportamiento ya probado (test_B/etc) -- se sigue insertando igual."""
+    _fresh()
+    _reset_storage_guard()
+    orig_session = market_hours.get_session
+    orig_last_quotes = radar_worker.get_last_quotes
+    orig_check = sg.check_and_get_level
+    try:
+        market_hours.get_session = lambda now=None: "regular"
+        radar_worker.get_last_quotes = lambda: {"AAPL": _fake_quote("AAPL", change_pct=6.0)}
+        sg.check_and_get_level = lambda: "OK"
+
+        resultado = ud.run_shadow_sweep_once()
+
+        assert resultado["storage_guard_level"] == "OK"
+        assert resultado["detecciones"] == 1
+        assert len(sreg.list_shadow_detections(market_hours.market_date())) == 1
+    finally:
+        market_hours.get_session = orig_session
+        radar_worker.get_last_quotes = orig_last_quotes
+        sg.check_and_get_level = orig_check
+        _restore()
+        _reset_storage_guard()
 
 
 if __name__ == "__main__":
