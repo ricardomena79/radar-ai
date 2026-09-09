@@ -132,8 +132,24 @@ function _ordenarOportunidades(oportunidades) {
   // del bloque principal (siguen existiendo en /api/radar-oportunidades
   // tal cual, esta pantalla simplemente no las prioriza en un espacio
   // reducido a propósito).
+  //
+  // Vigencia real (2026-09-09, autorizado explícitamente -- corrige el
+  // gap encontrado con datos reales de producción, caso GPRO: detectada
+  // hace 105 min pero con `stage_observed_at` reciente, que el badge de
+  // `_esAntigua` de abajo NO alcanzaba a excluir, solo a reordenar).
+  // `detected_at` (vía `minutos_desde_deteccion`, ya calculado en vivo
+  // por el backend en cada request) define la antigüedad de la señal --
+  // NUNCA `stage_observed_at`. > 90 min -> EXCLUSIÓN real del bloque
+  // principal, no solo reordenamiento. `minutos_desde_deteccion == null`
+  // se excluye por seguridad (nunca se asume vigente sin poder
+  // confirmarlo). Backend/`priority_classifier.py`/`estado_final` sin
+  // cambios -- esto es puramente un filtro de presentación, adicional al
+  // de bucket que ya existía.
   const accionables = oportunidades.filter(
-    (o) => o.estado_final === "OPORTUNIDAD_PRIORITARIA" || o.estado_final === "VIGILAR"
+    (o) =>
+      (o.estado_final === "OPORTUNIDAD_PRIORITARIA" || o.estado_final === "VIGILAR") &&
+      o.minutos_desde_deteccion != null &&
+      o.minutos_desde_deteccion <= VIGENCIA_UMBRAL_MINUTOS
   );
   return [...accionables].sort((a, b) => {
     const diff = FINAL_STATE_ORDER.indexOf(a.estado_final) - FINAL_STATE_ORDER.indexOf(b.estado_final);
