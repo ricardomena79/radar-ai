@@ -60,10 +60,17 @@ from atlas_live.radar import raw_data_consolidation_registry as rdc_registry
 
 SOURCE_TABLE = "candidate_observation"
 
-# Retención elegida explícitamente por el usuario (2026-09-07) -- constante
+# Retención (2026-09-09, ajuste explícito autorizado por el usuario --
+# PLAN MODE, "IMPLEMENTAR CONTENCIÓN PERMANENTE DE STORAGE"): bajada de
+# 90 a 14 días. Motivo real, medido en producción esa misma fecha:
+# `candidate_observation` representa ~95% de `radar_candidates.db`
+# (2.89GB de tabla + 445.6MB de índice, de 3.75GB totales), el pipeline
+# real de aprendizaje (`live_experience_scoring._load_rows_from_db()`)
+# NUNCA la consulta, y Atlas solo tiene ~26 días de historia real -- con
+# el piso de 90 días este mecanismo no podía compactar nada. Constante
 # documentada, nunca dispersa. Un market_date solo es elegible para
 # compactarse si tiene AL MENOS esta antigüedad respecto a `today`.
-RETENTION_DAYS = 90
+RETENTION_DAYS = 14
 
 
 def _today() -> str:

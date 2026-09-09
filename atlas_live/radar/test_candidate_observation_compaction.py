@@ -200,23 +200,23 @@ def test_dia_actual_bloquea_compaction():
         _restore()
 
 
-# --- 7) <90 días bloquea DELETE ----------------------------------------------
+# --- 7) <14 días bloquea DELETE ----------------------------------------------
 
-def test_menos_de_90_dias_bloquea_compaction():
+def test_menos_de_14_dias_bloquea_compaction():
     _fresh()
     try:
-        reciente = _days_ago(30)
+        reciente = _days_ago(5)
         _seed_observations(reciente, ["AAA"], n_per_ticker=2)
         r = coc.run_provisional_for_date(reciente, today=TODAY)
         assert r["ok"] is False
-        assert "dentro_de_ventana_de_retencion_90d" in r["reason"]
+        assert "dentro_de_ventana_de_retencion_14d" in r["reason"]
 
-        # limite exacto: 89 dias -> bloqueado; 90 dias -> permitido
-        r89 = coc.run_provisional_for_date(_days_ago(89), today=TODAY)
-        assert r89["ok"] is False
-        _seed_observations(_days_ago(90), ["AAA"], n_per_ticker=1)
-        r90 = coc.run_provisional_for_date(_days_ago(90), today=TODAY)
-        assert r90["ok"] is True
+        # limite exacto: 13 dias -> bloqueado; 14 dias -> permitido
+        r13 = coc.run_provisional_for_date(_days_ago(13), today=TODAY)
+        assert r13["ok"] is False
+        _seed_observations(_days_ago(14), ["AAA"], n_per_ticker=1)
+        r14 = coc.run_provisional_for_date(_days_ago(14), today=TODAY)
+        assert r14["ok"] is True
     finally:
         _restore()
 
@@ -421,18 +421,18 @@ def test_recuperacion_no_reintenta_delete_si_ya_esta_compacted():
 
 def test_integracion_multiples_dias_sinteticos():
     """Escenario representativo de varios dias reales: uno de hoy (nunca se
-    toca), uno reciente (<90d, bloqueado), uno justo en el limite (90d,
-    elegible), y dos bien viejos (100d/120d, elegibles) -- corre el
+    toca), uno reciente (<14d, bloqueado), uno justo en el limite (14d,
+    elegible), y dos bien viejos (30d/100d, elegibles) -- corre el
     pipeline completo sobre los 5 y verifica el resultado final de cada
     uno, sin mezclar datos entre dias."""
     _fresh()
     try:
         dias = {
             "hoy": TODAY,
-            "reciente_30d": _days_ago(30),
-            "limite_90d": _days_ago(90),
+            "reciente_5d": _days_ago(5),
+            "limite_14d": _days_ago(14),
+            "viejo_30d": _days_ago(30),
             "viejo_100d": _days_ago(100),
-            "viejo_120d": _days_ago(120),
         }
         for etiqueta, fecha in dias.items():
             _seed_observations(fecha, [f"TCK_{etiqueta.upper()}"], n_per_ticker=5)
@@ -446,11 +446,11 @@ def test_integracion_multiples_dias_sinteticos():
         assert _count_observations(dias["hoy"]) == 5  # intacto
 
         # reciente: bloqueado por retencion
-        assert resultados["reciente_30d"]["provisional"]["ok"] is False
-        assert _count_observations(dias["reciente_30d"]) == 5  # intacto
+        assert resultados["reciente_5d"]["provisional"]["ok"] is False
+        assert _count_observations(dias["reciente_5d"]) == 5  # intacto
 
         # limite y viejos: compactados de punta a punta
-        for etiqueta in ("limite_90d", "viejo_100d", "viejo_120d"):
+        for etiqueta in ("limite_14d", "viejo_30d", "viejo_100d"):
             r = resultados[etiqueta]
             assert r["provisional"]["ok"] is True
             assert r["verified"]["ok"] is True
