@@ -13,11 +13,25 @@ usuario): ya NO se limita al universo Racional. Se usa
 `atlas_live.market_study.universe.fetch_broad_universe_meta()` (listados
 oficiales NASDAQ Trader, ~13.000 símbolos, ya clasificados por
 `classify_instrument_type` en EQUITY/ETF/WARRANT/UNIT/RIGHT/PREFERRED/DEBT)
-y se procesan SOLO los EQUITY -- acciones ordinarias, todas las
-capitalizaciones, sin filtro de sector. ETFs y derivados quedan excluidos
-de este batch (contados, nunca descartados en silencio). Racional
+y se procesan los EQUITY -- acciones ordinarias, todas las capitalizaciones,
+sin filtro de sector -- MÁS los ETFs apalancados/inversos (2026-09-11,
+autorizado explícitamente, evidencia real: el Radar en vivo ya los detecta
+desde 2026-08-20 -- `universe.is_leveraged_etf_name()`, mismo mecanismo
+existente reutilizado tal cual -- pero la Base Histórica seguía
+excluyéndolos por completo, dejándolos sin `volatility_14d_pct` para
+siempre). El resto de los ETFs (pasivos) y los demás derivados quedan
+excluidos de este batch (contados, nunca descartados en silencio). Racional
 (`racional_symbols()`) es SOLO una etiqueta de operabilidad que viaja con
 cada símbolo (`racional_available`) -- nunca decide qué se procesa.
+
+Reintento de fallos transitorios (2026-09-11, autorizado explícitamente):
+`processed_symbols()` (cualquier status) ya NO se usa para decidir qué
+queda pendiente -- se usa `processed_ok_symbols()` (función YA existente,
+sin cambios), así que un símbolo con `status="error"`/`"sin_datos"` en una
+corrida anterior vuelve a intentarse en la siguiente, en vez de quedar
+marcado como "procesado" para siempre por un fallo transitorio (timeout,
+rate-limit momentáneo, símbolo sin datos ESE día). `status="ok"` sigue
+siendo la única condición de exclusión definitiva.
 
 Uso:
     python scripts/build_historical_reference.py --limit 300 --workers 8
@@ -143,20 +157,29 @@ def recompute_timing_for_processed(workers: int, delay_ms: int, period: str, bat
 
 
 def run_batch(limit: int, workers: int, delay_ms: int, period: str, batch_timeout_s: int) -> dict:
-    """Universo = mercado completo (NASDAQ Trader), filtrado a EQUITY
-    solamente (2026-08-17) -- ver docstring del módulo. `clasificacion`
-    reporta cuántos símbolos de cada tipo trajo la fuente, para que la
-    exclusión de ETFs/derivados quede visible y auditable, nunca en
-    silencio."""
+    """Universo = mercado completo (NASDAQ Trader), filtrado a EQUITY +
+    ETFs apalancados/inversos (2026-09-11, ver docstring del módulo) --
+    `clasificacion` reporta cuántos símbolos de cada tipo trajo la fuente,
+    para que la exclusión del resto (ETFs pasivos/derivados) quede visible
+    y auditable, nunca en silencio.
+
+    Pendientes = universo menos `processed_ok_symbols()` (2026-09-11,
+    autorizado explícitamente) -- un símbolo con `status="error"` o
+    `"sin_datos"` de una corrida anterior vuelve a intentarse acá, en vez
+    de quedar excluido para siempre por un fallo transitorio."""
     meta = broad_universe.fetch_broad_universe_meta()
     clasificacion: Dict[str, int] = {}
     for info in meta.values():
         t = info.get("type", "EQUITY")
         clasificacion[t] = clasificacion.get(t, 0) + 1
-    universo = sorted(s for s, info in meta.items() if info.get("type") == "EQUITY")
+    universo = sorted(
+        s for s, info in meta.items()
+        if info.get("type") == "EQUITY"
+        or (info.get("type") == "ETF" and broad_universe.is_leveraged_etf_name(info.get("name")))
+    )
     racional = broad_universe.racional_symbols()
 
-    ya = reg.processed_symbols()
+    ya = set(reg.processed_ok_symbols())
     pendientes = [s for s in universo if s not in ya][:limit]
 
     reg.set_meta(universe_total=len(universo), universe_total_bruto=len(meta), clasificacion=clasificacion)

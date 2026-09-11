@@ -22,6 +22,18 @@ _META = {
     "XYZW": {"exchange": "NASDAQ", "name": "XYZ Corp Warrants", "type": "WARRANT"},
 }
 
+# Universo con un ETF apalancado real (2026-09-11, corrección PM-RVOL --
+# Base Histórica coherente con lo que el Radar en vivo ya detecta desde
+# 2026-08-17, ver `universe.is_leveraged_etf_name()`) -- QQQ (pasivo) sigue
+# excluido, SOXL (apalancado 3x) debe entrar al universo del batch.
+_META_CON_LEVERAGED = {
+    "AAPL": {"exchange": "NASDAQ", "name": "Apple Inc.", "type": "EQUITY"},
+    "QQQ": {"exchange": "NASDAQ", "name": "Invesco QQQ Trust", "type": "ETF"},
+    "SOXL": {"exchange": "NASDAQ", "name": "Direxion Daily Semiconductor Bull 3X Shares", "type": "ETF"},
+    "UVXY": {"exchange": "NYSE ARCA", "name": "ProShares Ultra VIX Short-Term Futures ETF", "type": "ETF"},
+    "XYZW": {"exchange": "NASDAQ", "name": "XYZ Corp Warrants", "type": "WARRANT"},
+}
+
 
 def _synthetic_df(n=60):
     idx = pd.date_range(start="2026-05-01", periods=n, freq="B")
@@ -78,6 +90,66 @@ def test_run_batch_marca_racional_available_correctamente(monkeypatch):
             row = conn.execute("SELECT exchange, name FROM reference_checkpoint WHERE symbol='AAPL'").fetchone()
         assert row["exchange"] == "NASDAQ"
         assert row["name"] == "Apple Inc."
+    finally:
+        _restore()
+
+
+# ---------------------------------------------------------------------------
+# Cobertura de ETFs apalancados/inversos (2026-09-11, autorizado
+# explícitamente -- Parte 2, casos 6/7/8 pedidos).
+# ---------------------------------------------------------------------------
+
+def test_run_batch_etf_pasivo_no_entra_al_universo(monkeypatch):
+    """Caso 6: un ETF pasivo (QQQ, sin 2X/3X/ULTRA/DAILY TARGET/LEVERAGED
+    en el nombre) sigue excluido del batch, exactamente como antes."""
+    _fresh()
+    monkeypatch.setattr(bhr.broad_universe, "fetch_broad_universe_meta", lambda: _META_CON_LEVERAGED)
+    monkeypatch.setattr(bhr.broad_universe, "racional_symbols", lambda: {"AAPL"})
+    monkeypatch.setattr(bhr, "build_tradier_provider", lambda: _FakeProvider())
+    try:
+        bhr.run_batch(limit=10, workers=1, delay_ms=0, period="3mo", batch_timeout_s=30)
+        assert "QQQ" not in reg.processed_symbols()
+    finally:
+        _restore()
+
+
+def test_run_batch_etf_apalancado_si_entra_al_universo(monkeypatch):
+    """Caso 7: un ETF apalancado/inverso que el Radar en vivo ya acepta
+    (SOXL 3x, UVXY "Ultra") SÍ entra y se procesa -- vía
+    `is_leveraged_etf_name()`, mecanismo ya existente, sin tocar
+    `classify_instrument_type()`."""
+    _fresh()
+    monkeypatch.setattr(bhr.broad_universe, "fetch_broad_universe_meta", lambda: _META_CON_LEVERAGED)
+    monkeypatch.setattr(bhr.broad_universe, "racional_symbols", lambda: {"AAPL"})
+    monkeypatch.setattr(bhr, "build_tradier_provider", lambda: _FakeProvider())
+    try:
+        result = bhr.run_batch(limit=10, workers=1, delay_ms=0, period="3mo", batch_timeout_s=30)
+        assert result["ok"] == 3  # AAPL + SOXL + UVXY
+        procesados = reg.processed_symbols()
+        assert "SOXL" in procesados
+        assert "UVXY" in procesados
+        with reg._connect() as conn:
+            row = conn.execute("SELECT status FROM reference_checkpoint WHERE symbol='SOXL'").fetchone()
+        assert row["status"] == "ok"
+    finally:
+        _restore()
+
+
+def test_run_batch_universo_es_exactamente_equity_mas_leveraged(monkeypatch):
+    """Caso 8: el universo resultante es exactamente EQUITY (AAPL) +
+    ETFs apalancados/inversos (SOXL, UVXY) -- ni QQQ (pasivo) ni XYZW
+    (warrant) entran."""
+    _fresh()
+    monkeypatch.setattr(bhr.broad_universe, "fetch_broad_universe_meta", lambda: _META_CON_LEVERAGED)
+    monkeypatch.setattr(bhr.broad_universe, "racional_symbols", lambda: {"AAPL"})
+    monkeypatch.setattr(bhr, "build_tradier_provider", lambda: _FakeProvider())
+    try:
+        result = bhr.run_batch(limit=10, workers=1, delay_ms=0, period="3mo", batch_timeout_s=30)
+        assert result["universo_total"] == 3  # AAPL, SOXL, UVXY
+        assert reg.processed_symbols() == {"AAPL", "SOXL", "UVXY"}
+        # clasificacion sigue contando TODOS los tipos reales de la fuente,
+        # sin cambios -- el filtro de universo es aparte de este conteo.
+        assert result["clasificacion"] == {"EQUITY": 1, "ETF": 3, "WARRANT": 1}  # QQQ+SOXL+UVXY
     finally:
         _restore()
 
