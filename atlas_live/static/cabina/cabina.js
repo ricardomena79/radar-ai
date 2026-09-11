@@ -133,23 +133,24 @@ function _ordenarOportunidades(oportunidades) {
   // tal cual, esta pantalla simplemente no las prioriza en un espacio
   // reducido a propósito).
   //
-  // Vigencia real (2026-09-09, autorizado explícitamente -- corrige el
-  // gap encontrado con datos reales de producción, caso GPRO: detectada
-  // hace 105 min pero con `stage_observed_at` reciente, que el badge de
-  // `_esAntigua` de abajo NO alcanzaba a excluir, solo a reordenar).
-  // `detected_at` (vía `minutos_desde_deteccion`, ya calculado en vivo
-  // por el backend en cada request) define la antigüedad de la señal --
-  // NUNCA `stage_observed_at`. > 90 min -> EXCLUSIÓN real del bloque
-  // principal, no solo reordenamiento. `minutos_desde_deteccion == null`
-  // se excluye por seguridad (nunca se asume vigente sin poder
-  // confirmarlo). Backend/`priority_classifier.py`/`estado_final` sin
-  // cambios -- esto es puramente un filtro de presentación, adicional al
-  // de bucket que ya existía.
+  // Corrección (2026-09-11, autorizada explícitamente tras auditoría de
+  // producción con evidencia real -- caso ATEC: OPORTUNIDAD_PRIORITARIA,
+  // precio fresco, +18.84%, pero `minutos_desde_deteccion=657.5` la
+  // excluía del bloque principal pese a seguir siendo accionable):
+  // la EXCLUSIÓN por antigüedad de `detected_at` (introducida el
+  // 2026-09-09, caso GPRO) se retira -- el backend ya es la única fuente
+  // de verdad de "sigue siendo accionable" (`estado_final`) y "los datos
+  // actuales son válidos" (`estado_validacion!=OK` ya fuerza
+  // `estado_final=NO_TOCAR` en el propio backend, ver `server.py`, así
+  // que una candidata con `estado_final` accionable YA implica datos
+  // frescos, sin necesidad de un chequeo de edad aparte acá). Ninguna
+  // oportunidad accionable real vuelve a desaparecer solo por haber sido
+  // detectada hace tiempo. `VIGENCIA_UMBRAL_MINUTOS`/`_esAntigua()` NO se
+  // tocan -- siguen usándose más abajo, sin cambios, únicamente para el
+  // badge/orden de presentación (nunca para excluir), basados en
+  // `stage_observed_at` (reconfirmación real), no en `detected_at`.
   const accionables = oportunidades.filter(
-    (o) =>
-      (o.estado_final === "OPORTUNIDAD_PRIORITARIA" || o.estado_final === "VIGILAR") &&
-      o.minutos_desde_deteccion != null &&
-      o.minutos_desde_deteccion <= VIGENCIA_UMBRAL_MINUTOS
+    (o) => o.estado_final === "OPORTUNIDAD_PRIORITARIA" || o.estado_final === "VIGILAR"
   );
   return [...accionables].sort((a, b) => {
     const diff = FINAL_STATE_ORDER.indexOf(a.estado_final) - FINAL_STATE_ORDER.indexOf(b.estado_final);
