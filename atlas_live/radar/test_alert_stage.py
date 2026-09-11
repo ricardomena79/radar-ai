@@ -237,6 +237,160 @@ def test_retroceso_none_no_cambia_el_comportamiento_existente():
     ) == "INICIO"
 
 
+# --- Fallback PM-RVOL (2026-09-11, corrección autorizada explícitamente) ---
+
+def test_pmrvol_no_se_usa_si_legacy_esta_disponible_relative_volume_hoy():
+    """Legacy disponible (aunque sea bajo, no None) -> comportamiento
+    IDÉNTICO al de antes de este cambio, el fallback PM-RVOL ni se evalúa.
+    `relative_volume_hoy=0.1` no cruza VOLUME_ELEVATED_THRESHOLD y
+    `dias_volumen_elevado=0` tampoco -- sin el fallback esto daría PREPARACION
+    (por volatilidad) o None; con PM-RVOL "VALID" presente, debe seguir
+    dando exactamente lo mismo que si premarket_volume_acceleration no
+    existiera, porque relative_volume_hoy no es None."""
+    sin_pm = als.classify_alert_stage(
+        relative_volume_hoy=0.1, dias_volumen_elevado=0, aceleracion_volumen=None,
+        volatility_14d_pct=5.0, timing_deteccion_hoy="antes_del_movimiento",
+    )
+    con_pm = als.classify_alert_stage(
+        relative_volume_hoy=0.1, dias_volumen_elevado=0, aceleracion_volumen=None,
+        volatility_14d_pct=5.0, timing_deteccion_hoy="antes_del_movimiento",
+        premarket_volume_acceleration=14.38, premarket_volume_percentile=88.84,
+    )
+    assert sin_pm == con_pm == None
+
+
+def test_pmrvol_no_se_usa_si_legacy_esta_disponible_dias_volumen_elevado():
+    """Mismo criterio que el test anterior, pero con `dias_volumen_elevado=0`
+    (dato presente, no None) y `relative_volume_hoy=None` -- alcanza con que
+    UNA de las dos señales legacy tenga dato real para que el fallback no
+    se use."""
+    sin_pm = als.classify_alert_stage(
+        relative_volume_hoy=None, dias_volumen_elevado=0, aceleracion_volumen=None,
+        volatility_14d_pct=5.0, timing_deteccion_hoy="antes_del_movimiento",
+    )
+    con_pm = als.classify_alert_stage(
+        relative_volume_hoy=None, dias_volumen_elevado=0, aceleracion_volumen=None,
+        volatility_14d_pct=5.0, timing_deteccion_hoy="antes_del_movimiento",
+        premarket_volume_acceleration=14.38,
+    )
+    assert sin_pm == con_pm == None
+
+
+def test_pmrvol_valido_con_legacy_none_avanza_a_alerta_temprana_caso_atec():
+    """Caso real ATEC (2026-09-11): relative_volume_hoy/dias_volumen_elevado
+    en None (RVOL de sesión completa inviable en premarket temprano),
+    premarket_volume_acceleration=14.3778 VALID. Sin el fallback esto daría
+    PREPARACION solo si volatilidad>=10 (ATEC real: volatility=4.713, ni
+    siquiera llega a PREPARACION -> None). Con el fallback debe dar
+    ALERTA_TEMPRANA."""
+    assert als.classify_alert_stage(
+        relative_volume_hoy=None, dias_volumen_elevado=None, aceleracion_volumen=None,
+        volatility_14d_pct=4.713, timing_deteccion_hoy="antes_del_movimiento",
+        premarket_volume_acceleration=14.3778,
+    ) == "ALERTA_TEMPRANA"
+
+
+def test_pmrvol_percentile_solo_no_avanza_sin_aceleracion():
+    """`premarket_volume_percentile` por sí solo NO alcanza para avanzar --
+    su estado VALID en `candidate_gates.py` solo exige universo suficiente
+    (`MIN_UNIVERSE_SIZE_FOR_PM_PERCENTILE`), no crecimiento real de
+    volumen -- un percentil VALID puede ser perfectamente bajo (ej. 5).
+    Convertirlo en disparador exigiría inventar un umbral de percentil que
+    no existe hoy -- explícitamente prohibido. Solo
+    `premarket_volume_acceleration` decide, porque su propia validez YA
+    exige `MIN_SHARES_PRIOR_WINDOW` de crecimiento real."""
+    assert als.classify_alert_stage(
+        relative_volume_hoy=None, dias_volumen_elevado=None, aceleracion_volumen=None,
+        volatility_14d_pct=None, timing_deteccion_hoy="antes_del_movimiento",
+        premarket_volume_percentile=5.0,
+    ) is None
+    assert als.classify_alert_stage(
+        relative_volume_hoy=None, dias_volumen_elevado=None, aceleracion_volumen=None,
+        volatility_14d_pct=None, timing_deteccion_hoy="antes_del_movimiento",
+        premarket_volume_percentile=88.84,
+    ) is None
+
+
+def test_pmrvol_percentile_acompana_aceleracion_sin_cambiar_el_resultado():
+    """`premarket_volume_percentile` se recibe junto con
+    `premarket_volume_acceleration` (mismo patrón que el caso real ATEC,
+    que trae ambas señales VALID) sin alterar el resultado -- confirma que
+    pasar el percentil nunca rompe ni cambia el camino que ya decide
+    `premarket_volume_acceleration` por sí sola."""
+    solo_aceleracion = als.classify_alert_stage(
+        relative_volume_hoy=None, dias_volumen_elevado=None, aceleracion_volumen=None,
+        volatility_14d_pct=None, timing_deteccion_hoy="antes_del_movimiento",
+        premarket_volume_acceleration=14.3778,
+    )
+    con_percentile_tambien = als.classify_alert_stage(
+        relative_volume_hoy=None, dias_volumen_elevado=None, aceleracion_volumen=None,
+        volatility_14d_pct=None, timing_deteccion_hoy="antes_del_movimiento",
+        premarket_volume_acceleration=14.3778, premarket_volume_percentile=88.84,
+    )
+    assert solo_aceleracion == con_percentile_tambien == "ALERTA_TEMPRANA"
+
+
+def test_pmrvol_bajista_con_legacy_none_da_flujo_vendedor():
+    """Misma regla de dirección que ya aplica a las señales legacy -- el
+    fallback PM-RVOL no crea un camino nuevo de presentación, solo
+    alimenta la MISMA condición ya existente."""
+    assert als.classify_alert_stage(
+        relative_volume_hoy=None, dias_volumen_elevado=None, aceleracion_volumen=None,
+        volatility_14d_pct=None, timing_deteccion_hoy="antes_del_movimiento",
+        premarket_volume_acceleration=14.3778, direction="BAJISTA",
+    ) == "FLUJO_VENDEDOR"
+
+
+def test_pmrvol_ausente_no_avanza_artificialmente():
+    """legacy None Y premarket_volume_acceleration/percentile también None
+    (INSUFFICIENT_VOLUME/NOT_PREMARKET/etc. en candidate_gates.py) -> el
+    resultado es el mismo de siempre (None, sin alerta), nunca se inventa
+    una etapa."""
+    assert als.classify_alert_stage(
+        relative_volume_hoy=None, dias_volumen_elevado=None, aceleracion_volumen=None,
+        volatility_14d_pct=4.713, timing_deteccion_hoy="antes_del_movimiento",
+        premarket_volume_acceleration=None, premarket_volume_percentile=None,
+    ) is None
+
+
+def test_pmrvol_nunca_sustituye_persistencia_de_alerta_fuerte():
+    """PM-RVOL es una señal de UN solo día -- no debe poder alcanzar
+    ALERTA_FUERTE (que exige `dias_elevados>=2`, persistencia entre días)
+    aunque venga con volatilidad de régimen elevada y aceleración positiva
+    simultáneas. Sin señales legacy de días, el techo es ALERTA_TEMPRANA."""
+    assert als.classify_alert_stage(
+        relative_volume_hoy=None, dias_volumen_elevado=None, aceleracion_volumen=5.0,
+        volatility_14d_pct=50.0, timing_deteccion_hoy="antes_del_movimiento",
+        premarket_volume_acceleration=14.3778,
+    ) == "ALERTA_TEMPRANA"
+
+
+def test_pmrvol_sin_ninguna_senal_valida_preserva_comportamiento_previo():
+    """Sin legacy y sin PM-RVOL (ninguna señal en absoluto) -> mismo
+    resultado exacto que ya daba la función antes de este cambio (None)."""
+    assert als.classify_alert_stage(
+        relative_volume_hoy=None, dias_volumen_elevado=None, aceleracion_volumen=None,
+        volatility_14d_pct=None, timing_deteccion_hoy=None,
+        premarket_volume_acceleration=None, premarket_volume_percentile=None,
+    ) is None
+
+
+def test_pmrvol_parametros_por_defecto_no_rompen_llamadas_existentes():
+    """Compatibilidad hacia atrás: llamar sin pasar los 2 parámetros nuevos
+    da exactamente el mismo resultado que pasarlos explícitamente en None
+    -- ningún caller existente necesita cambiar."""
+    sin_kwargs_nuevos = als.classify_alert_stage(
+        relative_volume_hoy=3.0, dias_volumen_elevado=2, aceleracion_volumen=1.5,
+        volatility_14d_pct=12.0, timing_deteccion_hoy="antes_del_movimiento",
+    )
+    con_none_explicito = als.classify_alert_stage(
+        relative_volume_hoy=3.0, dias_volumen_elevado=2, aceleracion_volumen=1.5,
+        volatility_14d_pct=12.0, timing_deteccion_hoy="antes_del_movimiento",
+        premarket_volume_acceleration=None, premarket_volume_percentile=None,
+    )
+    assert sin_kwargs_nuevos == con_none_explicito == "ALERTA_FUERTE"
+
+
 if __name__ == "__main__":
     import traceback
 

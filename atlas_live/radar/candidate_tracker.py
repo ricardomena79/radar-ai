@@ -112,6 +112,8 @@ def _tag_experimental_signals_at_detection(symbol: str, market_date: str, quote:
 def _tag_alert_stage(
     symbol: str, market_date: str, observed_at: str, quote: Optional[Quote],
     gates_fired_payload: list, session: str,
+    current: Optional[SweepSnapshot] = None, prior_history: Optional[List[SweepSnapshot]] = None,
+    pm_universe_dollar_volumes: Optional[List[float]] = None,
 ) -> None:
     """Capa OBSERVACIONAL de ALERTA TEMPRANA (Fase 4, 2026-08-17) -- calcula
     y registra la ventana actual (`alert_stage.classify_alert_stage`) en
@@ -123,7 +125,18 @@ def _tag_alert_stage(
     construido) y `Quote` (ya disponible en este sweep), y solo ESCRIBE en
     `alert_stage_log` (tabla nueva, propia). Nunca toca `gates_fired`, el
     resultado de `evaluate_all_gates()`, `candidate_detection` ni ninguna
-    columna que lea el score en vivo o `DecisionEngine`."""
+    columna que lea el score en vivo o `DecisionEngine`.
+
+    `current`/`prior_history`/`pm_universe_dollar_volumes` (2026-09-11,
+    corrección PM-RVOL autorizada explícitamente): todos opcionales
+    (`None` por defecto -- ningún llamador existente necesita cambiar).
+    Cuando SÍ se pasan, se reutilizan `gates.premarket_volume_percentile()`/
+    `gates.premarket_volume_acceleration()` TAL CUAL ya existen en
+    `candidate_gates.py` (mismas funciones que ya usa
+    `_tag_phase_at_detection` -- ver arriba, líneas ~332-333; no se
+    modifica ese archivo) para que `als.classify_alert_stage()` tenga
+    disponible el fallback PM-RVOL cuando las señales legacy
+    (`relative_volume_hoy`/`dias_volumen_elevado`) vengan en `None`."""
     try:
         from atlas_live.reference import reference_registry as ref_reg
 
@@ -156,9 +169,18 @@ def _tag_alert_stage(
         if peak and peak > 0 and quote.last_price < peak:
             retroceso_desde_maximo_pct = round((peak - quote.last_price) / peak * 100, 3)
 
-    dias_volumen_elevado = sum(
-        1 for r in recent if (r.get("relative_volume") or 0) >= als.VOLUME_ELEVATED_THRESHOLD
-    )
+    # `None` cuando no hay NINGÚN historial diario todavía (`recent=[]`,
+    # típico de un símbolo recién cubierto por la Base Histórica) --
+    # distinto de "hay historial y da 0 días elevados". Antes esta línea
+    # siempre devolvía un entero (0 con `recent=[]`), lo cual bloqueaba por
+    # error el fallback PM-RVOL de abajo exactamente en el caso "sin datos
+    # legacy en absoluto" que ese fallback existe para cubrir (2026-09-11,
+    # corrección PM-RVOL autorizada explícitamente).
+    dias_volumen_elevado = None
+    if recent:
+        dias_volumen_elevado = sum(
+            1 for r in recent if (r.get("relative_volume") or 0) >= als.VOLUME_ELEVATED_THRESHOLD
+        )
     aceleracion_volumen = None
     if len(recent) >= 2:
         mas_reciente = recent[0].get("relative_volume")
@@ -166,11 +188,29 @@ def _tag_alert_stage(
         if mas_reciente is not None and mas_antiguo is not None:
             aceleracion_volumen = round(mas_reciente - mas_antiguo, 3)
 
+    # Fallback PM-RVOL (2026-09-11, corrección autorizada explícitamente):
+    # solo se calcula si el llamador pasó los datos necesarios -- si no
+    # (`current is None`), quedan en `None` y `classify_alert_stage()` se
+    # comporta exactamente igual que antes de este cambio. Reutiliza
+    # `candidate_gates.py` tal cual, sin modificarlo.
+    pm_acceleration_valor = None
+    pm_percentile_valor = None
+    if current is not None:
+        pm_acceleration_valor = gates.premarket_volume_acceleration(
+            current, prior_history or [], session,
+        ).value
+        if pm_universe_dollar_volumes is not None:
+            pm_percentile_valor = gates.premarket_volume_percentile(
+                current.dollar_volume, pm_universe_dollar_volumes, session,
+            ).value
+
     stage = als.classify_alert_stage(
         relative_volume_hoy=relative_volume_hoy, dias_volumen_elevado=dias_volumen_elevado,
         aceleracion_volumen=aceleracion_volumen, volatility_14d_pct=volatility_14d_pct,
         timing_deteccion_hoy=tag.timing_deteccion, direction=tag.direction,
         retroceso_desde_maximo_pct=retroceso_desde_maximo_pct,
+        premarket_volume_acceleration=pm_acceleration_valor,
+        premarket_volume_percentile=pm_percentile_valor,
     )
     if stage is None:
         return
@@ -371,7 +411,9 @@ def process_sweep(
                     current.price, current.change_pct, current.volume, current.relative_volume,
                     gates_fired_payload,
                 )
-            _tag_alert_stage(symbol, market_date, observed_at, quote, gates_fired_payload, session)
+            _tag_alert_stage(symbol, market_date, observed_at, quote, gates_fired_payload, session,
+                              current=current, prior_history=prior_history,
+                              pm_universe_dollar_volumes=pm_universe_dollar_volumes)
             reg.compute_interim_outcome(symbol, market_date)
             n_obs += 1
         elif reg.is_detected(symbol, market_date):
@@ -388,7 +430,9 @@ def process_sweep(
                     current.price, current.change_pct, current.volume, current.relative_volume,
                     [],
                 )
-            _tag_alert_stage(symbol, market_date, observed_at, quote, [], session)
+            _tag_alert_stage(symbol, market_date, observed_at, quote, [], session,
+                              current=current, prior_history=prior_history,
+                              pm_universe_dollar_volumes=pm_universe_dollar_volumes)
             reg.compute_interim_outcome(symbol, market_date)
             n_obs += 1
 

@@ -57,6 +57,8 @@ def classify_alert_stage(
     timing_deteccion_hoy: Optional[str],
     direction: Optional[str] = None,
     retroceso_desde_maximo_pct: Optional[float] = None,
+    premarket_volume_acceleration: Optional[float] = None,
+    premarket_volume_percentile: Optional[float] = None,
 ) -> Optional[str]:
     """Devuelve una de `ALERT_STAGES`, o `None` si la candidata no cumple
     ninguna condición de alerta (no se registra nada en ese caso -- nunca
@@ -97,6 +99,41 @@ def classify_alert_stage(
     que `recorrido_significativo_ya_hecho` (mismo criterio ya existente,
     nunca un umbral nuevo). "agotamiento" nunca cambia -- ya implica ese
     retroceso por construcción.
+
+    `premarket_volume_acceleration`/`premarket_volume_percentile`
+    (2026-09-11, corrección PM-RVOL autorizada explícitamente -- caso real
+    ATEC: cambio fuerte y sostenido, `premarket_volume_acceleration=14.38`
+    `VALID` en `candidate_gates.py`, pero `relative_volume_hoy`/
+    `dias_volumen_elevado` en `None` porque el RVOL de sesión completa es
+    matemáticamente inviable en los primeros minutos de premarket -- ver
+    `candidate_gates.py`, docstring "PM-RVOL Fase 1"): SOLO cuando NINGUNA
+    señal legacy de volumen (ni `relative_volume_hoy` ni
+    `dias_volumen_elevado`) está disponible, `premarket_volume_acceleration`
+    puede, por sí sola, satisfacer la MISMA condición que hoy satisface
+    `volumen_hoy_elevado`/`dias_elevados>=1` en el nivel `ALERTA_TEMPRANA`
+    -- SI su valor no es `None` (por contrato de
+    `candidate_gates.PremarketVolumeSignal`: `value=None` siempre implica
+    `validation_state != "VALID"`, así que "no es `None`" YA ES la regla de
+    validez que usa `candidate_gates.py`, no una nueva). Se usa
+    específicamente `premarket_volume_acceleration` y NO
+    `premarket_volume_percentile` para decidir solo: la validez de
+    `premarket_volume_acceleration` en `candidate_gates.py` YA exige
+    crecimiento real de acciones negociadas (`MIN_SHARES_PRIOR_WINDOW`),
+    mientras que la validez de `premarket_volume_percentile` solo exige
+    universo suficiente (`MIN_UNIVERSE_SIZE_FOR_PM_PERCENTILE`) -- un
+    percentil "VALID" puede perfectamente ser bajo (símbolo con poco
+    volumen relativo al resto del mercado), así que su sola validez NO
+    implica "elevado"; convertirlo en un disparador exigiría inventar un
+    umbral de percentil que no existe hoy en ningún lado del código
+    (prohibido explícitamente). `premarket_volume_percentile` se recibe
+    igual como parámetro -- queda disponible para trazabilidad/uso futuro
+    con un umbral propio, cuando exista uno real -- pero por ahora no
+    decide nada por sí solo. Nunca sustituye la condición de persistencia
+    de `ALERTA_FUERTE` (`dias_elevados>=2`) -- estas señales son de UN
+    solo día, no miden persistencia entre días. Si alguna señal legacy SÍ
+    está disponible (aunque no alcance el umbral), el comportamiento es
+    IDÉNTICO al de antes de este cambio -- el fallback nunca compite con
+    datos legacy reales, solo cubre su ausencia total.
 
     Orden de evaluación (el primero que matchea gana):
     1. Retroceso fuerte desde el máximo de hoy
@@ -143,9 +180,20 @@ def classify_alert_stage(
     volumen_hoy_elevado = relative_volume_hoy is not None and relative_volume_hoy >= VOLUME_ELEVATED_THRESHOLD
     aceleracion_positiva = aceleracion_volumen is not None and aceleracion_volumen > 0
 
+    # Fallback PM-RVOL (2026-09-11) -- ver docstring. Solo entra en juego
+    # cuando AMBAS señales legacy de volumen están ausentes; nunca pisa ni
+    # compite con `dias_volumen_elevado`/`relative_volume_hoy` cuando
+    # alguna de las dos sí trae dato (aunque sea 0 o bajo). Decide SOLO
+    # `premarket_volume_acceleration` -- `premarket_volume_percentile` se
+    # recibe pero no participa de esta condición (ver docstring: su
+    # validez no implica "elevado", solo "universo suficiente").
+    legacy_volumen_disponible = relative_volume_hoy is not None or dias_volumen_elevado is not None
+    pm_rvol_valido = not legacy_volumen_disponible and premarket_volume_acceleration is not None
+    # premarket_volume_percentile: recibido, documentado, no decide solo (ver docstring).
+
     if dias_elevados >= DIAS_ELEVADOS_PARA_ALERTA_FUERTE and volatilidad_elevada and aceleracion_positiva:
         return "FLUJO_VENDEDOR" if direction == "BAJISTA" else "ALERTA_FUERTE"
-    if dias_elevados >= 1 or volumen_hoy_elevado:
+    if dias_elevados >= 1 or volumen_hoy_elevado or pm_rvol_valido:
         return "FLUJO_VENDEDOR" if direction == "BAJISTA" else "ALERTA_TEMPRANA"
     if volatilidad_elevada:
         return "PREPARACION"

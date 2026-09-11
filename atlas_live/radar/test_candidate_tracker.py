@@ -509,6 +509,92 @@ def test_caida_real_con_volumen_da_flujo_vendedor_no_alerta_temprana():
         _restore()
 
 
+def test_tag_alert_stage_conecta_pm_rvol_via_process_sweep_caso_tipo_atec():
+    """Integración de extremo a extremo (2026-09-11, corrección PM-RVOL
+    autorizada explícitamente) -- NO solo `classify_alert_stage()` aislado:
+    corre `process_sweep()` real, con `rvol=None` (relative_volume_hoy
+    ausente, como cuando Tradier no trae `average_volume`) y sin historial
+    diario (`recent_daily_features=[]`, símbolo sin cobertura todavía en la
+    Base Histórica -- caso real ATEC). Sin el fallback esto quedaría sin
+    ninguna fila en `alert_stage_log` (mismo síntoma real observado:
+    `stage_observed_at=null`, atascado en PREPARACION/DETECCION_TEMPRANA).
+    Con `_tag_alert_stage()` ya conectado a
+    `gates.premarket_volume_acceleration()`/`premarket_volume_percentile()`,
+    debe alcanzar ALERTA_TEMPRANA."""
+    _fresh()
+    try:
+        from atlas_live.reference import reference_registry as ref_reg
+
+        orig_vol = ref_reg.latest_volatility_14d_pct
+        orig_recent = ref_reg.recent_daily_features
+        orig_pct = ref_reg.percentile_change_pct
+        ref_reg.latest_volatility_14d_pct = lambda symbol: 4.713  # bajo VOLATILITY_ELEVATED_THRESHOLD (10.0)
+        ref_reg.recent_daily_features = lambda symbol, n=5: []  # sin historial -- dias_volumen_elevado=None
+        ref_reg.percentile_change_pct = lambda symbol, p: None
+        try:
+            h = SweepHistory()
+            # 8 barridos previos en premarket con volumen creciendo real
+            # (2*K=8, suficiente para que premarket_volume_acceleration
+            # de VALID) -- rvol=None en TODOS (relative_volume_hoy nunca
+            # disponible, igual que en producción).
+            for i in range(8):
+                quotes = dict(_padding_universe())
+                quotes["ATEC"] = _quote("ATEC", 9.25, 4.58, volume=100 + i * 300, avg_volume=None, rvol=None)
+                tracker.process_sweep(quotes, h, "2026-09-11", "premarket", _now())
+            # Sin el fallback, ATEC no debería tener ninguna fila todavia
+            # (volatilidad 4.713 < 10.0 -> ni PREPARACION alcanza).
+            assert reg.latest_alert_stage("ATEC", "2026-09-11") is None
+
+            # Barrido con salto de volumen real -> premarket_volume_acceleration VALID.
+            quotes = dict(_padding_universe())
+            quotes["ATEC"] = _quote("ATEC", 9.485, 7.30, volume=100 + 8 * 300 + 3000, avg_volume=None, rvol=None)
+            tracker.process_sweep(quotes, h, "2026-09-11", "premarket", _now())
+
+            assert reg.latest_alert_stage("ATEC", "2026-09-11") == "ALERTA_TEMPRANA"
+        finally:
+            ref_reg.latest_volatility_14d_pct = orig_vol
+            ref_reg.recent_daily_features = orig_recent
+            ref_reg.percentile_change_pct = orig_pct
+    finally:
+        _restore()
+
+
+def test_tag_alert_stage_sin_pm_rvol_valido_preserva_comportamiento_previo():
+    """Contraste directo del test anterior: mismo escenario (sin legacy,
+    sin historial), pero SIN el salto de volumen que habilita
+    premarket_volume_acceleration (barridos todos parejos, volumen no
+    crece) -- debe seguir sin ninguna fila en alert_stage_log, exactamente
+    el comportamiento de antes de esta corrección. Confirma que el
+    fallback no "inventa" una etapa cuando ninguna señal (ni legacy ni
+    PM-RVOL) es realmente válida."""
+    _fresh()
+    try:
+        from atlas_live.reference import reference_registry as ref_reg
+
+        orig_vol = ref_reg.latest_volatility_14d_pct
+        orig_recent = ref_reg.recent_daily_features
+        orig_pct = ref_reg.percentile_change_pct
+        ref_reg.latest_volatility_14d_pct = lambda symbol: 4.713
+        ref_reg.recent_daily_features = lambda symbol, n=5: []
+        ref_reg.percentile_change_pct = lambda symbol, p: None
+        try:
+            h = SweepHistory()
+            for i in range(9):
+                quotes = dict(_padding_universe())
+                # Volumen SIN crecer (siempre 100) -> premarket_volume_acceleration
+                # nunca alcanza MIN_SHARES_PRIOR_WINDOW -> INSUFFICIENT_VOLUME (None).
+                quotes["ATEC"] = _quote("ATEC", 9.25, 1.0, volume=100, avg_volume=None, rvol=None)
+                tracker.process_sweep(quotes, h, "2026-09-11", "premarket", _now())
+
+            assert reg.latest_alert_stage("ATEC", "2026-09-11") is None
+        finally:
+            ref_reg.latest_volatility_14d_pct = orig_vol
+            ref_reg.recent_daily_features = orig_recent
+            ref_reg.percentile_change_pct = orig_pct
+    finally:
+        _restore()
+
+
 def test_caso_real_ken_precio_mid_bid_ask_no_confunde_direction_con_alcista():
     """2026-08-19, caso real de producción: KEN detectada con precio del
     punto medio bid/ask (`price_basis="tradier_bid_ask_mid"`), casi sin
