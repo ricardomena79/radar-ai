@@ -174,11 +174,30 @@ def test_caso_c_bid_cero_o_negativo_conserva_last_vencido():
         assert q.change_percent is None
 
 
-def test_caso_c_mercado_cruzado_ahora_rescata_bid_only_fase_1c():
-    """Actualizado en Fase 1C (2026-08-24): un ask cruzado (`ask < bid`)
-    es inválido POR SÍ MISMO -- antes descartaba también el bid, ahora se
-    rescata el bid solo (ver `_classify_ask()` -> `"invalido"`)."""
+def test_caso_c_mercado_cruzado_ya_no_rescata_bid_only():
+    """CAMBIO DE EXPECTATIVA (2026-09-11, blindaje autorizado
+    explícitamente): un mercado cruzado (`ask < bid`) ahora se clasifica
+    como `"cruzado"` (`_classify_ask()`), un estado propio SEPARADO de
+    `"invalido"` -- es evidencia COMPARATIVA (requiere comparar bid contra
+    ask) que no puede determinar cuál de los dos lados es el erróneo, a
+    diferencia de `ask<=0` (que sigue siendo `"invalido"`, evidencia
+    independiente del bid). Antes se confiaba en el bid asumiendo "el ask
+    es el cruzado"; ahora cae al Caso C -- nunca se adivina cuál lado es
+    el correcto con evidencia ambigua (mismo criterio que motivó excluir
+    `"roto"`, ver test de arriba)."""
     data = _base(bid=50.0, ask=40.0)
+    q = _to_quote(data, "TEST", now=NOW)
+    assert q.price_basis == "tradier_regular_close_stale"
+    assert q.price_is_stale is True
+    assert q.bid_only_reason is None
+
+
+def test_caso_c_ask_no_positivo_si_sigue_rescatando_bid_only():
+    """Complemento del test anterior -- `ask<=0` (evidencia INDEPENDIENTE
+    del bid, nunca comparativa) sigue clasificándose `"invalido"` y sigue
+    activando bid-only sin cambios, a diferencia de `ask<bid`
+    (`"cruzado"`, ahora excluido)."""
+    data = _base(bid=50.0, ask=0.0)
     q = _to_quote(data, "TEST", now=NOW)
     assert q.price_basis == "tradier_bid_only"
     assert q.price_is_stale is False
@@ -389,15 +408,29 @@ def test_bidonly_1_nssc_real_bid_fresco_ask_vencido_y_roto():
     assert round(q.change_percent, 2) == 2.39  # 39.00/38.09 - 1 ≈ +2.39%, verificado a mano
 
 
-def test_bidonly_1b_ask_fresco_pero_con_spread_y_ratio_rotos():
+def test_bidonly_1b_ask_fresco_pero_con_spread_y_ratio_rotos_ya_no_activa_bidonly():
     """Variante del Caso 1 -- ask FRESCO (nunca vencido) pero con
     spread/ratio extremos, para cubrir específicamente la rama de
-    `_classify_ask()` que devuelve `"roto"` (no `"vencido"`)."""
+    `_classify_ask()` que devuelve `"roto"`.
+
+    CAMBIO DE EXPECTATIVA (2026-09-11, blindaje autorizado explícitamente,
+    causa raíz del caso real CHEF/2026-09-11): `"roto"` es evidencia
+    COMPARATIVA (solo existe al comparar bid contra ask) -- nunca puede
+    determinar cuál de los dos lados es el degenerado. Antes este test
+    esperaba que se confiara en el bid (`tradier_bid_only`, asumiendo
+    "el ask está roto"); el caso real de producción demostró que puede
+    ser exactamente al revés (el BID es el degenerado, ej. $0.0004, y el
+    ask se acerca al precio real). Ahora `"roto"` cae al Caso C
+    (conservador, sin inventar un precio nuevo) -- nunca se adivina cuál
+    lado confiar cuando la evidencia es ambigua. El caso real NSSC (que
+    motivó este fallback originalmente) usa `"vencido"`, NO `"roto"` --
+    ver `test_bidonly_1_nssc_real_bid_fresco_ask_vencido_y_roto`, sigue
+    intacto."""
     data = _base(bid=39.00, ask=61.76, ask_date=_ms(NOW - timedelta(seconds=5)))
     q = _to_quote(data, "TEST", now=NOW)
-    assert q.price_basis == "tradier_bid_only"
-    assert q.bid_only_reason == "ask_roto"
-    assert q.last_price == 39.00
+    assert q.price_basis == "tradier_regular_close_stale"
+    assert q.price_is_stale is True
+    assert q.bid_only_reason is None
 
 
 def test_bidonly_2_bid_fresco_ask_normal_sigue_bid_ask_mid():
@@ -493,6 +526,62 @@ def test_bidonly_9_mstu_no_cambia_con_bidonly():
     assert q.price_basis == "tradier_bid_ask_mid"
     assert q.bid_only_reason is None
     assert q.change_percent < 1.0
+
+
+def test_bidonly_F_caso_real_chef_bid_degenerado_nunca_produce_precio():
+    """Caso F -- reconstrucción del caso real CHEF (2026-09-11): bid
+    casi-cero ($0.0004, idéntico al valor real observado en producción,
+    repetido entre decenas de símbolos no relacionados) + ask normal
+    ($112.00, cercano al precio real posterior) + spread extremo (~200%).
+    Con el blindaje, esto NUNCA debe producir `price_basis="tradier_bid_only"`
+    ni `last_price=0.0004` -- cae al Caso C, conservador."""
+    data = _base(bid=0.0004, ask=112.0, ask_date=_ms(NOW - timedelta(seconds=5)))
+    q = _to_quote(data, "CHEF", now=NOW)
+    assert q.price_basis == "tradier_regular_close_stale"
+    assert q.price_is_stale is True
+    assert q.bid_only_reason is None
+    assert q.last_price != 0.0004  # NUNCA el bid degenerado como precio
+
+
+def test_bidonly_G_bid_cero_nunca_precio_valido():
+    """Caso G -- bid=0 nunca puede convertirse en precio válido (ni
+    bid_only ni bid_ask_mid), sin importar el ask."""
+    data = _base(bid=0.0, ask=112.0)
+    q = _to_quote(data, "TEST", now=NOW)
+    assert q.price_basis == "tradier_regular_close_stale"
+    assert q.bid_only_reason is None
+
+
+def test_bidonly_H_bid_negativo_nunca_precio_valido():
+    """Caso H -- bid negativo nunca puede convertirse en precio válido."""
+    data = _base(bid=-5.0, ask=112.0)
+    q = _to_quote(data, "TEST", now=NOW)
+    assert q.price_basis == "tradier_regular_close_stale"
+    assert q.bid_only_reason is None
+
+
+def test_bidonly_I_bid_nan_nunca_precio_valido():
+    """Caso I -- bid=NaN nunca puede convertirse en precio válido.
+    `bid > 0` es `False` para NaN en Python (nunca `True`) -- el chequeo
+    de frescura/validez existente ya lo excluye estructuralmente, sin
+    necesitar un chequeo explícito de `math.isfinite()` adicional acá
+    (a diferencia de `eod_report.py`, donde SÍ hacía falta -- ver commit
+    `9c321fc`, distinta operación matemática)."""
+    data = _base(bid=float("nan"), ask=112.0, ask_date=_ms(NOW - timedelta(seconds=5)))
+    q = _to_quote(data, "TEST", now=NOW)
+    assert q.price_basis == "tradier_regular_close_stale"
+    assert q.bid_only_reason is None
+
+
+def test_bidonly_I_bid_infinito_nunca_precio_valido():
+    """Caso I -- bid=Inf nunca puede convertirse en precio válido. Con
+    bid=Inf, `ask < bid` es siempre `True` para cualquier ask real -->
+    se clasifica `"cruzado"` (evidencia comparativa) --> excluido de
+    Caso B2 por el mismo blindaje que protege el caso CHEF."""
+    data = _base(bid=float("inf"), ask=112.0, ask_date=_ms(NOW - timedelta(seconds=5)))
+    q = _to_quote(data, "TEST", now=NOW)
+    assert q.price_basis == "tradier_regular_close_stale"
+    assert q.bid_only_reason is None
 
 
 def test_bidonly_10_spread_grande_pero_no_extremo_no_se_clasifica_como_roto():

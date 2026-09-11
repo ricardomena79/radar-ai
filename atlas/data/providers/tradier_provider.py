@@ -142,11 +142,36 @@ def _classify_ask(bid: Optional[float], ask: Optional[float], ask_age: Optional[
     trazada en `Quote.bid_only_reason` cuando habilita el fallback BID_ONLY
     (Fase 1C, 2026-08-24). `"spread_ambiguo"` es its propio estado (ni
     confiable ni claramente roto) para que el llamador nunca lo trate como
-    de ask roto sin más -- es un tercer estado propio."""
+    de ask roto sin más -- es un tercer estado propio.
+
+    Blindaje (2026-09-11, autorizado explícitamente -- caso real
+    2026-09-11: 75 outcomes con `max_return_after_detection_pct` de hasta
+    28.224.900%, TODOS con `price_basis="tradier_bid_only"` activado vía
+    `"roto"`, con un BID degenerado -- ej. $0.0004, valor idéntico repetido
+    entre decenas de símbolos no relacionados -- y un ASK cercano al
+    precio real posterior. `"roto"`/`"cruzado"` (ver abajo) son evidencia
+    COMPARATIVA -- solo existen porque se compara bid contra ask, y NUNCA
+    pueden determinar cuál de los dos lados es el degenerado; asumir
+    siempre que es el ask (y confiar ciegamente en el bid) fue el error
+    real. `"ausente"`/`"vencido"`/`"invalido"` (ask<=0) siguen siendo
+    evidencia INDEPENDIENTE del bid -- el ask falla por su propia cuenta,
+    sin comparación -- y siguen siendo tan confiables como siempre (caso
+    real NSSC: `ask_vencido`, sin cambios). `"cruzado"` (`ask < bid`) es un
+    estado NUEVO, separado de `"invalido"` -- antes ambos compartían el
+    mismo nombre; ahora `ask<=0` (evidencia independiente) se distingue de
+    `ask<bid` (evidencia comparativa, un mercado cruzado no dice cuál lado
+    es el erróneo). Ningún umbral de spread/ratio nuevo -- se reutilizan
+    `ASK_BROKEN_SPREAD_PCT`/`ASK_BROKEN_MIN_RATIO` tal cual, solo cambia
+    qué hace el LLAMADOR con el resultado `"roto"`/`"cruzado"` (ver Caso B2
+    en `_resolve_current_price()`)."""
     if ask is None:
         return "ausente"
-    if ask <= 0 or bid is None or bid <= 0 or ask < bid:
+    if ask <= 0:
         return "invalido"
+    if bid is None or bid <= 0:
+        return "invalido"
+    if ask < bid:
+        return "cruzado"
     if ask_age is None or ask_age > BID_ASK_MAX_AGE_SECONDS:
         return "vencido"
     mid = (bid + ask) / 2
@@ -170,13 +195,26 @@ def _resolve_current_price(data: Dict[str, Any], now: datetime) -> Dict[str, Any
 
     Caso B2 (`BID_ONLY`, `price_basis="tradier_bid_only"` -- 2026-08-24,
     Fase 1C, caso real NSSC: bid=$39.00 fresco+válido a 1.44% de Yahoo,
-    descartado junto con un ask=$61.76 roto, spread=45.18%): `last`
+    descartado junto con un ask=$61.76 vencido, spread=45.18%): `last`
     vencido, el PAR bid/ask no califica para el Caso B, pero el bid POR SÍ
-    SOLO es válido+fresco Y el ask fue descartado con evidencia clara
-    (ausente/inválido/vencido/roto -- ver `_classify_ask()`), nunca solo
-    porque "falta el ask". Un spread ancho pero no claramente roto
-    (`"spread_ambiguo"`) NO habilita este caso -- cae al C. `change_percent`
-    se calcula contra `prevclose`, igual que en el Caso B.
+    SOLO es válido+fresco Y el ask fue descartado con evidencia
+    INDEPENDIENTE del bid -- `ausente`/`invalido` (ask<=0)/`vencido`, ver
+    `_classify_ask()` -- nunca solo porque "falta el ask". Un spread ancho
+    pero no claramente roto (`"spread_ambiguo"`) NO habilita este caso --
+    cae al C, igual que antes. `change_percent` se calcula contra
+    `prevclose`, igual que en el Caso B.
+
+    Blindaje (2026-09-11, autorizado explícitamente): `"roto"` (spread/
+    ratio extremo) y `"cruzado"` (`ask<bid`) quedan EXCLUIDOS de este caso
+    -- ambos son evidencia COMPARATIVA (solo existen al comparar bid
+    contra ask) que nunca puede determinar cuál de los dos lados es el
+    degenerado. Caso real 2026-09-11: 75 candidatas con un BID degenerado
+    (ej. $0.0004, valor idéntico repetido entre símbolos no relacionados)
+    activaron este caso vía `"roto"`, asumiendo erróneamente que el ask
+    era el lado roto cuando en realidad era el bid. Con `"roto"`/
+    `"cruzado"` excluidos, esos casos caen al Caso C (conservador, sin
+    inventar un precio nuevo) -- NUNCA se intenta adivinar cuál lado
+    confiar cuando la evidencia es ambigua.
 
     Caso C (`STALE_REGULAR_CLOSE`, `price_is_stale=True` -- 2026-08-24,
     Fase 1, caso real NSSC: $38.09/0% congelado ~46 minutos seguidos
@@ -255,14 +293,17 @@ def _resolve_current_price(data: Dict[str, Any], now: datetime) -> Dict[str, Any
     # Caso B2: BID_ONLY -- el par bid/ask no calificó arriba (si hubiera
     # calificado, ya se habría retornado), pero el bid SOLO puede seguir
     # siendo confiable. Solo se acepta cuando el ask fue descartado con una
-    # razón CLARA (ausente/inválido/vencido/roto) -- nunca en el caso
-    # "spread_ambiguo" (evidencia insuficiente para descartar el ask, pero
-    # tampoco para confiar en el punto medio) ni cuando el propio bid está
-    # vencido/inválido (eso no es "no inventar con el ask roto", sería
-    # inventar con el bid roto).
+    # razón INDEPENDIENTE del bid (ausente/inválido con ask<=0/vencido) --
+    # nunca en "spread_ambiguo" (evidencia insuficiente para descartar el
+    # ask, pero tampoco para confiar en el punto medio), nunca en "roto"/
+    # "cruzado" (2026-09-11, blindaje autorizado explícitamente -- ambos
+    # son evidencia COMPARATIVA que no puede determinar cuál lado es el
+    # degenerado, ver docstring de `_classify_ask()`/de este caso arriba),
+    # ni cuando el propio bid está vencido/inválido (eso no es "no
+    # inventar con el ask roto", sería inventar con el bid roto).
     ask_status = _classify_ask(bid, ask, ask_age)
     bid_fresh = bid is not None and bid > 0 and bid_age is not None and bid_age <= BID_ONLY_MAX_AGE_SECONDS
-    if bid_fresh and ask_status in ("ausente", "invalido", "vencido", "roto"):
+    if bid_fresh and ask_status in ("ausente", "invalido", "vencido"):
         change_pct = ((bid - prevclose) / prevclose * 100) if prevclose else None
         resolved.update({
             "last_price": bid, "change_percent": change_pct, "timestamp": bid_ts,
