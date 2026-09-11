@@ -26,6 +26,8 @@ candidatas -- solo se registra para poder medir su resultado real después
 import os
 from typing import Optional
 
+from atlas_live.radar import phase_classifier as pc
+
 ALERT_STAGES = ("PREPARACION", "ALERTA_TEMPRANA", "ALERTA_FUERTE", "INICIO", "CONFIRMACION", "NO_PERSEGUIR", "FLUJO_VENDEDOR")
 
 # Umbrales derivados del estudio histórico (ver docstring del módulo) --
@@ -59,6 +61,7 @@ def classify_alert_stage(
     retroceso_desde_maximo_pct: Optional[float] = None,
     premarket_volume_acceleration: Optional[float] = None,
     premarket_volume_percentile: Optional[float] = None,
+    session: Optional[str] = None,
 ) -> Optional[str]:
     """Devuelve una de `ALERT_STAGES`, o `None` si la candidata no cumple
     ninguna condición de alerta (no se registra nada en ese caso -- nunca
@@ -135,6 +138,45 @@ def classify_alert_stage(
     IDÉNTICO al de antes de este cambio -- el fallback nunca compite con
     datos legacy reales, solo cubre su ausencia total.
 
+    Corrección PM-RVOL en premarket (2026-09-11, autorizada explícitamente
+    tras 2 hallazgos con evidencia real de producción):
+
+    1. `relative_volume_hoy is not None` casi nunca ocurre en la práctica
+       -- Tradier calcula `volume/average_volume` con el promedio de la
+       SESIÓN REGULAR completa, así que en premarket temprano da un número
+       casi siempre positivo pero estructuralmente ínfimo (caso real PBR:
+       `relative_volume_hoy` nunca fue `None`, pero tampoco informativo).
+       Por eso, además de `is None`, ahora también se considera "legacy no
+       informativo" cuando `session == "premarket"` Y
+       `relative_volume_hoy < phase_classifier.CHANGE_PCT_MIN_RVOL_TO_TRUST_ZERO`
+       (0.05) -- el MISMO piso que `phase_classifier.py` ya usa para el
+       mismo problema (RVOL demasiado bajo para ser evidencia real), no un
+       umbral nuevo. Fuera de premarket este piso NUNCA se aplica --
+       `relative_volume_hoy is not None` sigue bastando para considerar el
+       legacy disponible, exactamente como antes de este cambio.
+
+    2. `premarket_volume_acceleration` "VALID" (no `None`) NO implica
+       aceleración alcista -- es un cociente (`vol_reciente/vol_previo`,
+       ver `candidate_gates.premarket_volume_acceleration`) que puede ser
+       perfectamente una DESACELERACIÓN (caso real PBR: `pm_accel=0.1044`,
+       la ventana reciente negoció solo el 10% del ritmo de la ventana
+       anterior). Por eso ahora, además de `is not None`, se exige
+       `premarket_volume_acceleration >= VOLUME_ELEVATED_THRESHOLD` (el
+       MISMO piso de "elevado" que ya usa `relative_volume_hoy` dos líneas
+       más abajo en esta misma función, no un umbral nuevo) -- caso real
+       LABD: `pm_accel=3.5759`, sí cruza el piso, sí es aceleración
+       genuina.
+
+    3. El fallback completo (incluida esta corrección) SOLO puede activarse
+       cuando `session == "premarket"` es la sesión REAL del sweep, recibida
+       tal cual por este parámetro -- esta función nunca la recalcula ni la
+       lee de ningún dato persistido; es responsabilidad exclusiva del
+       llamador (`candidate_tracker._tag_alert_stage()`, que a su vez la
+       recibe de `process_sweep()`, que a su vez la recibe de
+       `radar_worker.py::market_hours.get_session()` en cada sweep). Fuera
+       de premarket (`session in ("regular", None, ...)`), el
+       comportamiento es EXACTAMENTE igual al anterior a esta corrección.
+
     Orden de evaluación (el primero que matchea gana):
     1. Retroceso fuerte desde el máximo de hoy
        (>= `DRAWDOWN_FROM_PEAK_THRESHOLD_PCT`) -> NO_PERSEGUIR, sin importar
@@ -180,15 +222,33 @@ def classify_alert_stage(
     volumen_hoy_elevado = relative_volume_hoy is not None and relative_volume_hoy >= VOLUME_ELEVATED_THRESHOLD
     aceleracion_positiva = aceleracion_volumen is not None and aceleracion_volumen > 0
 
-    # Fallback PM-RVOL (2026-09-11) -- ver docstring. Solo entra en juego
-    # cuando AMBAS señales legacy de volumen están ausentes; nunca pisa ni
-    # compite con `dias_volumen_elevado`/`relative_volume_hoy` cuando
-    # alguna de las dos sí trae dato (aunque sea 0 o bajo). Decide SOLO
-    # `premarket_volume_acceleration` -- `premarket_volume_percentile` se
-    # recibe pero no participa de esta condición (ver docstring: su
-    # validez no implica "elevado", solo "universo suficiente").
-    legacy_volumen_disponible = relative_volume_hoy is not None or dias_volumen_elevado is not None
-    pm_rvol_valido = not legacy_volumen_disponible and premarket_volume_acceleration is not None
+    # Fallback PM-RVOL (2026-09-11, corregido el mismo día -- ver docstring
+    # "Corrección PM-RVOL en premarket"). Solo entra en juego cuando
+    # `session == "premarket"` (sesión REAL del sweep, nunca recalculada
+    # acá) Y el RVOL legacy no es informativo (ausente, o presente pero por
+    # debajo de `phase_classifier.CHANGE_PCT_MIN_RVOL_TO_TRUST_ZERO` --
+    # solo en premarket) Y `dias_volumen_elevado` tampoco trae dato; nunca
+    # pisa ni compite con ninguna de las dos señales legacy cuando SÍ traen
+    # dato real (aunque sea 0 o bajo). Decide SOLO `premarket_volume_acceleration`,
+    # y solo si alcanza el mismo piso de "elevado" que ya usa
+    # `relative_volume_hoy` (`VOLUME_ELEVATED_THRESHOLD`) --
+    # `premarket_volume_percentile` se recibe pero no participa de esta
+    # condición (ver docstring: su validez no implica "elevado", solo
+    # "universo suficiente").
+    legacy_rvol_informativo = relative_volume_hoy is not None
+    if (
+        session == "premarket"
+        and legacy_rvol_informativo
+        and relative_volume_hoy < pc.CHANGE_PCT_MIN_RVOL_TO_TRUST_ZERO
+    ):
+        legacy_rvol_informativo = False
+    legacy_volumen_disponible = legacy_rvol_informativo or dias_volumen_elevado is not None
+    pm_rvol_valido = (
+        session == "premarket"
+        and not legacy_volumen_disponible
+        and premarket_volume_acceleration is not None
+        and premarket_volume_acceleration >= VOLUME_ELEVATED_THRESHOLD
+    )
     # premarket_volume_percentile: recibido, documentado, no decide solo (ver docstring).
 
     if dias_elevados >= DIAS_ELEVADOS_PARA_ALERTA_FUERTE and volatilidad_elevada and aceleracion_positiva:

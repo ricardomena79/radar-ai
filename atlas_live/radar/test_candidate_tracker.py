@@ -595,6 +595,173 @@ def test_tag_alert_stage_sin_pm_rvol_valido_preserva_comportamiento_previo():
         _restore()
 
 
+# ---------------------------------------------------------------------------
+# Corrección PM-RVOL en premarket (2026-09-11, autorizada explícitamente) --
+# caso H (integración end-to-end) + 4 tests de fuente REAL de sesión.
+# ---------------------------------------------------------------------------
+
+def test_tag_alert_stage_pmrvol_premarket_umbral_caso_h_integracion():
+    """Caso H -- integración end-to-end mediante process_sweep(): RVOL
+    legacy no informativo (0.04 < CHANGE_PCT_MIN_RVOL_TO_TRUST_ZERO),
+    session="premarket" real en cada sweep, y una aceleración de volumen
+    real que cruza VOLUME_ELEVATED_THRESHOLD -- debe registrar
+    ALERTA_TEMPRANA en alert_stage_log."""
+    _fresh()
+    try:
+        from atlas_live.reference import reference_registry as ref_reg
+
+        orig_vol = ref_reg.latest_volatility_14d_pct
+        orig_recent = ref_reg.recent_daily_features
+        orig_pct = ref_reg.percentile_change_pct
+        ref_reg.latest_volatility_14d_pct = lambda symbol: 4.713
+        ref_reg.recent_daily_features = lambda symbol, n=5: []
+        ref_reg.percentile_change_pct = lambda symbol, p: None
+        try:
+            h = SweepHistory()
+            for i in range(8):
+                quotes = dict(_padding_universe())
+                quotes["PBRX"] = _quote("PBRX", 9.25, 4.58, volume=100 + i * 300, avg_volume=None, rvol=0.04)
+                tracker.process_sweep(quotes, h, "2026-09-11", "premarket", _now())
+            assert reg.latest_alert_stage("PBRX", "2026-09-11") is None
+
+            quotes = dict(_padding_universe())
+            quotes["PBRX"] = _quote("PBRX", 9.485, 7.30, volume=100 + 8 * 300 + 3000, avg_volume=None, rvol=0.04)
+            tracker.process_sweep(quotes, h, "2026-09-11", "premarket", _now())
+
+            assert reg.latest_alert_stage("PBRX", "2026-09-11") == "ALERTA_TEMPRANA"
+        finally:
+            ref_reg.latest_volatility_14d_pct = orig_vol
+            ref_reg.recent_daily_features = orig_recent
+            ref_reg.percentile_change_pct = orig_pct
+    finally:
+        _restore()
+
+
+def test_fuente_session_1_sweep_premarket_real_habilita_fallback():
+    """Test de fuente de sesión #1: un sweep cuya sesión REAL (el parámetro
+    `session` recibido por process_sweep(), nunca releído de metadata) es
+    "premarket", con el mismo candidato tipo PBR/LABD (legacy no
+    informativo, aceleración >= piso) -- confirma ALERTA_TEMPRANA
+    registrada en alert_stage_log."""
+    _fresh()
+    try:
+        from atlas_live.reference import reference_registry as ref_reg
+
+        orig_vol = ref_reg.latest_volatility_14d_pct
+        orig_recent = ref_reg.recent_daily_features
+        orig_pct = ref_reg.percentile_change_pct
+        ref_reg.latest_volatility_14d_pct = lambda symbol: 4.713
+        ref_reg.recent_daily_features = lambda symbol, n=5: []
+        ref_reg.percentile_change_pct = lambda symbol, p: None
+        try:
+            h = SweepHistory()
+            for i in range(8):
+                quotes = dict(_padding_universe())
+                quotes["PBRX"] = _quote("PBRX", 9.25, 4.58, volume=100 + i * 300, avg_volume=None, rvol=0.04)
+                tracker.process_sweep(quotes, h, "2026-09-11", "premarket", _now())
+            quotes = dict(_padding_universe())
+            quotes["PBRX"] = _quote("PBRX", 9.485, 7.30, volume=100 + 8 * 300 + 3000, avg_volume=None, rvol=0.04)
+            tracker.process_sweep(quotes, h, "2026-09-11", "premarket", _now())
+
+            assert reg.latest_alert_stage("PBRX", "2026-09-11") == "ALERTA_TEMPRANA"
+        finally:
+            ref_reg.latest_volatility_14d_pct = orig_vol
+            ref_reg.recent_daily_features = orig_recent
+            ref_reg.percentile_change_pct = orig_pct
+    finally:
+        _restore()
+
+
+def test_fuente_session_2_sweep_regular_real_bloquea_fallback():
+    """Test de fuente de sesión #2: mismo candidato y mismo historial que
+    el test anterior, pero session="regular" real en cada sweep -- el
+    resultado NO puede venir del fallback PM-RVOL. En este escenario
+    (RVOL=0.04 no alcanza VOLUME_ELEVATED_THRESHOLD) tampoco la rama
+    legacy dispara -- no debe registrarse ALERTA_TEMPRANA."""
+    _fresh()
+    try:
+        from atlas_live.reference import reference_registry as ref_reg
+
+        orig_vol = ref_reg.latest_volatility_14d_pct
+        orig_recent = ref_reg.recent_daily_features
+        orig_pct = ref_reg.percentile_change_pct
+        ref_reg.latest_volatility_14d_pct = lambda symbol: 4.713
+        ref_reg.recent_daily_features = lambda symbol, n=5: []
+        ref_reg.percentile_change_pct = lambda symbol, p: None
+        try:
+            h = SweepHistory()
+            for i in range(8):
+                quotes = dict(_padding_universe())
+                quotes["PBRX"] = _quote("PBRX", 9.25, 4.58, volume=100 + i * 300, avg_volume=None, rvol=0.04)
+                tracker.process_sweep(quotes, h, "2026-09-11", "regular", _now())
+            quotes = dict(_padding_universe())
+            quotes["PBRX"] = _quote("PBRX", 9.485, 7.30, volume=100 + 8 * 300 + 3000, avg_volume=None, rvol=0.04)
+            tracker.process_sweep(quotes, h, "2026-09-11", "regular", _now())
+
+            assert reg.latest_alert_stage("PBRX", "2026-09-11") is None
+        finally:
+            ref_reg.latest_volatility_14d_pct = orig_vol
+            ref_reg.recent_daily_features = orig_recent
+            ref_reg.percentile_change_pct = orig_pct
+    finally:
+        _restore()
+
+
+def test_fuente_session_3_metadata_stale_no_convierte_regular_en_premarket():
+    """Test de fuente de sesión #3: antes del sweep se escribe
+    reg.set_meta(session_actual="premarket") simulando metadata stale de un
+    sweep premarket anterior -- luego se corre process_sweep(...,
+    session="regular", ...), la sesión REAL de este sweep puntual. El
+    resultado debe ser idéntico al del test anterior (sin ALERTA_TEMPRANA),
+    confirmando que session_actual no participa en la decisión."""
+    _fresh()
+    try:
+        reg.set_meta(session_actual="premarket")
+
+        from atlas_live.reference import reference_registry as ref_reg
+
+        orig_vol = ref_reg.latest_volatility_14d_pct
+        orig_recent = ref_reg.recent_daily_features
+        orig_pct = ref_reg.percentile_change_pct
+        ref_reg.latest_volatility_14d_pct = lambda symbol: 4.713
+        ref_reg.recent_daily_features = lambda symbol, n=5: []
+        ref_reg.percentile_change_pct = lambda symbol, p: None
+        try:
+            h = SweepHistory()
+            for i in range(8):
+                quotes = dict(_padding_universe())
+                quotes["PBRX"] = _quote("PBRX", 9.25, 4.58, volume=100 + i * 300, avg_volume=None, rvol=0.04)
+                tracker.process_sweep(quotes, h, "2026-09-11", "regular", _now())
+            quotes = dict(_padding_universe())
+            quotes["PBRX"] = _quote("PBRX", 9.485, 7.30, volume=100 + 8 * 300 + 3000, avg_volume=None, rvol=0.04)
+            tracker.process_sweep(quotes, h, "2026-09-11", "regular", _now())
+
+            assert reg.get_meta().get("session_actual") == "premarket"  # metadata sigue "stale", sin cambiar
+            assert reg.latest_alert_stage("PBRX", "2026-09-11") is None
+        finally:
+            ref_reg.latest_volatility_14d_pct = orig_vol
+            ref_reg.recent_daily_features = orig_recent
+            ref_reg.percentile_change_pct = orig_pct
+    finally:
+        _restore()
+
+
+def test_fuente_session_4_estructural_sin_lectura_de_metadata_persistida():
+    """Test de fuente de sesión #4 (estructural): confirma por lectura del
+    código fuente que classify_alert_stage()/_tag_alert_stage()/
+    process_sweep() no contienen "session_actual" ni "get_meta(" -- la
+    sesión que usan es exclusivamente el parámetro `session` recibido en
+    cada llamada, nunca releída de la base de datos."""
+    import inspect
+
+    from atlas_live.radar import alert_stage as als
+
+    for fn in (als.classify_alert_stage, tracker._tag_alert_stage, tracker.process_sweep):
+        src = inspect.getsource(fn)
+        assert "session_actual" not in src, f"{fn.__name__} no debe contener 'session_actual'"
+        assert "get_meta(" not in src, f"{fn.__name__} no debe contener 'get_meta('"
+
+
 def test_caso_real_ken_precio_mid_bid_ask_no_confunde_direction_con_alcista():
     """2026-08-19, caso real de producción: KEN detectada con precio del
     punto medio bid/ask (`price_basis="tradier_bid_ask_mid"`), casi sin

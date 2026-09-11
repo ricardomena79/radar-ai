@@ -211,6 +211,7 @@ def _tag_alert_stage(
         retroceso_desde_maximo_pct=retroceso_desde_maximo_pct,
         premarket_volume_acceleration=pm_acceleration_valor,
         premarket_volume_percentile=pm_percentile_valor,
+        session=session,
     )
     if stage is None:
         return

@@ -279,14 +279,15 @@ def test_pmrvol_no_se_usa_si_legacy_esta_disponible_dias_volumen_elevado():
 def test_pmrvol_valido_con_legacy_none_avanza_a_alerta_temprana_caso_atec():
     """Caso real ATEC (2026-09-11): relative_volume_hoy/dias_volumen_elevado
     en None (RVOL de sesión completa inviable en premarket temprano),
-    premarket_volume_acceleration=14.3778 VALID. Sin el fallback esto daría
+    premarket_volume_acceleration=14.3778 VALID (>= VOLUME_ELEVATED_THRESHOLD),
+    session="premarket" (sesión real del sweep). Sin el fallback esto daría
     PREPARACION solo si volatilidad>=10 (ATEC real: volatility=4.713, ni
     siquiera llega a PREPARACION -> None). Con el fallback debe dar
     ALERTA_TEMPRANA."""
     assert als.classify_alert_stage(
         relative_volume_hoy=None, dias_volumen_elevado=None, aceleracion_volumen=None,
         volatility_14d_pct=4.713, timing_deteccion_hoy="antes_del_movimiento",
-        premarket_volume_acceleration=14.3778,
+        premarket_volume_acceleration=14.3778, session="premarket",
     ) == "ALERTA_TEMPRANA"
 
 
@@ -320,12 +321,12 @@ def test_pmrvol_percentile_acompana_aceleracion_sin_cambiar_el_resultado():
     solo_aceleracion = als.classify_alert_stage(
         relative_volume_hoy=None, dias_volumen_elevado=None, aceleracion_volumen=None,
         volatility_14d_pct=None, timing_deteccion_hoy="antes_del_movimiento",
-        premarket_volume_acceleration=14.3778,
+        premarket_volume_acceleration=14.3778, session="premarket",
     )
     con_percentile_tambien = als.classify_alert_stage(
         relative_volume_hoy=None, dias_volumen_elevado=None, aceleracion_volumen=None,
         volatility_14d_pct=None, timing_deteccion_hoy="antes_del_movimiento",
-        premarket_volume_acceleration=14.3778, premarket_volume_percentile=88.84,
+        premarket_volume_acceleration=14.3778, premarket_volume_percentile=88.84, session="premarket",
     )
     assert solo_aceleracion == con_percentile_tambien == "ALERTA_TEMPRANA"
 
@@ -337,7 +338,7 @@ def test_pmrvol_bajista_con_legacy_none_da_flujo_vendedor():
     assert als.classify_alert_stage(
         relative_volume_hoy=None, dias_volumen_elevado=None, aceleracion_volumen=None,
         volatility_14d_pct=None, timing_deteccion_hoy="antes_del_movimiento",
-        premarket_volume_acceleration=14.3778, direction="BAJISTA",
+        premarket_volume_acceleration=14.3778, direction="BAJISTA", session="premarket",
     ) == "FLUJO_VENDEDOR"
 
 
@@ -361,7 +362,7 @@ def test_pmrvol_nunca_sustituye_persistencia_de_alerta_fuerte():
     assert als.classify_alert_stage(
         relative_volume_hoy=None, dias_volumen_elevado=None, aceleracion_volumen=5.0,
         volatility_14d_pct=50.0, timing_deteccion_hoy="antes_del_movimiento",
-        premarket_volume_acceleration=14.3778,
+        premarket_volume_acceleration=14.3778, session="premarket",
     ) == "ALERTA_TEMPRANA"
 
 
@@ -389,6 +390,109 @@ def test_pmrvol_parametros_por_defecto_no_rompen_llamadas_existentes():
         premarket_volume_acceleration=None, premarket_volume_percentile=None,
     )
     assert sin_kwargs_nuevos == con_none_explicito == "ALERTA_FUERTE"
+
+
+# --- Corrección PM-RVOL en premarket (2026-09-11, casos A-G autorizados) ---
+
+def test_pmrvol_bajo_el_piso_no_avanza_caso_real_pbr():
+    """Caso A -- caso real PBR (2026-09-11, snapshot de producción):
+    relative_volume_hoy no es None pero está por debajo del piso de
+    informatividad en premarket (0.04 < CHANGE_PCT_MIN_RVOL_TO_TRUST_ZERO),
+    y premarket_volume_acceleration=0.1044 es un cociente VALID pero por
+    debajo de VOLUME_ELEVATED_THRESHOLD (2.0) -- de hecho indica
+    DESACELERACIÓN (la ventana reciente negoció solo el 10% del ritmo de
+    la anterior), no aceleración. NO debe avanzar a ALERTA_TEMPRANA."""
+    assert als.classify_alert_stage(
+        relative_volume_hoy=0.04, dias_volumen_elevado=None, aceleracion_volumen=None,
+        volatility_14d_pct=None, timing_deteccion_hoy="antes_del_movimiento",
+        premarket_volume_acceleration=0.1044, session="premarket",
+    ) is None
+
+
+def test_pmrvol_supera_el_piso_avanza_caso_real_labd():
+    """Caso B -- caso real LABD (2026-09-11, snapshot de producción): mismo
+    patrón que PBR (RVOL legacy no informativo, <0.05), pero
+    premarket_volume_acceleration=3.5759 SÍ cruza VOLUME_ELEVATED_THRESHOLD
+    (2.0) -- aceleración genuina. Debe avanzar a ALERTA_TEMPRANA."""
+    assert als.classify_alert_stage(
+        relative_volume_hoy=0.04, dias_volumen_elevado=None, aceleracion_volumen=None,
+        volatility_14d_pct=None, timing_deteccion_hoy="antes_del_movimiento",
+        premarket_volume_acceleration=3.5759, session="premarket",
+    ) == "ALERTA_TEMPRANA"
+
+
+def test_pmrvol_legacy_no_informativo_con_pm_accel_en_el_piso_avanza():
+    """Caso C -- relative_volume_hoy=0.04 (< 0.05, no informativo en
+    premarket) + premarket_volume_acceleration=2.0 (exactamente en el piso,
+    inclusivo) -> avanza a ALERTA_TEMPRANA."""
+    assert als.classify_alert_stage(
+        relative_volume_hoy=0.04, dias_volumen_elevado=None, aceleracion_volumen=None,
+        volatility_14d_pct=None, timing_deteccion_hoy="antes_del_movimiento",
+        premarket_volume_acceleration=2.0, session="premarket",
+    ) == "ALERTA_TEMPRANA"
+
+
+def test_pmrvol_fuera_de_premarket_preserva_comportamiento_previo():
+    """Caso D -- mismo relative_volume_hoy=0.04 y premarket_volume_acceleration
+    por encima del piso, pero session="regular": el piso de informatividad
+    de RVOL (0.05) NUNCA se aplica fuera de premarket, y el fallback
+    PM-RVOL tampoco puede activarse -- comportamiento IDÉNTICO con o sin
+    PM-RVOL presente."""
+    con_pm = als.classify_alert_stage(
+        relative_volume_hoy=0.04, dias_volumen_elevado=None, aceleracion_volumen=None,
+        volatility_14d_pct=None, timing_deteccion_hoy="antes_del_movimiento",
+        premarket_volume_acceleration=5.0, session="regular",
+    )
+    sin_pm = als.classify_alert_stage(
+        relative_volume_hoy=0.04, dias_volumen_elevado=None, aceleracion_volumen=None,
+        volatility_14d_pct=None, timing_deteccion_hoy="antes_del_movimiento",
+        session="regular",
+    )
+    assert con_pm == sin_pm is None
+
+
+def test_pmrvol_no_sustituye_legacy_informativo_aunque_pm_accel_alto():
+    """Caso E -- relative_volume_hoy=1.0 (informativo, aunque no cruce el
+    piso "elevado" de 2.0) + premarket + premarket_volume_acceleration=5.0
+    (muy por encima del piso) -- el fallback NO debe activarse: el legacy
+    SÍ trae dato real (>= 0.05), y el fallback nunca compite con datos
+    legacy reales. Resultado idéntico con y sin PM-RVOL."""
+    sin_pm = als.classify_alert_stage(
+        relative_volume_hoy=1.0, dias_volumen_elevado=None, aceleracion_volumen=None,
+        volatility_14d_pct=None, timing_deteccion_hoy="antes_del_movimiento",
+        session="premarket",
+    )
+    con_pm = als.classify_alert_stage(
+        relative_volume_hoy=1.0, dias_volumen_elevado=None, aceleracion_volumen=None,
+        volatility_14d_pct=None, timing_deteccion_hoy="antes_del_movimiento",
+        premarket_volume_acceleration=5.0, session="premarket",
+    )
+    assert sin_pm == con_pm is None
+
+
+def test_pmrvol_bloqueado_por_dias_volumen_elevado_presente():
+    """Caso F -- dias_volumen_elevado=0 (dato presente, no None) +
+    relative_volume_hoy no informativo (0.04, premarket) +
+    premarket_volume_acceleration=5.0 (>= piso) -- el fallback sigue
+    bloqueado porque ya hay una señal legacy real (días), aunque no esté
+    elevada."""
+    assert als.classify_alert_stage(
+        relative_volume_hoy=0.04, dias_volumen_elevado=0, aceleracion_volumen=None,
+        volatility_14d_pct=None, timing_deteccion_hoy="antes_del_movimiento",
+        premarket_volume_acceleration=5.0, session="premarket",
+    ) is None
+
+
+def test_pmrvol_percentile_alto_pero_aceleracion_baja_no_dispara():
+    """Caso G -- premarket_volume_percentile alto (98.4, caso real UVXY)
+    pero premarket_volume_acceleration por debajo del piso (1.968, caso
+    real UVXY -- justo debajo de 2.0) -- el percentil nunca decide solo, y
+    la aceleración no alcanza el piso: no debe disparar."""
+    assert als.classify_alert_stage(
+        relative_volume_hoy=None, dias_volumen_elevado=None, aceleracion_volumen=None,
+        volatility_14d_pct=None, timing_deteccion_hoy="antes_del_movimiento",
+        premarket_volume_acceleration=1.968, premarket_volume_percentile=98.4, session="premarket",
+    ) is None
 
 
 if __name__ == "__main__":
