@@ -15,6 +15,7 @@ Tradier del día completo, tomando solo las velas POSTERIORES a
 `detected_at` -- separación anti-leakage estricta con la detección misma.
 """
 
+import math
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -42,6 +43,26 @@ BUENA_OPORTUNIDAD_FLOOR_PCT = 20.0
 # para que un símbolo NO-candidata se considere digno de mención -- mismo
 # piso modesto que gate_price_change, no uno más estricto.
 MISSED_OPPORTUNITY_MIN_CHANGE_PCT = 10.0
+
+# Piso de plausibilidad numérica (2026-09-11, blindaje autorizado
+# explícitamente -- auditoría de producción real, 2026-09-11): se
+# encontraron 75 outcomes del día con `max_return_after_detection_pct`
+# entre 1.000% y 28.224.900% (ej. CHEF +28.224.900%), TODOS con
+# `price_basis_at_detection="tradier_bid_only"` y un `price_at_detection`
+# casi-cero (bid degenerado, ej. $0.0004 -- valor idéntico repetido entre
+# decenas de símbolos no relacionados, imposible como precio de mercado
+# real) mientras el precio real posterior rondaba el `ask` ($2-$2.300).
+# Con ese denominador casi-cero, `(max_price-price_at_detection)/
+# price_at_detection` se dispara matemáticamente sin que el movimiento
+# real de la acción haya sido así -- exactamente el caso que este piso
+# debe cortar ANTES de que se cuente como ACIERTO. El valor (1.000%) es
+# el mismo que la propia auditoría usó para identificar el problema, no
+# uno inventado para ajustar nada -- ningún movimiento intradía real de
+# una acción/ETF alcanza ese orden de magnitud (el caso histórico más
+# extremo ya documentado en Atlas, MRNA, llegó a +170,6%). Nunca cambia
+# la definición de "acierto" (`reached_20`, `_categorize()`) -- decide
+# ANTES si el dato de entrada es siquiera evaluable.
+IMPLAUSIBLE_RETURN_CEILING_PCT = 1000.0
 
 
 @dataclass
@@ -111,6 +132,19 @@ def evaluate_candidate_outcome(
         return CandidateOutcome(ticker, change_pct_at_detection, None, None, None, False, False, False,
                                  "sin_datos_posteriores", notes="sin velas o sin precio de detección")
 
+    # Blindaje numérico (2026-09-11, autorizado explícitamente): un precio
+    # de detección <= 0, NaN o infinito nunca es un dato utilizable --
+    # dividir por él más abajo produciría un retorno matemáticamente
+    # indefinido, infinito o silenciosamente NaN, nunca un resultado real.
+    # `not math.isfinite(x)` cubre NaN e Inf explícitamente -- una
+    # comparación directa (`x <= 0`) NUNCA es True para NaN en Python,
+    # así que no alcanza por sí sola. Nunca observado en producción hasta
+    # ahora (siempre > 0 y finito), protección preventiva explícitamente
+    # pedida (Fase 2).
+    if not math.isfinite(price_at_detection) or price_at_detection <= 0:
+        return CandidateOutcome(ticker, change_pct_at_detection, None, None, None, False, False, False,
+                                 "error_evaluacion", notes=f"price_at_detection inválido: {price_at_detection}")
+
     try:
         detected_ts = pd.Timestamp(detected_at)
         if detected_ts.tzinfo is None:
@@ -130,6 +164,26 @@ def evaluate_candidate_outcome(
     max_price = float(posteriores.loc[max_row_idx, "High"])
     max_return_pct = round(100 * (max_price - price_at_detection) / price_at_detection, 3) if price_at_detection else None
     minutes_to_max = round((max_row_idx - detected_ts).total_seconds() / 60.0, 1)
+
+    # Piso de plausibilidad (2026-09-11, ver IMPLAUSIBLE_RETURN_CEILING_PCT
+    # arriba) -- NaN/Inf incluidos explícitamente (`not math.isfinite(...)`):
+    # un `price_at_detection` corrupto (ej. bid degenerado casi-cero) puede
+    # producir un retorno matemáticamente disparado o no-finito sin que el
+    # movimiento real de la acción haya sido así. Se corta ACÁ, antes de
+    # `_categorize()`/`reached_20` -- nunca se deja que un valor así decida
+    # si hubo "acierto". Nunca cambia la definición de acierto en sí.
+    if max_return_pct is not None and (
+        not math.isfinite(max_return_pct) or abs(max_return_pct) >= IMPLAUSIBLE_RETURN_CEILING_PCT
+    ):
+        return CandidateOutcome(
+            ticker, change_pct_at_detection, max_price, max_return_pct, minutes_to_max,
+            False, False, False, "error_evaluacion",
+            notes=(
+                f"max_return_after_detection_pct={max_return_pct} excede el piso de plausibilidad "
+                f"({IMPLAUSIBLE_RETURN_CEILING_PCT}%) o no es finito -- price_at_detection="
+                f"{price_at_detection} probablemente corrupto, outcome no evaluable"
+            ),
+        )
 
     # Retroceso máximo posterior (además del avance) -- necesario para
     # "dirección correcta/incorrecta" del resultado, no solo el avance.
@@ -291,6 +345,17 @@ def run_eod_evaluation(
                 direccion_correcta = (direccion_detectada == outcome.outcome_direction)
 
             confiable, motivos_sospecha = reg.classify_learning_quality(c)
+            # Blindaje de aprendizaje (2026-09-11, autorizado explícitamente):
+            # `classify_learning_quality()` solo mira la DETECCIÓN (liquidez);
+            # un outcome marcado "error_evaluacion" (dato posterior inválido
+            # o implausible, ver `evaluate_candidate_outcome()`) nunca puede
+            # ser confiable para aprendizaje, sin importar qué tan líquida
+            # haya sido la detección -- protege Precisión de Magnitud/LEK de
+            # contaminarse con un resultado numéricamente corrupto.
+            if outcome.category in ("error_evaluacion", "sin_datos_posteriores"):
+                confiable = False
+                if "outcome_invalido" not in motivos_sospecha:
+                    motivos_sospecha = motivos_sospecha + ["outcome_invalido"]
 
             reg.record_outcome(
                 ticker, market_date, outcome.run_up_before_detection_pct, outcome.max_price_after_detection,

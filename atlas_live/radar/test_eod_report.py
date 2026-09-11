@@ -81,6 +81,110 @@ def test_evaluate_outcome_sin_velas_posteriores():
     assert outcome.max_return_after_detection_pct == 0.0
 
 
+# ---------------------------------------------------------------------------
+# Blindaje numérico (2026-09-11, autorizado explícitamente) -- caso real:
+# 75 outcomes del 2026-09-11 con max_return_after_detection_pct entre
+# 1.000% y 28.224.900%, TODOS con price_at_detection casi-cero (bid
+# degenerado, price_basis="tradier_bid_only"). Ver IMPLAUSIBLE_RETURN_CEILING_PCT
+# y el guard de price_at_detection en eod_report.py.
+# ---------------------------------------------------------------------------
+
+def test_evaluate_outcome_precio_deteccion_cero_da_error_evaluacion():
+    """Caso negativo: price_at_detection=0 -- nunca debe intentar dividir
+    por él, nunca 'acierto'."""
+    provider = _FakeTradier({"XYZ": _df([10, 11, 12])})
+    outcome = eod.evaluate_candidate_outcome("XYZ", "2026-08-14T13:32:00Z", 0.0, 3.0, provider)
+    assert outcome.category == "error_evaluacion"
+    assert outcome.reached_20 is False
+    assert outcome.max_return_after_detection_pct is None
+
+
+def test_evaluate_outcome_precio_deteccion_negativo_da_error_evaluacion():
+    provider = _FakeTradier({"XYZ": _df([10, 11, 12])})
+    outcome = eod.evaluate_candidate_outcome("XYZ", "2026-08-14T13:32:00Z", -5.0, 3.0, provider)
+    assert outcome.category == "error_evaluacion"
+    assert outcome.reached_20 is False
+
+
+def test_evaluate_outcome_precio_deteccion_nan_da_error_evaluacion():
+    """`price_at_detection <= 0` por sí solo NUNCA es True para NaN en
+    Python -- confirma que el chequeo explícito de `math.isfinite()` es
+    necesario, no redundante."""
+    provider = _FakeTradier({"XYZ": _df([10, 11, 12])})
+    outcome = eod.evaluate_candidate_outcome("XYZ", "2026-08-14T13:32:00Z", float("nan"), 3.0, provider)
+    assert outcome.category == "error_evaluacion"
+    assert outcome.reached_20 is False
+
+
+def test_evaluate_outcome_precio_deteccion_infinito_da_error_evaluacion():
+    provider = _FakeTradier({"XYZ": _df([10, 11, 12])})
+    outcome = eod.evaluate_candidate_outcome("XYZ", "2026-08-14T13:32:00Z", float("inf"), 3.0, provider)
+    assert outcome.category == "error_evaluacion"
+    assert outcome.reached_20 is False
+
+
+def test_evaluate_outcome_retorno_implausible_caso_real_chef_da_error_evaluacion():
+    """Reconstrucción del caso real CHEF (2026-09-11): price_at_detection
+    casi-cero (bid degenerado, $0.0004) con precio posterior real
+    ($30-112, similar al ask observado en producción) -- el retorno
+    resultante (millones de %) NUNCA debe contar como acierto."""
+    provider = _FakeTradier({"CHEF": _df([112.0, 112.5, 112.9, 111.0, 110.45])})
+    outcome = eod.evaluate_candidate_outcome("CHEF", "2026-08-14T13:32:00Z", 0.0004, -99.9996, provider)
+    assert outcome.category == "error_evaluacion"
+    assert outcome.reached_20 is False
+    assert outcome.reached_50 is False
+    assert outcome.reached_100 is False
+    assert "plausibilidad" in (outcome.notes or "")
+
+
+def test_evaluate_outcome_retorno_justo_en_el_piso_da_error_evaluacion():
+    """1000% exacto (>=) también se corta -- el piso es inclusivo.
+    `detected_at` 30s ANTES de la primera vela para que las 4 velas
+    cuenten como "posteriores" sin ambigüedad de off-by-one (la vela
+    exacta de detección se excluye con `>` estricto, ver docstring del
+    módulo)."""
+    # price_at_detection=10 -> para dar exactamente +1000% necesita max_price=110.
+    provider = _FakeTradier({"XYZ": _df([10, 50, 110, 100])})
+    outcome = eod.evaluate_candidate_outcome("XYZ", "2026-08-14T13:29:30Z", 10.0, 3.0, provider)
+    assert outcome.category == "error_evaluacion"
+
+
+def test_evaluate_outcome_retorno_grande_pero_plausible_sigue_siendo_acierto_real():
+    """Un retorno grande pero por DEBAJO del piso (900%, con un precio de
+    detección normal, no degenerado) sigue contando como acierto real --
+    el guard no debe sobre-bloquear movimientos genuinos solo por ser
+    grandes."""
+    provider = _FakeTradier({"XYZ": _df([10, 60, 99, 95])})  # (99-10)/10 = 890% -> pico real
+    outcome = eod.evaluate_candidate_outcome("XYZ", "2026-08-14T13:29:30Z", 10.0, 3.0, provider)
+    assert outcome.category == "mejor_oportunidad"
+    assert outcome.reached_20 is True
+    assert outcome.max_return_after_detection_pct == 890.0
+
+
+def test_run_eod_evaluation_outcome_implausible_nunca_confiable_para_aprendizaje():
+    """Integración completa: aunque la detección sea líquida
+    (`dollar_volume_at_detection` alto, `classify_learning_quality()`
+    diría confiable=True), un outcome corrupto (error_evaluacion) NUNCA
+    debe quedar `confiable_para_aprendizaje=True` -- protege
+    Precisión de Magnitud/LEK de contaminarse."""
+    _fresh()
+    try:
+        reg.record_detection("CHEF", "2026-09-11", "premarket", "2026-09-11T08:00:47.004623Z", "s1",
+                              0.0004, -99.9996, 0, 500, 0.0001, 500_000.0,
+                              gates_fired=[{"name": "cambio_de_precio"}],
+                              price_basis_at_detection="tradier_bid_only")
+        provider = _FakeTradier({"CHEF": _df([112.0, 112.5, 112.9, 111.0, 110.45], start="2026-09-11T13:30:00Z")})
+        report = eod.run_eod_evaluation("2026-09-11", provider)
+        assert report.n_aciertos == 0  # NUNCA cuenta como acierto
+        outcomes = reg.list_outcomes_for_date("2026-09-11")
+        assert len(outcomes) == 1
+        assert outcomes[0]["category"] == "error_evaluacion"
+        assert outcomes[0]["confiable_para_aprendizaje"] == 0
+        assert "outcome_invalido" in (outcomes[0]["motivos_sospecha"] or [])
+    finally:
+        _restore()
+
+
 def test_run_eod_evaluation_completo_e_idempotente():
     _fresh()
     try:
