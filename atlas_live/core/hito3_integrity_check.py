@@ -132,12 +132,20 @@ def _strip_strings_and_comments(src: str) -> str:
 
 
 def check_apply_recalibration_single_site(
-    search_roots: Optional[List[Path]] = None, expected_count: int = 1,
+    search_roots: Optional[List[Path]] = None, expected_count: int = 0,
 ) -> Dict[str, Any]:
     """`apply_recalibration=True` debe existir EXACTAMENTE `expected_count`
     veces en código de producción ejecutable (excluye archivos `test_*`,
     y excluye docstrings -- se usa AST, no grep, mismo criterio usado en
-    cada auditoría manual de esta sesión)."""
+    cada auditoría manual de esta sesión).
+
+    `expected_count` pasó de 1 a 0 el 2026-09-12 (misión "CONECTAR EL
+    APRENDIZAJE BIDIRECCIONAL A LA DECISIÓN REAL"): el único call site
+    real (Fase 3.5, `server.py`) fue reemplazado deliberadamente por
+    `bidirectional_shadow.resolve_controlled_decision()`, que no invoca
+    ese flag -- `atlas_decision_core.py` no se modificó, sigue
+    implementando el parámetro y sigue cubierto por sus propios tests
+    unitarios, simplemente deja de invocarse desde código de producción."""
     roots = search_roots if search_roots is not None else _DEFAULT_SEARCH_ROOTS
     sitios: List[Dict[str, Any]] = []
     for f in _iter_py_files(roots, exclude_tests=True):

@@ -103,3 +103,49 @@ def compute_bidirectional_decision(
             "eligibility_state=ELEGIBLE (VALIDACION_ROBUSTA, walk-forward-seguro)"
         ),
     }
+
+
+def resolve_controlled_decision(
+    decision_base: str,
+    decision_shadow_downgrade: Optional[str],
+    eligibility_state: Optional[str],
+    learned_evidence: Optional[Dict[str, Any]],
+    activation_state: str,
+) -> Dict[str, Any]:
+    """Punto único que decide qué `decision_controlada` aplica bajo
+    activación real (Hito 3.5 + bidireccional) -- reemplaza, en el único
+    call site real de Fase 3.5 (`server.py`), la llamada previa al flag
+    histórico de recalibración forzada de `atlas_decision_core.decide()`,
+    que solo podía ejercitar el shadow downgrade-only interno y por eso
+    nunca podía reflejar el upgrade `NO_TOCAR`->`VIGILAR` que este módulo
+    ya sabe calcular (misión "CONECTAR EL APRENDIZAJE BIDIRECCIONAL A LA
+    DECISIÓN REAL", 2026-09-12).
+
+    Re-valida `activation_state == "ACTIVADO"` de forma defensiva -- nunca
+    confía ciegamente en que el caller ya filtró, mismo criterio fail-safe
+    usado en todo Hito 3: con cualquier otro valor (`NO_ACTIVO`,
+    `BLOQUEADO`, `REVOCADO`), nunca calcula ni devuelve un cambio, sin
+    importar cuán favorable sea la evidencia.
+
+    Cuando `activation_state == "ACTIVADO"`, delega en
+    `compute_bidirectional_decision()` (sin reimplementar ninguna regla) --
+    cubre tanto el downgrade ya existente (heredado vía
+    `decision_shadow_downgrade`) como el upgrade nuevo."""
+    if activation_state != "ACTIVADO":
+        return {
+            "decision_controlada": None,
+            "cambio_aplicado": False,
+            "motivo": "GATE_NO_ACTIVADO",
+            "upgrade_aplicado": False,
+        }
+
+    resultado = compute_bidirectional_decision(
+        decision_base, decision_shadow_downgrade, eligibility_state, learned_evidence,
+    )
+    decision_controlada = resultado["decision_informada"]
+    return {
+        "decision_controlada": decision_controlada,
+        "cambio_aplicado": decision_controlada != decision_base,
+        "motivo": resultado["motivo"],
+        "upgrade_aplicado": resultado["upgrade_aplicado"],
+    }

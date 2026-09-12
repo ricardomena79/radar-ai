@@ -20,10 +20,14 @@ def _tmp_file(content: str) -> Path:
 # --- 1) contra el repo real -- deben pasar HOY ------------------------------
 
 def test_apply_recalibration_single_site_repo_real():
+    # expected_count pasó de 1 a 0 el 2026-09-12 (misión "CONECTAR EL
+    # APRENDIZAJE BIDIRECCIONAL A LA DECISIÓN REAL") -- el único call site
+    # real (Fase 3.5, server.py) fue reemplazado deliberadamente por
+    # bidirectional_shadow.resolve_controlled_decision().
     r = hic.check_apply_recalibration_single_site()
     assert r["ok"] is True, r
-    assert r["n_encontrados"] == 1
-    assert r["sitios"][0]["file"].replace("\\", "/").endswith("atlas_live/server.py")
+    assert r["n_encontrados"] == 0
+    assert r["sitios"] == []
 
 
 def test_no_auto_unrevoke_repo_real():

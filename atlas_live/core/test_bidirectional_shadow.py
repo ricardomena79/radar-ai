@@ -59,8 +59,21 @@ def test_5_preparacion_no_recibe_upgrade():
     assert "PREPARACION" not in bidi.UPGRADE_ONE_TIER
 
 
-# 6) apply_recalibration ausente del módulo (estructural).
+# 6) apply_recalibration ausente de compute_bidirectional_decision() (estructural).
+# `resolve_controlled_decision()` SÍ acepta `activation_state` como dato de
+# entrada por diseño (ver tests dedicados más abajo) -- por eso este check
+# se escopea a la función pura original, que sigue siendo 100% independiente.
 def test_6_estructural_sin_apply_recalibration_ni_mechanism_state():
+    src = inspect.getsource(bidi.compute_bidirectional_decision)
+    for prohibido in ("apply_recalibration", "mechanism_state", "ON_CONTROLADO", "activation_registry"):
+        assert prohibido not in src, f"referencia prohibida encontrada: {prohibido}"
+
+
+# 6b) Ninguna de las 4 cadenas prohibidas aparece en TODO el módulo, ni
+# siquiera en resolve_controlled_decision() -- solo "activation_state" (el
+# nombre del parámetro, dato de entrada) está permitido, nunca el mecanismo
+# en sí (mismo grep-test que toda la sesión, aplicado a todo el archivo).
+def test_6b_estructural_modulo_completo_sin_mecanismo_de_activacion():
     src = inspect.getsource(bidi)
     for prohibido in ("apply_recalibration", "mechanism_state", "ON_CONTROLADO", "activation_registry"):
         assert prohibido not in src, f"referencia prohibida encontrada: {prohibido}"
@@ -83,6 +96,20 @@ def test_8_estructural_nunca_reevalua_fecha_ni_walk_forward():
     src = inspect.getsource(bidi)
     for prohibido in ("datetime.now(", "date.today(", "computed_as_of", "market_date"):
         assert prohibido not in src, f"referencia prohibida encontrada: {prohibido}"
+
+
+# 8b) resolve_controlled_decision() no importa activation_registry ni lee
+# mechanism_state por sí mismo -- solo recibe activation_state como dato ya
+# calculado por el caller (server.py), nunca lo deriva ni lo consulta.
+def test_8b_resolve_controlled_decision_no_importa_activation_registry():
+    src = inspect.getsource(bidi.resolve_controlled_decision)
+    for prohibido in ("import activation_registry", "areg.", "get_mechanism_state", "activation_registry"):
+        assert prohibido not in src, f"referencia prohibida encontrada: {prohibido}"
+    sig = inspect.signature(bidi.resolve_controlled_decision)
+    assert list(sig.parameters) == [
+        "decision_base", "decision_shadow_downgrade", "eligibility_state",
+        "learned_evidence", "activation_state",
+    ]
 
 
 # 9) mismo caso produce A y B apareados -- el dict siempre trae ambos lados
@@ -108,11 +135,13 @@ def test_11_eligibility_state_none_sin_upgrade():
     assert r["upgrade_aplicado"] is False
 
 
-# 12) mecanismo OFF / irrelevante -- el módulo no importa activation_registry
-# en absoluto (ya cubierto en el test 6, se re-afirma explícitamente acá).
+# 12) mecanismo OFF / irrelevante para compute_bidirectional_decision() --
+# esa función pura no depende del mecanismo de activación en absoluto
+# (resolve_controlled_decision() sí acepta el veredicto del gate como dato
+# de entrada, por diseño -- ver tests 8b y los de la sección siguiente).
 def test_12_no_depende_del_mecanismo_de_activacion():
     assert not hasattr(bidi, "get_mechanism_state")
-    assert "activation" not in inspect.getsource(bidi).lower()
+    assert "activation" not in inspect.getsource(bidi.compute_bidirectional_decision).lower()
 
 
 # 13) conocimiento negativo o sin ventaja -> no upgrade (incluye igualdad exacta).
@@ -151,3 +180,87 @@ def test_14_evidencia_desfavorable_nunca_eleva_y_downgrade_upgrade_son_excluyent
 
 def test_upgrade_one_tier_es_exactamente_no_tocar_a_vigilar():
     assert bidi.UPGRADE_ONE_TIER == {"NO_TOCAR": "VIGILAR"}
+
+
+# ---------------------------------------------------------------------------
+# resolve_controlled_decision() -- misión "CONECTAR EL APRENDIZAJE
+# BIDIRECCIONAL A LA DECISIÓN REAL" (2026-09-12). Reemplaza, en el único call
+# site real de Fase 3.5, la llamada al flag histórico de recalibración
+# forzada -- estos tests ejercitan la función real que server.py invoca.
+# ---------------------------------------------------------------------------
+
+# R1) Gate no ACTIVADO (NO_ACTIVO/BLOQUEADO/REVOCADO) -> nunca cambia nada,
+# incluso con evidencia perfectamente elegible y favorable para upgrade.
+def test_r1_gate_no_activado_nunca_cambia_nada_pese_a_evidencia_perfecta():
+    for estado_gate in ("NO_ACTIVO", "BLOQUEADO", "REVOCADO"):
+        r = bidi.resolve_controlled_decision(
+            decision_base="NO_TOCAR", decision_shadow_downgrade="NO_TOCAR",
+            eligibility_state="ELEGIBLE", learned_evidence=_le(5.0, 0.94),
+            activation_state=estado_gate,
+        )
+        assert r["decision_controlada"] is None
+        assert r["cambio_aplicado"] is False
+        assert r["upgrade_aplicado"] is False
+
+
+# R2) ACTIVADO + NO_TOCAR + ELEGIBLE + evidencia favorable -> upgrade real a VIGILAR.
+def test_r2_activado_no_tocar_elegible_favorable_produce_upgrade_real():
+    r = bidi.resolve_controlled_decision(
+        decision_base="NO_TOCAR", decision_shadow_downgrade="NO_TOCAR",
+        eligibility_state="ELEGIBLE", learned_evidence=_le(5.0, 0.94),
+        activation_state="ACTIVADO",
+    )
+    assert r["decision_controlada"] == "VIGILAR"
+    assert r["cambio_aplicado"] is True
+    assert r["upgrade_aplicado"] is True
+
+
+# R3) ACTIVADO + base degradable con evidencia robusta desfavorable -> el
+# downgrade-only preexistente se preserva exactamente igual bajo el nuevo mecanismo.
+def test_r3_activado_preserva_downgrade_existente():
+    for decision_base, decision_shadow_downgrade in [
+        ("OPORTUNIDAD_PRIORITARIA", "VIGILAR"), ("VIGILAR", "PREPARACION"),
+    ]:
+        r = bidi.resolve_controlled_decision(
+            decision_base=decision_base, decision_shadow_downgrade=decision_shadow_downgrade,
+            eligibility_state="ELEGIBLE", learned_evidence=_le(0.1, 0.94),
+            activation_state="ACTIVADO",
+        )
+        assert r["decision_controlada"] == decision_shadow_downgrade
+        assert r["cambio_aplicado"] is True
+        assert r["upgrade_aplicado"] is False
+
+
+# R4) ACTIVADO pero eligibilidad NO_ELEGIBLE/INSUFICIENTE/None -> sin cambio.
+def test_r4_activado_sin_elegibilidad_suficiente_no_cambia():
+    for estado in ("NO_ELEGIBLE", "INSUFICIENTE", None):
+        r = bidi.resolve_controlled_decision(
+            decision_base="NO_TOCAR", decision_shadow_downgrade="NO_TOCAR",
+            eligibility_state=estado, learned_evidence=_le(5.0, 0.94),
+            activation_state="ACTIVADO",
+        )
+        assert r["decision_controlada"] == "NO_TOCAR"
+        assert r["cambio_aplicado"] is False
+
+
+# R5) ACTIVADO + PREPARACION como base -> nunca recibe upgrade, cualquiera
+# sea la evidencia (PREPARACION no es clave de UPGRADE_ONE_TIER ni de la
+# tabla downgrade-only interna de atlas_decision_core).
+def test_r5_activado_preparacion_nunca_cambia():
+    r = bidi.resolve_controlled_decision(
+        decision_base="PREPARACION", decision_shadow_downgrade="PREPARACION",
+        eligibility_state="ELEGIBLE", learned_evidence=_le(5.0, 0.94),
+        activation_state="ACTIVADO",
+    )
+    assert r["decision_controlada"] == "PREPARACION"
+    assert r["cambio_aplicado"] is False
+
+
+# R6) determinismo -- misma entrada, mismo resultado.
+def test_r6_determinismo():
+    kwargs = dict(
+        decision_base="NO_TOCAR", decision_shadow_downgrade="NO_TOCAR",
+        eligibility_state="ELEGIBLE", learned_evidence=_le(5.0, 0.94),
+        activation_state="ACTIVADO",
+    )
+    assert bidi.resolve_controlled_decision(**kwargs) == bidi.resolve_controlled_decision(**kwargs)

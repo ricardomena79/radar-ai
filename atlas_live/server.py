@@ -1380,23 +1380,31 @@ def _api_radar_oportunidades_impl():
             pass
 
         # Hito 3, Fase 3.5 (2026-09-03, autorizado explícitamente en Plan
-        # Mode, decisión funcional confirmada por el usuario): activación
-        # controlada -- ÚNICO punto de todo el repo donde
-        # `apply_recalibration=True` se pasa de verdad a `adc.decide()`,
-        # y SOLO dentro del `if gate["activation_state"] == "ACTIVADO":`
-        # de abajo. Corte inmediato si el mecanismo no está
-        # `ON_CONTROLADO` (el default es `"OFF"`, fail-safe absoluto --
-        # ver `activation_registry.get_mechanism_state()`): cero cómputo,
-        # cero escritura mientras esté apagado. `decision_controlada`
-        # (el resultado de esa tercera llamada) NUNCA se asigna a
-        # `o[...]` -- no participa de la respuesta HTTP real, no influye
-        # `o["estado_final"]` (ya fijado arriba) ni `o["decision_shadow"]`
-        # (Fase 3.4, tampoco tocado acá). Reutiliza `veredicto_3_3` ya
-        # consultado arriba para el bloque de 3.4 -- mismo veredicto real
-        # de Fase 3.3, nunca recalculado. Protegido con su propio
-        # try/except: cualquier error -- incluida la propia llamada con
-        # `apply_recalibration=True` -- termina en nada activado, nada
-        # persistido (fail-safe explícito, pedido por el usuario).
+        # Mode) -- reconectada 2026-09-12 (misión "CONECTAR EL APRENDIZAJE
+        # BIDIRECCIONAL A LA DECISIÓN REAL", decisión funcional confirmada
+        # por el usuario): activación controlada. Corte inmediato si el
+        # mecanismo no está `ON_CONTROLADO` (el default es `"OFF"`,
+        # fail-safe absoluto -- ver `activation_registry.get_mechanism_state()`):
+        # cero cómputo, cero escritura mientras esté apagado.
+        # `o["estado_final"]` SOLO se sobreescribe cuando el gate llega a
+        # ACTIVADO Y `bidi.resolve_controlled_decision()` produce un
+        # cambio real -- ver esa función para el criterio exacto (misión
+        # "CONECTAR EL APRENDIZAJE BIDIRECCIONAL A LA DECISIÓN REAL",
+        # 2026-09-12). Ya NO se llama a
+        # `atlas_decision_core.decide(..., apply_recalibration=True)` acá
+        # -- esa llamada solo podía ejercitar el shadow downgrade-only
+        # interno, nunca el upgrade NO_TOCAR->VIGILAR que
+        # `bidirectional_shadow.py` ya sabe calcular (evidencia: misión
+        # anterior, `test_8_limite_honesto_...`). Consecuencia declarada
+        # explícitamente: `apply_recalibration=True` deja de invocarse en
+        # código de producción -- `atlas_decision_core.py` no se modifica,
+        # sigue intacto y sigue cubierto por sus propios tests unitarios.
+        # Reutiliza `veredicto_3_3`/`shadow_decision.decision_shadow` ya
+        # calculados arriba -- mismo veredicto real de Fase 3.3, mismo
+        # shadow downgrade-only de Fase 3.4, nunca recalculados. Protegido
+        # con su propio try/except: cualquier error termina en nada
+        # activado, nada persistido, `o["estado_final"]` sin tocar
+        # (fail-safe explícito, pedido por el usuario).
         try:
             mechanism_state = areg.get_mechanism_state()
             if mechanism_state == "ON_CONTROLADO":
@@ -1410,13 +1418,18 @@ def _api_radar_oportunidades_impl():
                     computed_as_of=(o["learned_evidence"] or {}).get("computed_as_of"),
                     market_date=market_date,
                 )
-                decision_controlada = None
-                if gate["activation_state"] == "ACTIVADO":
-                    controlada = adc.decide(
-                        candidate_snapshot, features, scores, evidence,
-                        learned_evidence=o["learned_evidence"], apply_recalibration=True,
-                    )
-                    decision_controlada = controlada.decision
+                resolucion = bidi.resolve_controlled_decision(
+                    decision_base=atlas_decision.decision,
+                    decision_shadow_downgrade=shadow_decision.decision_shadow,
+                    eligibility_state=eligibility_state_35,
+                    learned_evidence=o["learned_evidence"],
+                    activation_state=gate["activation_state"],
+                )
+                decision_controlada = resolucion["decision_controlada"]
+                if resolucion["cambio_aplicado"]:
+                    o["estado_final"] = decision_controlada
+                    o["motivo_estado_final"] = f"{atlas_decision.reason} | ACTIVACION_CONTROLADA: {resolucion['motivo']}"
+                    o["activacion_controlada_aplicada"] = True
                 areg.record_activation_state(
                     ticker=o["ticker"], market_date=market_date,
                     decision_timestamp=atlas_decision.decision_timestamp.isoformat(),
@@ -2077,9 +2090,9 @@ def api_admin_shadow_observation_report():
 @app.route("/api/admin/activation-mechanism-state", methods=["GET", "POST"])
 def api_admin_activation_mechanism_state():
     """Hito 3, Fase 3.5 -- interruptor maestro de activación controlada
-    (2026-09-03, autorizado explícitamente en Plan Mode, decisión
-    funcional confirmada por el usuario: ejercer `apply_recalibration=True`
-    de forma real y aislada). `GET` lee el estado actual (`"OFF"` por
+    (2026-09-03, autorizado explícitamente en Plan Mode; reconectado
+    2026-09-12 a `bidirectional_shadow.resolve_controlled_decision()` --
+    ver esa fase para el detalle). `GET` lee el estado actual (`"OFF"` por
     defecto, fail-safe absoluto -- ver
     `activation_registry.get_mechanism_state()`) + historial completo.
     `POST ?state=ON_CONTROLADO&reason=...` es el ÚNICO punto que puede

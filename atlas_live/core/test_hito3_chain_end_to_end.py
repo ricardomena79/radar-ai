@@ -579,21 +579,20 @@ def test_7_cadena_real_con_condicion_v2_etiquetada_por_alert_stage():
         _restore()
 
 
-def test_8_limite_honesto_el_camino_real_de_activacion_no_puede_producir_upgrades_todavia():
-    """HALLAZGO de esta misión, demostrado con código real, no solo
-    afirmado: el ÚNICO call site real de `apply_recalibration=True`
-    (Fase 3.5, `server.py`) pasa por `atlas_decision_core.decide()`, cuyo
-    `_compute_shadow_decision()` interno es DOWNGRADE-ONLY
-    (`_SHADOW_DOWNGRADE_ONE_TIER` nunca tiene `NO_TOCAR` como clave) --
-    nunca fue conectado al `bidirectional_shadow.compute_bidirectional_decision()`
-    (que SÍ puede proponer `NO_TOCAR`->`VIGILAR`). Este test prueba que,
-    incluso con evidencia ELEGIBLE y favorable para un upgrade real, el
-    camino de activación REAL de hoy NO cambia una decisión `NO_TOCAR` --
-    confirmando el límite exacto, no solo documentándolo. Conectar
-    `apply_recalibration=True` a la decisión bidireccional sería un
-    cambio funcional real a un mecanismo protegido (Fase 3.5) -- fuera de
-    alcance de esta misión, señalado explícitamente para una autorización
-    separada."""
+def test_8_camino_real_de_activacion_ahora_produce_upgrades_reales():
+    """Misión "CONECTAR EL APRENDIZAJE BIDIRECCIONAL A LA DECISIÓN REAL"
+    (2026-09-12): reemplaza al anterior `test_8_limite_honesto_...`, que
+    documentaba (con código real) que el único call site de activación
+    NUNCA podía producir un upgrade `NO_TOCAR`->`VIGILAR` -- porque pasaba
+    por el shadow downgrade-only interno de `atlas_decision_core.decide()`.
+    Ese límite quedó resuelto: `server.py` ya no invoca el flag histórico
+    de recalibración forzada en Fase 3.5 -- usa directamente
+    `bidirectional_shadow.resolve_controlled_decision()`. Este test
+    ejercita la MISMA cadena real (`ag.classify_activation()` real, sin
+    mock, seguido de `bidi.resolve_controlled_decision()` real, sin mock)
+    y confirma que, bajo `ON_CONTROLADO` + evidencia `ELEGIBLE` y
+    favorable, el upgrade SÍ se produce -- la decisión que `server.py`
+    asignaría a `o["estado_final"]` cambia de verdad."""
     _fresh()
     try:
         candidate = adc.CandidateSnapshot(ticker=_TICKER, market_date=_MARKET_DATE, tiene_precio_actual=True)
@@ -603,7 +602,7 @@ def test_8_limite_honesto_el_camino_real_de_activacion_no_puede_producir_upgrade
 
         # Evidencia ELEGIBLE y FAVORABLE para un upgrade real
         # (wilson_lower_bound > baseline) -- exactamente lo que
-        # `bidirectional_shadow.compute_bidirectional_decision()` necesita
+        # `bidirectional_shadow.resolve_controlled_decision()` necesita
         # para proponer NO_TOCAR -> VIGILAR.
         le = _learned_evidence(wilson_upper=60.0, baseline=10.0)  # lower = 50.0 > baseline = 10.0
         eligibilidad = ke.classify_eligibility(le, _MARKET_DATE)
@@ -612,27 +611,104 @@ def test_8_limite_honesto_el_camino_real_de_activacion_no_puede_producir_upgrade
         from atlas_live.core import bidirectional_shadow as bidi
 
         shadow_downgrade = adc.decide(candidate, features, learned_evidence=le)
-        resultado_bidi = bidi.compute_bidirectional_decision(
-            decision_base=baseline.decision,
-            decision_shadow_downgrade=shadow_downgrade.decision_shadow,
-            eligibility_state=eligibilidad["eligibility_state"],
-            learned_evidence=le,
-        )
-        # El mecanismo bidireccional SÍ propondría un upgrade real.
-        assert resultado_bidi["decision_informada"] == "VIGILAR"
-        assert resultado_bidi["upgrade_aplicado"] is True
 
-        # Pero el ÚNICO camino real de activación (apply_recalibration=True
-        # vía atlas_decision_core.decide()) NUNCA lo aplica -- incluso con
-        # el mecanismo encendido y el gate real dando ACTIVADO.
-        areg.set_mechanism_state("ON_CONTROLADO", "test límite honesto")
+        areg.set_mechanism_state("ON_CONTROLADO", "test camino real conectado")
         gate = ag.classify_activation(
             mechanism_state="ON_CONTROLADO", eligibility_state=eligibilidad["eligibility_state"],
             is_revoked=False, computed_as_of=le["computed_as_of"], market_date=_MARKET_DATE,
         )
         assert gate["activation_state"] == "ACTIVADO"
-        controlada = adc.decide(candidate, features, learned_evidence=le, apply_recalibration=True)
-        assert controlada.decision == "NO_TOCAR"  # NUNCA cambia a VIGILAR por este camino, hoy
-        assert controlada.decision != resultado_bidi["decision_informada"]
+
+        resolucion = bidi.resolve_controlled_decision(
+            decision_base=baseline.decision,
+            decision_shadow_downgrade=shadow_downgrade.decision_shadow,
+            eligibility_state=eligibilidad["eligibility_state"],
+            learned_evidence=le,
+            activation_state=gate["activation_state"],
+        )
+        # El camino real ahora SÍ produce el upgrade -- lo que server.py
+        # asignaría a o["estado_final"] cambia de verdad.
+        assert resolucion["decision_controlada"] == "VIGILAR"
+        assert resolucion["cambio_aplicado"] is True
+        assert resolucion["upgrade_aplicado"] is True
+    finally:
+        _restore()
+
+
+def test_9_mecanismo_apagado_nunca_cambia_nada():
+    """Regresión explícita: el mismo escenario de evidencia perfecta del
+    test 8, pero con `mechanism_state="OFF"` (el valor real de
+    producción hoy) -- confirma que el estado por defecto sigue sin
+    verse afectado por la reconexión de Fase 3.5."""
+    _fresh()
+    try:
+        candidate = adc.CandidateSnapshot(ticker=_TICKER, market_date=_MARKET_DATE, tiene_precio_actual=True)
+        features = adc.DecisionFeatures(stage="NO_PERSEGUIR", direction=_DIRECTION, change_pct_confiable=True)
+        baseline = adc.decide(candidate, features)
+        le = _learned_evidence(wilson_upper=60.0, baseline=10.0)
+        eligibilidad = ke.classify_eligibility(le, _MARKET_DATE)
+        assert eligibilidad["eligibility_state"] == "ELEGIBLE"
+
+        from atlas_live.core import bidirectional_shadow as bidi
+
+        shadow_downgrade = adc.decide(candidate, features, learned_evidence=le)
+
+        assert areg.get_mechanism_state() == "OFF"  # default real, nunca tocado por este test
+        gate = ag.classify_activation(
+            mechanism_state=areg.get_mechanism_state(), eligibility_state=eligibilidad["eligibility_state"],
+            is_revoked=False, computed_as_of=le["computed_as_of"], market_date=_MARKET_DATE,
+        )
+        assert gate["activation_state"] == "NO_ACTIVO"
+
+        resolucion = bidi.resolve_controlled_decision(
+            decision_base=baseline.decision,
+            decision_shadow_downgrade=shadow_downgrade.decision_shadow,
+            eligibility_state=eligibilidad["eligibility_state"],
+            learned_evidence=le,
+            activation_state=gate["activation_state"],
+        )
+        assert resolucion["decision_controlada"] is None
+        assert resolucion["cambio_aplicado"] is False
+    finally:
+        _restore()
+
+
+def test_10_downgrade_existente_se_preserva_bajo_el_nuevo_mecanismo():
+    """Confirma que quitar la llamada al flag histórico de recalibración
+    forzada de Fase 3.5 no perdió el comportamiento downgrade-only ya
+    validado -- reconstruye el caso `OPORTUNIDAD_PRIORITARIA`->`VIGILAR`
+    con evidencia robusta desfavorable, vía la cadena real."""
+    _fresh()
+    try:
+        candidate, features = _baseline_candidate()  # OPORTUNIDAD_PRIORITARIA
+        baseline = adc.decide(candidate, features)
+        assert baseline.decision == "OPORTUNIDAD_PRIORITARIA"
+
+        le = _learned_evidence(wilson_upper=5.0, baseline=35.0)  # desfavorable: upper < baseline
+        eligibilidad = ke.classify_eligibility(le, _MARKET_DATE)
+        assert eligibilidad["eligibility_state"] == "ELEGIBLE"
+
+        from atlas_live.core import bidirectional_shadow as bidi
+
+        shadow_downgrade = adc.decide(candidate, features, learned_evidence=le)
+        assert shadow_downgrade.decision_shadow == "VIGILAR"  # downgrade interno de 1 escalón
+
+        areg.set_mechanism_state("ON_CONTROLADO", "test regresión downgrade")
+        gate = ag.classify_activation(
+            mechanism_state="ON_CONTROLADO", eligibility_state=eligibilidad["eligibility_state"],
+            is_revoked=False, computed_as_of=le["computed_as_of"], market_date=_MARKET_DATE,
+        )
+        assert gate["activation_state"] == "ACTIVADO"
+
+        resolucion = bidi.resolve_controlled_decision(
+            decision_base=baseline.decision,
+            decision_shadow_downgrade=shadow_downgrade.decision_shadow,
+            eligibility_state=eligibilidad["eligibility_state"],
+            learned_evidence=le,
+            activation_state=gate["activation_state"],
+        )
+        assert resolucion["decision_controlada"] == "VIGILAR"
+        assert resolucion["cambio_aplicado"] is True
+        assert resolucion["upgrade_aplicado"] is False
     finally:
         _restore()
