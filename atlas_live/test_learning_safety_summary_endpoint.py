@@ -81,3 +81,7 @@ def test_contra_el_estado_real_no_filtra_eventos():
     from atlas_live.core import base_vs_informed_verdict as bvi
 
     assert body["base_vs_informed_verdict"]["veredicto"] in bvi.VERDICTS
+    # 2026-09-12 (misión "EXPERIMENTO SHADOW DE APRENDIZAJE BIDIRECCIONAL"):
+    # el veredicto del experimento bidireccional debe estar presente y ser
+    # uno de los 5 valores conocidos.
+    assert body["bidirectional_shadow_verdict"]["veredicto"] in bvi.VERDICTS_BIDIRECCIONAL

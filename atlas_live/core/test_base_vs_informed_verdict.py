@@ -125,3 +125,85 @@ def test_10_veredictos_conocidos_son_exactamente_los_4():
         "CONOCIMIENTO_CONSULTADO_SIN_EFECTO_DECISIONAL",
         "NO_EVALUABLE",
     )
+
+
+# --- build_bidirectional_verdict() (2026-09-12, experimento bidireccional) --
+
+def _evento_bidi(base_v, informada_v):
+    return {
+        "ticker": "TEST", "market_date": "2026-09-10", "eligibility_state": "ELEGIBLE",
+        "decision_base": "NO_TOCAR", "decision_informada": "VIGILAR", "upgrade_aplicado": True,
+        "outcome_evaluable": base_v != "PENDIENTE",
+        "decision_base_veredicto": base_v, "decision_informada_veredicto": informada_v,
+    }
+
+
+def test_b1_grupo_c_vacio_sin_diferencia():
+    universo = _universo(eventos_c=[])
+    r = bvi.build_bidirectional_verdict(universo, piso_muestra_minima=5)
+    assert r["veredicto"] == "SIN_DIFERENCIA"
+
+
+def test_b2_grupo_c_todo_pendiente_no_evaluable():
+    eventos_c = [_evento_bidi("PENDIENTE", "PENDIENTE") for _ in range(10)]
+    universo = _universo(eventos_c=eventos_c)
+    r = bvi.build_bidirectional_verdict(universo, piso_muestra_minima=5)
+    assert r["veredicto"] == "NO_EVALUABLE"
+
+
+def test_b3_evaluable_bajo_el_piso_evidencia_insuficiente():
+    eventos_c = [_evento_bidi("ERROR", "ACIERTO") for _ in range(3)]
+    universo = _universo(eventos_c=eventos_c)
+    r = bvi.build_bidirectional_verdict(universo, piso_muestra_minima=500)
+    assert r["veredicto"] == "EVIDENCIA_INSUFICIENTE"
+    assert bvi.MENSAJE_MUESTRA_INSUFICIENTE in r["motivo"]
+
+
+def test_b4_discordantes_balanceados_sin_diferencia():
+    eventos_c = (
+        [_evento_bidi("ERROR", "ACIERTO") for _ in range(5)]
+        + [_evento_bidi("ACIERTO", "ERROR") for _ in range(5)]
+        + [_evento_bidi("ACIERTO", "ACIERTO") for _ in range(10)]
+    )
+    universo = _universo(eventos_c=eventos_c)
+    r = bvi.build_bidirectional_verdict(universo, piso_muestra_minima=5)
+    assert r["veredicto"] == "SIN_DIFERENCIA"
+
+
+def test_b5_mejora_robusta():
+    eventos_c = (
+        [_evento_bidi("ERROR", "ACIERTO") for _ in range(45)]
+        + [_evento_bidi("ACIERTO", "ERROR") for _ in range(5)]
+        + [_evento_bidi("ACIERTO", "ACIERTO") for _ in range(50)]
+    )
+    universo = _universo(eventos_c=eventos_c)
+    r = bvi.build_bidirectional_verdict(universo, piso_muestra_minima=100)
+    assert r["veredicto"] == "MEJORA"
+
+
+def test_b6_empeora_robusto():
+    eventos_c = (
+        [_evento_bidi("ACIERTO", "ERROR") for _ in range(45)]
+        + [_evento_bidi("ERROR", "ACIERTO") for _ in range(5)]
+        + [_evento_bidi("ACIERTO", "ACIERTO") for _ in range(50)]
+    )
+    universo = _universo(eventos_c=eventos_c)
+    r = bvi.build_bidirectional_verdict(universo, piso_muestra_minima=100)
+    assert r["veredicto"] == "EMPEORA"
+
+
+def test_b7_veredictos_bidireccionales_son_exactamente_los_5():
+    assert bvi.VERDICTS_BIDIRECCIONAL == ("MEJORA", "EMPEORA", "SIN_DIFERENCIA", "EVIDENCIA_INSUFICIENTE", "NO_EVALUABLE")
+
+
+def test_b8_build_verdict_original_no_cambio_de_comportamiento():
+    # Mismo caso que test_5 del veredicto original -- confirma que agregar
+    # build_bidirectional_verdict() no tocó build_verdict() en absoluto.
+    eventos_c = (
+        [_evento("ERROR", "ACIERTO") for _ in range(45)]
+        + [_evento("ACIERTO", "ERROR") for _ in range(5)]
+        + [_evento("ACIERTO", "ACIERTO") for _ in range(50)]
+    )
+    universo = _universo(eventos_c=eventos_c)
+    r = bvi.build_verdict(universo, piso_muestra_minima=100)
+    assert r["veredicto"] == "APRENDIZAJE_OPERATIVO_DEMOSTRADO"

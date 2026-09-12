@@ -937,6 +937,8 @@ def _api_radar_oportunidades_impl():
     from atlas_live.core import activation_gate as ag
     from atlas_live.core import activation_registry as areg
     from atlas_live.core import atlas_decision_core as adc
+    from atlas_live.core import bidirectional_shadow as bidi
+    from atlas_live.core import bidirectional_shadow_registry as bsr
     from atlas_live.core import decision_composition as dcomp
     from atlas_live.core import decision_knowledge_registry as dk_registry
     from atlas_live.core import knowledge_eligibility as ke
@@ -1287,6 +1289,39 @@ def _api_radar_oportunidades_impl():
                 direction=o.get("direction"), timing_deteccion=o.get("timing_deteccion_hoy"),
                 core_methodology_version=atlas_decision.methodology_version,
                 observation=observacion, learned_evidence=o["learned_evidence"],
+            )
+        except Exception:
+            pass
+
+        # EXPERIMENTO SHADOW BIDIRECCIONAL (2026-09-12, autorizado
+        # explícitamente en Plan Mode, continuación del informe `7686cd2`):
+        # segunda rama shadow, INDEPENDIENTE de `shadow_decision`/Fase 3.4 de
+        # arriba -- puede, además de heredar el downgrade ya existente,
+        # elevar `NO_TOCAR`->`VIGILAR` cuando el conocimiento sea `ELEGIBLE`
+        # (veredicto YA calculado arriba, `veredicto_3_3`, nunca recalculado)
+        # y la evidencia sea favorable. `atlas_decision_core.py` NO se toca
+        # ni se llama de nuevo -- `compute_bidirectional_decision()` solo LEE
+        # `atlas_decision.decision`/`shadow_decision.decision_shadow`/
+        # `o["learned_evidence"]`, todos ya calculados arriba. Nunca asigna
+        # nada a `o[...]` -- no participa de la respuesta HTTP real, no
+        # influye `o["estado_final"]` ni `o["decision_shadow"]`. Protegido
+        # con su propio try/except: un fallo acá nunca puede romper la
+        # respuesta del endpoint.
+        try:
+            eligibility_state_bidi = (veredicto_3_3 or {}).get("eligibility_state")
+            bidireccional = bidi.compute_bidirectional_decision(
+                decision_base=atlas_decision.decision,
+                decision_shadow_downgrade=shadow_decision.decision_shadow,
+                eligibility_state=eligibility_state_bidi,
+                learned_evidence=o["learned_evidence"],
+            )
+            bsr.record_bidirectional_observation(
+                ticker=o["ticker"], market_date=market_date,
+                decision_timestamp=atlas_decision.decision_timestamp.isoformat(),
+                direction=o.get("direction"), timing_deteccion=o.get("timing_deteccion_hoy"),
+                core_methodology_version=atlas_decision.methodology_version,
+                decision_base=atlas_decision.decision, resultado=bidireccional,
+                learned_evidence=o["learned_evidence"], eligibility_state=eligibility_state_bidi,
             )
         except Exception:
             pass

@@ -214,3 +214,166 @@ def _determinar_veredicto(
         f"decisión informada no queda enteramente por encima de 50% -- el cambio de decisión no muestra una "
         "ventaja estadísticamente defendible.",
     )
+
+
+# --- Experimento shadow BIDIRECCIONAL (2026-09-12, misión "EXPERIMENTO SHADOW
+# DE APRENDIZAJE BIDIRECCIONAL") -- vocabulario distinto, misma metodología
+# apareada (Wilson sobre discordantes) de arriba. `build_verdict()`/`VERDICTS`
+# (ya desplegados en 7686cd2) quedan sin ningún cambio de comportamiento --
+# lo de abajo es aditivo, nunca los reemplaza ni los llama.
+
+VERDICTS_BIDIRECCIONAL = ("MEJORA", "EMPEORA", "SIN_DIFERENCIA", "EVIDENCIA_INSUFICIENTE", "NO_EVALUABLE")
+
+MENSAJE_MUESTRA_INSUFICIENTE = "APRENDIZAJE NO DEMOSTRADO -- MUESTRA INSUFICIENTE"
+
+
+def build_bidirectional_verdict(
+    universo_conocimiento: Dict[str, Any],
+    *,
+    piso_muestra_minima: int = 500,
+) -> Dict[str, Any]:
+    """Igual que `build_verdict()` en su metodología (comparación apareada
+    sobre el grupo C, Wilson sobre pares discordantes) pero sobre el
+    universo que produce `bidirectional_shadow_registry.full_bidirectional_report()`
+    (que usa los campos `decision_base_veredicto`/`decision_informada_veredicto`,
+    no `decision_baseline_veredicto`/`decision_shadow_veredicto`) y con el
+    vocabulario de 5 estados pedido para este experimento:
+
+    - `n_C == 0`                                    -> SIN_DIFERENCIA
+    - `n_C > 0`, `n_evaluable == 0`                  -> NO_EVALUABLE (outcome aún pendiente)
+    - `0 < n_evaluable < piso`                        -> EVIDENCIA_INSUFICIENTE
+    - `n_evaluable >= piso`, `discordantes == 0`      -> SIN_DIFERENCIA
+    - `n_evaluable >= piso`, CI apareado > 50%        -> MEJORA
+    - `n_evaluable >= piso`, CI apareado < 50%        -> EMPEORA
+    - `n_evaluable >= piso`, CI apareado cruza 50%     -> SIN_DIFERENCIA
+
+    Nunca lanza. Nunca declara MEJORA/EMPEORA por debajo del piso oficial
+    -- en ese caso el `motivo` incluye textualmente
+    "APRENDIZAJE NO DEMOSTRADO -- MUESTRA INSUFICIENTE"."""
+    n_a = len(_eventos(universo_conocimiento, _GRUPO_A))
+    n_b = len(_eventos(universo_conocimiento, _GRUPO_B))
+    eventos_c = _eventos(universo_conocimiento, _GRUPO_C)
+    n_c = len(eventos_c)
+
+    n_evaluable = 0
+    n_pendiente = 0
+    mejoras = 0
+    empeoramientos = 0
+    empates = 0
+    aciertos_base = 0
+    aciertos_informada = 0
+
+    for evento in eventos_c:
+        base_v = evento.get("decision_base_veredicto")
+        informada_v = evento.get("decision_informada_veredicto")
+        if base_v == "PENDIENTE" or informada_v == "PENDIENTE" or base_v is None or informada_v is None:
+            n_pendiente += 1
+            continue
+        n_evaluable += 1
+        if base_v in _VEREDICTOS_ACIERTO:
+            aciertos_base += 1
+        if informada_v in _VEREDICTOS_ACIERTO:
+            aciertos_informada += 1
+        clasificacion = _clasificar_par(base_v, informada_v)
+        if clasificacion == "mejora":
+            mejoras += 1
+        elif clasificacion == "empeoramiento":
+            empeoramientos += 1
+        else:
+            empates += 1
+
+    discordantes = mejoras + empeoramientos
+
+    hit_rate_base_pct = round(100.0 * aciertos_base / n_evaluable, 2) if n_evaluable else None
+    hit_rate_informada_pct = round(100.0 * aciertos_informada / n_evaluable, 2) if n_evaluable else None
+
+    from atlas_live.radar.candidate_registry import wilson_confidence_interval
+
+    wilson_ci_base = wilson_confidence_interval(aciertos_base, n_evaluable) if n_evaluable else None
+    wilson_ci_informada = wilson_confidence_interval(aciertos_informada, n_evaluable) if n_evaluable else None
+    wilson_ci_diferencia_apareada = (
+        wilson_confidence_interval(mejoras, discordantes) if discordantes else None
+    )
+
+    veredicto, motivo = _determinar_veredicto_bidireccional(
+        n_c=n_c,
+        n_evaluable=n_evaluable,
+        discordantes=discordantes,
+        wilson_ci_diferencia_apareada=wilson_ci_diferencia_apareada,
+        piso_muestra_minima=piso_muestra_minima,
+    )
+
+    return {
+        "veredicto": veredicto,
+        "motivo": motivo,
+        "piso_muestra_minima": piso_muestra_minima,
+        "universo": {"n_A_sin_elegible": n_a, "n_B_elegible_sin_divergencia": n_b, "n_C_elegible_con_divergencia": n_c},
+        "grupo_C_detalle": {
+            "n_evaluable": n_evaluable,
+            "n_pendiente": n_pendiente,
+            "mejoras": mejoras,
+            "empeoramientos": empeoramientos,
+            "empates": empates,
+            "discordantes": discordantes,
+        },
+        "hit_rate_base_pct": hit_rate_base_pct,
+        "hit_rate_informada_pct": hit_rate_informada_pct,
+        "wilson_ci_base": list(wilson_ci_base) if wilson_ci_base else None,
+        "wilson_ci_informada": list(wilson_ci_informada) if wilson_ci_informada else None,
+        "wilson_ci_diferencia_apareada_pct_favorable_a_informada": (
+            list(wilson_ci_diferencia_apareada) if wilson_ci_diferencia_apareada else None
+        ),
+    }
+
+
+def _determinar_veredicto_bidireccional(
+    *,
+    n_c: int,
+    n_evaluable: int,
+    discordantes: int,
+    wilson_ci_diferencia_apareada: Optional[Tuple[float, float]],
+    piso_muestra_minima: int,
+) -> Tuple[str, str]:
+    if n_c == 0:
+        return (
+            "SIN_DIFERENCIA",
+            "0 casos donde la decisión informada (bidireccional) difiera de la decisión base -- "
+            "el conocimiento se consulta pero nunca cambia una decisión.",
+        )
+    if n_evaluable == 0:
+        return (
+            "NO_EVALUABLE",
+            f"{n_c} decisión(es) cambiaron (upgrade y/o downgrade), pero ninguna tiene outcome real "
+            "evaluable todavía.",
+        )
+    if n_evaluable < piso_muestra_minima:
+        return (
+            "EVIDENCIA_INSUFICIENTE",
+            f"{n_evaluable} casos evaluables (de {n_c} cambiados), por debajo del piso de muestra "
+            f"({piso_muestra_minima}). {MENSAJE_MUESTRA_INSUFICIENTE}.",
+        )
+    if discordantes == 0:
+        return (
+            "SIN_DIFERENCIA",
+            f"{n_evaluable} casos evaluables con decisión cambiada, pero 0 pares discordantes -- "
+            "ningún caso donde una decisión acertó y la otra no.",
+        )
+    if wilson_ci_diferencia_apareada is not None and wilson_ci_diferencia_apareada[0] > 50.0:
+        return (
+            "MEJORA",
+            f"De {discordantes} pares discordantes, el intervalo de Wilson favorable a la decisión "
+            f"informada ({wilson_ci_diferencia_apareada[0]}%-{wilson_ci_diferencia_apareada[1]}%) queda "
+            "enteramente por encima de 50%, con muestra evaluable sobre el piso oficial.",
+        )
+    if wilson_ci_diferencia_apareada is not None and wilson_ci_diferencia_apareada[1] < 50.0:
+        return (
+            "EMPEORA",
+            f"De {discordantes} pares discordantes, el intervalo de Wilson favorable a la decisión "
+            f"informada ({wilson_ci_diferencia_apareada[0]}%-{wilson_ci_diferencia_apareada[1]}%) queda "
+            "enteramente por debajo de 50% -- la decisión base le fue mejor.",
+        )
+    return (
+        "SIN_DIFERENCIA",
+        f"De {discordantes} pares discordantes, el intervalo de Wilson cruza 50% -- no hay evidencia "
+        "estadísticamente defendible de que una decisión le vaya mejor que la otra.",
+    )

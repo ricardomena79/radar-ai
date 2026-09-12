@@ -21,6 +21,13 @@ puro) sobre el `universo_conocimiento` que YA calcula
 criterio de agregados-únicamente: se agregan conteos y el veredicto, nunca
 la lista de eventos con ticker/fecha reales.
 
+Extendido 2026-09-12 (misión "EXPERIMENTO SHADOW DE APRENDIZAJE
+BIDIRECCIONAL", autorizado en Plan Mode): agrega `bidirectional_shadow_verdict`,
+mismo criterio agregados-únicamente, sobre el reporte de
+`bidirectional_shadow_registry.full_bidirectional_report()` (nueva DB,
+independiente de `shadow_observation.db`) clasificado con
+`base_vs_informed_verdict.build_bidirectional_verdict()`.
+
 Puro orquestador de lectura -- nunca escribe nada, nunca activa nada,
 nunca lanza (cada sub-bloque queda aislado en su propio try/except, un
 fallo en una capa no puede vaciar las otras)."""
@@ -62,6 +69,7 @@ def _default_summary() -> Dict[str, Any]:
             "ok": False, "n_eventos": 0, "conteos_por_estado": {}, "n_revocaciones_disparadas": 0,
         },
         "base_vs_informed_verdict": None,
+        "bidirectional_shadow_verdict": None,
     }
 
 
@@ -105,6 +113,19 @@ def build_safety_summary() -> Dict[str, Any]:
             )
         except Exception:
             pass
+    except Exception:
+        pass
+
+    try:
+        from atlas_live.core import base_vs_informed_verdict as bvi
+        from atlas_live.core import bidirectional_shadow_registry as bsr
+        from atlas_live.radar.candidate_registry import META_MUESTRA_MINIMA
+
+        rep_bidi = bsr.full_bidirectional_report()
+        universo_bidi = _get(rep_bidi, "universo_conocimiento", {})
+        resultado["bidirectional_shadow_verdict"] = bvi.build_bidirectional_verdict(
+            universo_bidi, piso_muestra_minima=META_MUESTRA_MINIMA,
+        )
     except Exception:
         pass
 

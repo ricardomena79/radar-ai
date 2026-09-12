@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest import mock
 
 from atlas_live.core import activation_registry as areg
+from atlas_live.core import bidirectional_shadow_registry as bsr
 from atlas_live.core import continuous_evaluation_registry as cer
 from atlas_live.core import knowledge_eligibility_registry as ker
 from atlas_live.core import learning_safety_summary as lss
@@ -16,6 +17,7 @@ _ORIG_KER_DB = ker.DB_PATH
 _ORIG_SOR_DB = sor.DB_PATH
 _ORIG_AREG_DB = areg.DB_PATH
 _ORIG_CER_DB = cer.DB_PATH
+_ORIG_BSR_DB = bsr.DB_PATH
 
 
 def _fresh():
@@ -23,6 +25,7 @@ def _fresh():
     sor.DB_PATH = Path(tempfile.gettempdir()) / f"atlas_test_h4_lss_sor_{_uuid.uuid4().hex}.db"
     areg.DB_PATH = Path(tempfile.gettempdir()) / f"atlas_test_h4_lss_areg_{_uuid.uuid4().hex}.db"
     cer.DB_PATH = Path(tempfile.gettempdir()) / f"atlas_test_h4_lss_cer_{_uuid.uuid4().hex}.db"
+    bsr.DB_PATH = Path(tempfile.gettempdir()) / f"atlas_test_h4_lss_bsr_{_uuid.uuid4().hex}.db"
 
 
 def _restore():
@@ -30,6 +33,7 @@ def _restore():
     sor.DB_PATH = _ORIG_SOR_DB
     areg.DB_PATH = _ORIG_AREG_DB
     cer.DB_PATH = _ORIG_CER_DB
+    bsr.DB_PATH = _ORIG_BSR_DB
 
 
 def _assert_sin_clave_eventos(obj, camino="raiz"):
@@ -60,6 +64,7 @@ def test_dbs_vacias_conteos_en_cero_mecanismo_off():
         assert resumen["evaluacion_continua"]["n_eventos"] == 0
         assert resumen["evaluacion_continua"]["n_revocaciones_disparadas"] == 0
         assert resumen["base_vs_informed_verdict"]["veredicto"] == "CONOCIMIENTO_CONSULTADO_SIN_EFECTO_DECISIONAL"
+        assert resumen["bidirectional_shadow_verdict"]["veredicto"] == "SIN_DIFERENCIA"
     finally:
         _restore()
 
@@ -102,9 +107,21 @@ def _reporte_continua_con_detalle():
     }
 
 
+def _reporte_bidireccional_con_detalle():
+    return {
+        "ok": True, "n_observaciones_persistidas": 1,
+        "universo_conocimiento": {
+            "A_sin_elegible": {"n_eventos": 4, "eventos": [{"ticker": "EEE"}]},
+            "B_elegible_sin_divergencia": {"n_eventos": 2, "eventos": [{"ticker": "FFF"}]},
+            "C_elegible_con_divergencia": {"n_eventos": 1, "eventos": [{"ticker": "GGG", "upgrade_aplicado": True}]},
+        },
+    }
+
+
 def test_nunca_filtra_la_clave_eventos_ni_detalle_por_condicion():
     with mock.patch.object(ker, "full_eligibility_report", return_value=_reporte_eligibilidad_con_detalle()), \
          mock.patch.object(sor, "full_shadow_observation_report", return_value=_reporte_shadow_con_detalle()), \
+         mock.patch.object(bsr, "full_bidirectional_report", return_value=_reporte_bidireccional_con_detalle()), \
          mock.patch.object(areg, "full_activation_report", return_value=_reporte_activacion_con_detalle()), \
          mock.patch.object(areg, "get_mechanism_state", return_value="OFF"), \
          mock.patch.object(areg, "list_revocations", return_value=[]), \
@@ -121,6 +138,8 @@ def test_nunca_filtra_la_clave_eventos_ni_detalle_por_condicion():
     # con 1 evento sin veredicto real -> NO_EVALUABLE, nunca un ticker filtrado).
     assert resumen["base_vs_informed_verdict"]["veredicto"] == "NO_EVALUABLE"
     assert resumen["base_vs_informed_verdict"]["universo"]["n_C_elegible_con_divergencia"] == 1
+    assert resumen["bidirectional_shadow_verdict"]["veredicto"] == "NO_EVALUABLE"
+    assert resumen["bidirectional_shadow_verdict"]["universo"]["n_C_elegible_con_divergencia"] == 1
 
 
 # --- 3) fail-safe por capa: un fallo en una no vacía las otras 3 -----------
