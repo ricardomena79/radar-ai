@@ -8,18 +8,24 @@ import uuid as _uuid
 from pathlib import Path
 from unittest import mock
 
+from atlas_live.core import decision_knowledge_registry as _dkr_module
 from atlas_live.core import shadow_observation as so
 from atlas_live.core import shadow_observation_registry as sor
 
 _ORIG_DB = sor.DB_PATH
+_ORIG_DKR_DB = _dkr_module.DB_PATH
 
 
 def _fresh():
     sor.DB_PATH = Path(tempfile.gettempdir()) / f"atlas_test_sor_{_uuid.uuid4().hex}.db"
+    # Los tests de dedup (`_latest_snapshots_deduped`, FIX 2026-09-12) leen
+    # directo de `decision_knowledge_registry.DB_PATH` -- se aísla también.
+    _dkr_module.DB_PATH = Path(tempfile.gettempdir()) / f"atlas_test_sor_dkr_{_uuid.uuid4().hex}.db"
 
 
 def _restore():
     sor.DB_PATH = _ORIG_DB
+    _dkr_module.DB_PATH = _ORIG_DKR_DB
 
 
 _LE = {
@@ -245,7 +251,7 @@ def test_universo_abc_sin_conocimiento_elegible_va_a_grupo_a():
     _fresh()
     try:
         snap = _snapshot(validation_state="MUESTRA_INSUFICIENTE")  # INSUFICIENTE -> no ELEGIBLE
-        with mock.patch("atlas_live.core.decision_knowledge_registry.list_snapshots", return_value=[snap]), \
+        with mock.patch("atlas_live.core.shadow_observation_registry._latest_snapshots_deduped", return_value=[snap]), \
              mock.patch("atlas_live.radar.candidate_registry.get_outcome", return_value=None):
             reporte = sor.full_shadow_observation_report()
         universo = reporte["universo_conocimiento"]
@@ -261,7 +267,7 @@ def test_universo_abc_elegible_sin_divergencia_va_a_grupo_b():
     try:
         snap = _snapshot(decision="VIGILAR", decision_shadow="VIGILAR", shadow_differs=False,
                           validation_state="VALIDACION_ROBUSTA")
-        with mock.patch("atlas_live.core.decision_knowledge_registry.list_snapshots", return_value=[snap]), \
+        with mock.patch("atlas_live.core.shadow_observation_registry._latest_snapshots_deduped", return_value=[snap]), \
              mock.patch("atlas_live.radar.candidate_registry.get_outcome", return_value=None):
             reporte = sor.full_shadow_observation_report()
         universo = reporte["universo_conocimiento"]
@@ -278,7 +284,7 @@ def test_universo_abc_elegible_con_divergencia_va_a_grupo_c():
     try:
         snap = _snapshot(decision="VIGILAR", decision_shadow="NO_TOCAR", shadow_differs=True,
                           validation_state="VALIDACION_ROBUSTA")
-        with mock.patch("atlas_live.core.decision_knowledge_registry.list_snapshots", return_value=[snap]), \
+        with mock.patch("atlas_live.core.shadow_observation_registry._latest_snapshots_deduped", return_value=[snap]), \
              mock.patch("atlas_live.radar.candidate_registry.get_outcome", return_value=None):
             reporte = sor.full_shadow_observation_report()
         universo = reporte["universo_conocimiento"]
@@ -293,7 +299,7 @@ def test_universo_abc_conocimiento_no_disponible_va_a_grupo_a():
     _fresh()
     try:
         snap = _snapshot(knowledge_available=False, validation_state=None, computed_as_of=None)
-        with mock.patch("atlas_live.core.decision_knowledge_registry.list_snapshots", return_value=[snap]), \
+        with mock.patch("atlas_live.core.shadow_observation_registry._latest_snapshots_deduped", return_value=[snap]), \
              mock.patch("atlas_live.radar.candidate_registry.get_outcome", return_value=None):
             reporte = sor.full_shadow_observation_report()
         assert reporte["universo_conocimiento"]["A_sin_elegible"]["n_eventos"] == 1
@@ -307,7 +313,7 @@ def test_universo_abc_outcome_real_es_el_mismo_para_baseline_y_shadow():
         snap = _snapshot(decision="VIGILAR", decision_shadow="NO_TOCAR", shadow_differs=True,
                           validation_state="VALIDACION_ROBUSTA")
         outcome_real = {"is_final": True, "confiable_para_aprendizaje": True, "category": "falsa_senal"}
-        with mock.patch("atlas_live.core.decision_knowledge_registry.list_snapshots", return_value=[snap]), \
+        with mock.patch("atlas_live.core.shadow_observation_registry._latest_snapshots_deduped", return_value=[snap]), \
              mock.patch("atlas_live.radar.candidate_registry.get_outcome", return_value=outcome_real) as mocked:
             reporte = sor.full_shadow_observation_report()
         evento = reporte["universo_conocimiento"]["C_elegible_con_divergencia"]["eventos"][0]
@@ -323,7 +329,7 @@ def test_universo_abc_nunca_fabrica_outcome_sin_evaluable():
     _fresh()
     try:
         snap = _snapshot(decision="VIGILAR", decision_shadow="NO_TOCAR", shadow_differs=True)
-        with mock.patch("atlas_live.core.decision_knowledge_registry.list_snapshots", return_value=[snap]), \
+        with mock.patch("atlas_live.core.shadow_observation_registry._latest_snapshots_deduped", return_value=[snap]), \
              mock.patch("atlas_live.radar.candidate_registry.get_outcome", return_value=None):
             reporte = sor.full_shadow_observation_report()
         evento = reporte["universo_conocimiento"]["C_elegible_con_divergencia"]["eventos"][0]
@@ -346,7 +352,7 @@ def test_universo_abc_no_escribe_nada_solo_lee(monkeypatch):
             raise AssertionError("full_shadow_observation_report no debe escribir nada")
 
         monkeypatch.setattr(sor, "record_shadow_observation", _fail_si_se_llama)
-        with mock.patch("atlas_live.core.decision_knowledge_registry.list_snapshots", return_value=[snap]), \
+        with mock.patch("atlas_live.core.shadow_observation_registry._latest_snapshots_deduped", return_value=[snap]), \
              mock.patch("atlas_live.radar.candidate_registry.get_outcome", return_value=None):
             reporte = sor.full_shadow_observation_report()
         assert reporte["ok"] is True
@@ -362,7 +368,7 @@ def test_universo_abc_no_agrega_filas_a_shadow_observation_log():
     _fresh()
     try:
         snap = _snapshot(decision="VIGILAR", decision_shadow="NO_TOCAR", shadow_differs=True)
-        with mock.patch("atlas_live.core.decision_knowledge_registry.list_snapshots", return_value=[snap] * 20), \
+        with mock.patch("atlas_live.core.shadow_observation_registry._latest_snapshots_deduped", return_value=[snap] * 20), \
              mock.patch("atlas_live.radar.candidate_registry.get_outcome", return_value=None):
             sor.full_shadow_observation_report()
         assert sor._db_exists() is False  # nunca se creo el archivo -- cero escrituras
@@ -421,3 +427,57 @@ def test_ro_connect_usa_mode_ro_y_query_only():
     assert 'conn.execute("PRAGMA query_only=ON")' in fuente
     assert 'conn.execute("PRAGMA journal_mode' not in fuente
     assert "conn.executescript" not in fuente
+
+
+# --- FIX 2026-09-12: dedup real contra decision_knowledge_snapshot --------
+# (misma corrección, mismos tests, que `bidirectional_shadow_registry.py` --
+# bug real de producción: `list_snapshots()` truncaba a las 5.000 filas MÁS
+# ANTIGUAS de 357.805, y esa tabla es transition-only POR FILA, no por
+# candidata-día.)
+
+def test_dedup_real_mismo_ticker_5_transiciones_un_dia_cuenta_1_no_5():
+    _fresh()
+    try:
+        for i, decision in enumerate(["NO_TOCAR", "PREPARACION", "VIGILAR", "PREPARACION", "NO_TOCAR"]):
+            _dkr_module.record_decision_knowledge_snapshot(
+                ticker="AAA", market_date="2026-09-01",
+                decision_timestamp=f"2026-09-01T{9+i}:00:00+00:00",
+                decision=decision, decision_shadow=None, shadow_differs=False,
+                learned_evidence=None, direction="ALCISTA", timing_deteccion="al_comienzo",
+                core_methodology_version="v1_wraps_priority_classifier",
+            )
+        filas = sor._latest_snapshots_deduped(_dkr_module, market_date=None, limit=5000)
+        assert len(filas) == 1
+        assert filas[0]["decision"] == "NO_TOCAR"
+    finally:
+        _restore()
+
+
+def test_dedup_real_db_inexistente_devuelve_vacio_sin_crear_archivo():
+    _fresh()
+    try:
+        assert _dkr_module._db_exists() is False
+        assert sor._latest_snapshots_deduped(_dkr_module, market_date=None, limit=5000) == []
+        assert _dkr_module._db_exists() is False
+    finally:
+        _restore()
+
+
+def test_dedup_real_filtra_por_market_date():
+    _fresh()
+    try:
+        _dkr_module.record_decision_knowledge_snapshot(
+            ticker="AAA", market_date="2026-09-01", decision_timestamp="2026-09-01T09:00:00+00:00",
+            decision="NO_TOCAR", decision_shadow=None, shadow_differs=False, learned_evidence=None,
+            direction="ALCISTA", timing_deteccion="al_comienzo", core_methodology_version="v1_wraps_priority_classifier",
+        )
+        _dkr_module.record_decision_knowledge_snapshot(
+            ticker="BBB", market_date="2026-09-02", decision_timestamp="2026-09-02T09:00:00+00:00",
+            decision="VIGILAR", decision_shadow=None, shadow_differs=False, learned_evidence=None,
+            direction="ALCISTA", timing_deteccion="al_comienzo", core_methodology_version="v1_wraps_priority_classifier",
+        )
+        filas = sor._latest_snapshots_deduped(_dkr_module, market_date="2026-09-01", limit=5000)
+        assert len(filas) == 1
+        assert filas[0]["ticker"] == "AAA"
+    finally:
+        _restore()

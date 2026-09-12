@@ -47,7 +47,7 @@ intenta en esa rama. La ausencia de evidencia nunca es evidencia de
 degradación."""
 
 import sqlite3
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -282,7 +282,32 @@ def evaluate_condition(
     from atlas_live.core import activation_registry as areg
     from atlas_live.learning import live_experience_scoring as les
 
+    # `market_date` identifica, como en el resto del sistema, el día AL
+    # QUE se refiere esta evaluación (persistido tal cual, usado para
+    # filtrar/indexar) -- sin cambios respecto al diseño original.
     market_date = as_of_date
+
+    # FIX (2026-09-12, autorizado explícitamente en Plan Mode -- misión
+    # "HACER QUE EL APRENDIZAJE REALMENTE FUNCIONE"): bug real confirmado
+    # con datos de producción -- `compute_own_experience_table(as_of_date,
+    # ...)` etiqueta cada fila con `computed_as_of = as_of_date` (el MISMO
+    # valor que `market_date` de arriba). Pasar `market_date` tal cual al
+    # chequeo de walk-forward de `classify_continuous_evaluation()`
+    # (`computed_as_of < market_date`) comparaba un string contra sí
+    # mismo -- NUNCA podía ser `True`, así que TODA evaluación terminaba
+    # en `NO_EVALUABLE` por `WALK_FORWARD_VIOLATION`, sin importar la
+    # evidencia (confirmado: 78/78 eventos reales en producción, 100%).
+    # El chequeo de walk-forward debe verificar contra la fecha en la que
+    # esta ventana recién recalculada SERÍA CONSULTADA -- el día
+    # siguiente a `as_of_date`, igual que en cualquier otro punto del
+    # sistema donde `computed_as_of` de HOY habilita decisiones de
+    # MAÑANA -- por eso se usa una fecha separada
+    # (`walk_forward_check_date`) solo para ESE chequeo, sin tocar el
+    # significado de `market_date` ya persistido/indexado. Esto NO relaja
+    # el chequeo ni usa información futura -- la ventana de datos
+    # subyacente (`_recent_condition_rows`) sigue exigiendo
+    # `market_date_de_la_fila < as_of_date`, sin cambios.
+    walk_forward_check_date = (date.fromisoformat(as_of_date) + timedelta(days=1)).isoformat()
     campos_vacios = {
         "recent_sample_size": None, "recent_pct_20": None,
         "recent_wilson_lower_bound_20_pct": None, "recent_wilson_upper_bound_20_pct": None,
@@ -325,7 +350,7 @@ def evaluate_condition(
                     recent_wilson_upper_bound_20_pct=metricas["recent_wilson_upper_bound_20_pct"],
                     recent_baseline_pct_20=metricas["recent_baseline_pct_20"],
                     computed_as_of=metricas["computed_as_of"],
-                    market_date=market_date,
+                    market_date=walk_forward_check_date,
                 )
 
         revocation_requested = bool(clasificacion["revocation_requested"])

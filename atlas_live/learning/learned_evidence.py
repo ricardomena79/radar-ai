@@ -16,16 +16,27 @@ de las 7 puertas, `priority_classifier.py`, el score ni el ranking importan
 ni leen nada de este módulo (confirmado por test, ver
 `test_learned_evidence.py::test_O_...`/`test_J_...` de este mismo paquete).
 
-Matching: SOLO el bucket `"poblacion_total"` (nunca `"alto"/"medio"/"bajo"`)
--- limitación deliberada y declarada, no un descuido: `live_experience_knowledge`
-persiste las ESTADÍSTICAS de cada tercil, pero no los CORTES (lo/hi) que
-los definieron en el momento del cálculo -- sin esos cortes, no hay forma
-de determinar a qué tercil pertenecería la volatilidad de una candidata de
-HOY sin inventarlo. `volatility_14d_pct` se acepta como parámetro (para
-cumplir el contrato pedido, "solo condiciones que existan de verdad") pero
-todavía no participa en la selección del bucket -- persistir los cortes es
-un cambio de esquema que le corresponde a una fase posterior, con su
-propia autorización, no a esta.
+Matching por bucket real (FIX 2026-09-12, misión "HACER QUE EL APRENDIZAJE
+REALMENTE FUNCIONE", autorizado explícitamente en Plan Mode): hasta esta
+fecha, esta función SIEMPRE consultaba el bucket agregado
+`"poblacion_total"`, ignorando `volatility_14d_pct` por completo -- código
+muerto confirmado (el parámetro llegaba con el dato real de la candidata
+en cada llamada de producción, `server.py`, y nunca se usaba). La causa
+declarada en ese momento era real: `live_experience_knowledge` no
+persistía los CORTES (lo/hi) de tercil, solo las estadísticas de cada
+bucket -- sin esos cortes no había forma de saber a qué tercil pertenecía
+la volatilidad de una candidata sin inventarlo. Se corrigió agregando 2
+columnas aditivas (`feature_cut_low`/`feature_cut_high`, ver
+`live_experience_knowledge.py`) -- ahora, si `volatility_14d_pct` viene
+poblado y el grupo tiene cortes calculados, se consulta el bucket real
+(`alto`/`medio`/`bajo`); si no hay cortes (grupo con muestra insuficiente
+para un corte, mismo piso ya usado en `experiments._tercile_cuts()`) o no
+hay dato de volatilidad, se degrada con gracia al agregado
+`poblacion_total` -- EXACTAMENTE el comportamiento anterior, nunca un
+fallo. Verificado con datos reales de producción (2026-09-12): para las 4
+condiciones `VALIDACION_ROBUSTA` de hoy, ningún tercil muestra ventaja
+sobre el baseline tampoco -- este fix no cambia ningún veredicto hoy, pero
+deja de ignorar evidencia real ya calculada.
 
 Anti-look-ahead reforzado (2026-08-25, pedido explícito -- "no aceptes
 simplemente computed_as_of <= date sin analizar el problema temporal"):
@@ -52,22 +63,45 @@ from atlas_live.learning import live_experience_knowledge as lek
 
 DIRECTIONS_VALIDAS = ("ALCISTA", "BAJISTA", "NEUTRAL")
 
-# Único bucket consultado en esta fase -- ver docstring del módulo.
+# Bucket agregado -- siempre se consulta primero (fuente de los cortes de
+# tercil y fallback universal). Ver docstring del módulo.
 BUCKET_CONSULTA = "poblacion_total"
+
+
+def _bucket_real(volatility_14d_pct: Optional[float], cut_low: Optional[float], cut_high: Optional[float]) -> Optional[str]:
+    """Misma semántica exacta que `experiments._bucket_of_row()` para una
+    sola feature: `None` si falta el dato o los cortes (degradar a
+    `poblacion_total`, nunca inventar)."""
+    if volatility_14d_pct is None or cut_low is None or cut_high is None:
+        return None
+    if volatility_14d_pct <= cut_low:
+        return "bajo"
+    if volatility_14d_pct > cut_high:
+        return "alto"
+    return "medio"
 
 
 def get_learned_evidence(
     direction: Optional[str],
     timing_deteccion: Optional[str],
     market_date: str,
-    volatility_14d_pct: Optional[float] = None,  # aceptado, no usado todavía (ver docstring)
+    volatility_14d_pct: Optional[float] = None,
     methodology_version: str = lek.METHODOLOGY_VERSION,
 ) -> Dict[str, Any]:
     """Evidencia histórica REAL de la experiencia propia de Atlas para la
     condición `(direction, timing_deteccion)` de una candidata detectada en
     `market_date` -- nunca inventa nada: si la condición no está
     disponible, o no hay conocimiento para ella, devuelve `available=False`
-    con un `reason` explícito, nunca una evidencia fabricada."""
+    con un `reason` explícito, nunca una evidencia fabricada.
+
+    Consulta primero `poblacion_total` (siempre necesario: es la fuente de
+    los cortes de tercil de ESE cálculo). Si `volatility_14d_pct` está
+    disponible y esa fila trae cortes reales, se re-consulta el bucket
+    específico (`alto`/`medio`/`bajo`) DENTRO DEL MISMO `computed_at`
+    (mismo cálculo, nunca mezcla snapshots de días distintos) -- si esa
+    fila específica no existe (no debería pasar, las 4 filas de un grupo
+    se insertan juntas, pero se verifica en vez de asumir), se devuelve la
+    fila agregada ya obtenida, igual que el comportamiento previo."""
     if direction not in DIRECTIONS_VALIDAS or not timing_deteccion:
         return {"available": False, "reason": "CONDICION_NO_DISPONIBLE"}
 
@@ -80,6 +114,18 @@ def get_learned_evidence(
                    ORDER BY computed_at DESC LIMIT 1""",
                 (direction, timing_deteccion, BUCKET_CONSULTA, methodology_version, market_date),
             ).fetchone()
+
+            if row is not None:
+                bucket_real = _bucket_real(volatility_14d_pct, row["feature_cut_low"], row["feature_cut_high"])
+                if bucket_real is not None:
+                    fila_bucket = conn.execute(
+                        """SELECT * FROM live_experience_knowledge
+                           WHERE direction = ? AND timing_deteccion = ? AND bucket = ?
+                                 AND methodology_version = ? AND computed_at = ?""",
+                        (direction, timing_deteccion, bucket_real, methodology_version, row["computed_at"]),
+                    ).fetchone()
+                    if fila_bucket is not None:
+                        row = fila_bucket
     except Exception as exc:  # la capa de conocimiento nunca puede tumbar al llamador
         return {"available": False, "reason": f"ERROR_CONSULTA: {type(exc).__name__}"}
 
@@ -89,6 +135,7 @@ def get_learned_evidence(
     d = dict(row)
     return {
         "available": True,
+        "bucket": d["bucket"],
         "validation_state": d["validation_state"],
         "sample_size": d["n_evaluables"],
         "historical_success_pct_20": d["pct_20"],

@@ -9,15 +9,22 @@ from unittest import mock
 
 from atlas_live.core import bidirectional_shadow as bidi
 from atlas_live.core import bidirectional_shadow_registry as bsr
+from atlas_live.core import decision_knowledge_registry as _dkr_module
 
 _ORIG_DB = bsr.DB_PATH
+_ORIG_DKR_DB = _dkr_module.DB_PATH
 
 
 def _fresh():
     bsr.DB_PATH = Path(tempfile.gettempdir()) / f"atlas_test_bsr_{_uuid.uuid4().hex}.db"
+    # Los tests de dedup (`_latest_snapshots_deduped`) leen directo de
+    # `decision_knowledge_registry.DB_PATH` -- se aísla también, mismo
+    # patrón que el resto de este archivo (nunca tocar la DB real).
+    _dkr_module.DB_PATH = Path(tempfile.gettempdir()) / f"atlas_test_bsr_dkr_{_uuid.uuid4().hex}.db"
 
 
 def _restore():
+    _dkr_module.DB_PATH = _ORIG_DKR_DB
     bsr.DB_PATH = _ORIG_DB
 
 
@@ -156,7 +163,7 @@ def test_universo_sin_conocimiento_elegible_va_a_grupo_a():
     _fresh()
     try:
         snap = _snapshot(validation_state="MUESTRA_INSUFICIENTE")
-        with mock.patch("atlas_live.core.decision_knowledge_registry.list_snapshots", return_value=[snap]), \
+        with mock.patch("atlas_live.core.bidirectional_shadow_registry._latest_snapshots_deduped", return_value=[snap]), \
              mock.patch("atlas_live.radar.candidate_registry.get_outcome", return_value=None):
             reporte = bsr.full_bidirectional_report()
         universo = reporte["universo_conocimiento"]
@@ -172,7 +179,7 @@ def test_universo_elegible_sin_ventaja_va_a_grupo_b_no_c():
     try:
         # ELEGIBLE pero wilson_lower <= baseline -> sin upgrade -> B, no C.
         snap = _snapshot(wilson_lower_bound_20_pct=5.0, baseline_pct_20=10.0)
-        with mock.patch("atlas_live.core.decision_knowledge_registry.list_snapshots", return_value=[snap]), \
+        with mock.patch("atlas_live.core.bidirectional_shadow_registry._latest_snapshots_deduped", return_value=[snap]), \
              mock.patch("atlas_live.radar.candidate_registry.get_outcome", return_value=None):
             reporte = bsr.full_bidirectional_report()
         universo = reporte["universo_conocimiento"]
@@ -187,7 +194,7 @@ def test_universo_elegible_con_upgrade_va_a_grupo_c_y_relaciona_outcome():
     try:
         snap = _snapshot(wilson_lower_bound_20_pct=40.0, baseline_pct_20=10.0)
         outcome_real = {"is_final": True, "confiable_para_aprendizaje": True, "category": "buena_oportunidad"}
-        with mock.patch("atlas_live.core.decision_knowledge_registry.list_snapshots", return_value=[snap]), \
+        with mock.patch("atlas_live.core.bidirectional_shadow_registry._latest_snapshots_deduped", return_value=[snap]), \
              mock.patch("atlas_live.radar.candidate_registry.get_outcome", return_value=outcome_real):
             reporte = bsr.full_bidirectional_report()
         universo = reporte["universo_conocimiento"]
@@ -204,11 +211,97 @@ def test_universo_elegible_con_upgrade_va_a_grupo_c_y_relaciona_outcome():
         _restore()
 
 
+# --- FIX 2026-09-12: dedup real contra decision_knowledge_snapshot --------
+# (bug real de producción: `list_snapshots()` hace `ORDER BY id ASC LIMIT`,
+# truncando a las filas MÁS ANTIGUAS; y esa tabla es transition-only POR
+# FILA, no por candidata-día -- un mismo ticker puede acumular decenas de
+# transiciones el mismo día. `_latest_snapshots_deduped()` corrige ambos
+# problemas a la vez: trae SIEMPRE el último estado real por
+# (ticker, market_date), sobre el 100% de la historia.)
+
+def test_dedup_real_mismo_ticker_5_transiciones_un_dia_cuenta_1_no_5():
+    _fresh()
+    try:
+        from atlas_live.core import decision_knowledge_registry as dkr
+
+        for i, decision in enumerate(["NO_TOCAR", "PREPARACION", "VIGILAR", "PREPARACION", "NO_TOCAR"]):
+            dkr.record_decision_knowledge_snapshot(
+                ticker="AAA", market_date="2026-09-01",
+                decision_timestamp=f"2026-09-01T{9+i}:00:00+00:00",
+                decision=decision, decision_shadow=None, shadow_differs=False,
+                learned_evidence=None, direction="ALCISTA", timing_deteccion="al_comienzo",
+                core_methodology_version="v1_wraps_priority_classifier",
+            )
+        filas = bsr._latest_snapshots_deduped(dkr, market_date=None, limit=5000)
+        assert len(filas) == 1
+        assert filas[0]["decision"] == "NO_TOCAR"  # la última transición real del día
+    finally:
+        _restore()
+
+
+def test_dedup_real_dos_candidata_dias_distintos_cuenta_2():
+    _fresh()
+    try:
+        from atlas_live.core import decision_knowledge_registry as dkr
+
+        dkr.record_decision_knowledge_snapshot(
+            ticker="AAA", market_date="2026-09-01", decision_timestamp="2026-09-01T09:00:00+00:00",
+            decision="NO_TOCAR", decision_shadow=None, shadow_differs=False, learned_evidence=None,
+            direction="ALCISTA", timing_deteccion="al_comienzo", core_methodology_version="v1_wraps_priority_classifier",
+        )
+        dkr.record_decision_knowledge_snapshot(
+            ticker="AAA", market_date="2026-09-02", decision_timestamp="2026-09-02T09:00:00+00:00",
+            decision="VIGILAR", decision_shadow=None, shadow_differs=False, learned_evidence=None,
+            direction="ALCISTA", timing_deteccion="al_comienzo", core_methodology_version="v1_wraps_priority_classifier",
+        )
+        filas = bsr._latest_snapshots_deduped(dkr, market_date=None, limit=5000)
+        assert len(filas) == 2
+        assert {(f["ticker"], f["market_date"], f["decision"]) for f in filas} == {
+            ("AAA", "2026-09-01", "NO_TOCAR"), ("AAA", "2026-09-02", "VIGILAR"),
+        }
+    finally:
+        _restore()
+
+
+def test_dedup_real_db_inexistente_devuelve_vacio_sin_crear_archivo():
+    _fresh()
+    try:
+        from atlas_live.core import decision_knowledge_registry as dkr
+
+        assert dkr._db_exists() is False
+        assert bsr._latest_snapshots_deduped(dkr, market_date=None, limit=5000) == []
+        assert dkr._db_exists() is False
+    finally:
+        _restore()
+
+
+def test_dedup_real_filtra_por_market_date():
+    _fresh()
+    try:
+        from atlas_live.core import decision_knowledge_registry as dkr
+
+        dkr.record_decision_knowledge_snapshot(
+            ticker="AAA", market_date="2026-09-01", decision_timestamp="2026-09-01T09:00:00+00:00",
+            decision="NO_TOCAR", decision_shadow=None, shadow_differs=False, learned_evidence=None,
+            direction="ALCISTA", timing_deteccion="al_comienzo", core_methodology_version="v1_wraps_priority_classifier",
+        )
+        dkr.record_decision_knowledge_snapshot(
+            ticker="BBB", market_date="2026-09-02", decision_timestamp="2026-09-02T09:00:00+00:00",
+            decision="VIGILAR", decision_shadow=None, shadow_differs=False, learned_evidence=None,
+            direction="ALCISTA", timing_deteccion="al_comienzo", core_methodology_version="v1_wraps_priority_classifier",
+        )
+        filas = bsr._latest_snapshots_deduped(dkr, market_date="2026-09-01", limit=5000)
+        assert len(filas) == 1
+        assert filas[0]["ticker"] == "AAA"
+    finally:
+        _restore()
+
+
 def test_reporte_nunca_lanza_ante_error(monkeypatch):
     _fresh()
     try:
         with mock.patch(
-            "atlas_live.core.decision_knowledge_registry.list_snapshots", side_effect=RuntimeError("db caida"),
+            "atlas_live.core.bidirectional_shadow_registry._latest_snapshots_deduped", side_effect=RuntimeError("db caida"),
         ):
             reporte = bsr.full_bidirectional_report()
         assert reporte["ok"] is False

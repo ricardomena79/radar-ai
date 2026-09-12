@@ -8,6 +8,7 @@ del círculo con código real, no con simulación."""
 import inspect
 import tempfile
 import uuid as _uuid
+from datetime import date, timedelta
 from pathlib import Path
 from unittest import mock
 
@@ -126,14 +127,42 @@ def test_c_error_de_lectura_es_no_evaluable_no_revoke():
 
 
 def test_c_walk_forward_invalido_via_evaluate_condition_no_revoke():
+    # FIX 2026-09-12: `computed_as_of` debe quedar en o después de la fecha
+    # en la que esta ventana sería consultada (`as_of_date + 1 día`) para
+    # que sea un caso GENUINO de violación -- antes del fix del bug real
+    # (`market_date = as_of_date`, confirmado con datos de producción:
+    # 78/78 evaluaciones reales terminaban en NO_EVALUABLE sin importar la
+    # evidencia), `computed_as_of == as_of_date` ya bastaba para disparar
+    # esto siempre, incluso en casos que debían ser válidos -- ver
+    # `test_d_degradado_revoca_exactamente_una_vez`, que confirma el
+    # camino feliz con `computed_as_of` anterior a `as_of_date`.
     _fresh()
     try:
-        fila_walk_forward_invalida = _fila_robusta(n=600, wilson_upper=40.0, baseline=35.0, computed_as_of=_AS_OF)
+        computed_as_of_en_el_futuro = (date.fromisoformat(_AS_OF) + timedelta(days=1)).isoformat()
+        fila_walk_forward_invalida = _fila_robusta(
+            n=600, wilson_upper=40.0, baseline=35.0, computed_as_of=computed_as_of_en_el_futuro,
+        )
         with mock.patch.object(areg, "revoke") as espia_revoke:
             snap = _evaluar_con_ventana_mockeada(fila_walk_forward_invalida, auto_revoke=True, as_of_date=_AS_OF)
         assert snap["evaluation_state"] == "NO_EVALUABLE"
         assert snap["walk_forward_ok"] is False
         assert espia_revoke.call_count == 0
+    finally:
+        _restore()
+
+
+def test_c2_walk_forward_valido_cuando_computed_as_of_es_anterior_al_dia_siguiente():
+    # Caso real de producción (bug confirmado y corregido 2026-09-12):
+    # `computed_as_of == as_of_date` (el caso normal -- el ciclo de EOD de
+    # HOY genera conocimiento fechado HOY, para ser usado a partir de
+    # MAÑANA) debe ser walk-forward-SEGURO, nunca NO_EVALUABLE por este
+    # motivo.
+    _fresh()
+    try:
+        fila = _fila_robusta(n=600, wilson_upper=40.0, baseline=35.0, computed_as_of=_AS_OF)
+        snap = _evaluar_con_ventana_mockeada(fila, auto_revoke=False, as_of_date=_AS_OF)
+        assert snap["walk_forward_ok"] is True
+        assert snap["evaluation_state"] == "DEGRADADO"
     finally:
         _restore()
 

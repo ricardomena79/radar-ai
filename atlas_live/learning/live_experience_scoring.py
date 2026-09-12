@@ -117,6 +117,23 @@ def compute_own_experience_table(
     computed_at = datetime.now(timezone.utc).isoformat()
     salida: List[Dict[str, Any]] = []
     for (direction, timing), ref in table.items():
+        # FIX 2026-09-12 (misión "HACER QUE EL APRENDIZAJE REALMENTE
+        # FUNCIONE", autorizado explícitamente en Plan Mode): los cortes de
+        # tercil (`ref.cuts`) ya se calculan acá (vía `compute_reference_table()`)
+        # pero antes de este fix nunca salían de esta función -- sin ellos,
+        # `learned_evidence.get_learned_evidence()` no tenía forma de saber
+        # a qué bucket (alto/medio/bajo) pertenece la volatilidad real de un
+        # candidato, y por eso siempre consultaba el agregado
+        # `poblacion_total`, ignorando el dato real ya disponible. Solo se
+        # expone el corte de la PRIMERA feature (`feature_cols[0]`, hoy
+        # siempre `volatility_14d_pct`, la única usada en producción) --
+        # `None` si hay más de una feature (nunca se inventa cuál usar) o si
+        # el grupo no tuvo muestra suficiente para un corte (mismo criterio
+        # ya usado por `_tercile_cuts()`, sin cambios).
+        cut = ref.cuts.get(feature_cols[0]) if len(feature_cols) == 1 else None
+        feature_cut_low = cut[0] if cut is not None else None
+        feature_cut_high = cut[1] if cut is not None else None
+
         for bucket_label, stats in ref.buckets.items():
             if stats.n == 0:
                 continue  # sin evidencia real para este bucket -- no se reporta una fila vacía
@@ -144,5 +161,6 @@ def compute_own_experience_table(
                 # de arriba, sin tocar la carga de datos ni la agrupación.
                 "n_aciertos_50": d["aciertos_50"], "pct_50": d["pct_50"],
                 "n_aciertos_100": d["aciertos_100"], "pct_100": d["pct_100"],
+                "feature_cut_low": feature_cut_low, "feature_cut_high": feature_cut_high,
             })
     return salida

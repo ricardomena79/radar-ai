@@ -52,6 +52,35 @@ def test_A_insertar_conocimiento_nuevo():
         _restore()
 
 
+def test_A2_persiste_y_lee_los_cortes_de_tercil():
+    # FIX 2026-09-12 -- columnas aditivas nuevas (feature_cut_low/high).
+    _fresh()
+    try:
+        fila = {**_row(), "feature_cut_low": 3.5, "feature_cut_high": 9.2}
+        n = lek.record_experience_knowledge([fila])
+        assert n == 1
+        leido = lek.get_knowledge_for("2026-08-25")[0]
+        assert leido["feature_cut_low"] == 3.5
+        assert leido["feature_cut_high"] == 9.2
+    finally:
+        _restore()
+
+
+def test_A3_fila_sin_cortes_queda_null_nunca_falla():
+    # Filas viejas (o grupos sin muestra suficiente para un corte) no
+    # traen `feature_cut_low`/`feature_cut_high` -- `.get()` en el writer
+    # debe degradar a NULL, nunca lanzar KeyError.
+    _fresh()
+    try:
+        n = lek.record_experience_knowledge([_row()])
+        assert n == 1
+        leido = lek.get_knowledge_for("2026-08-25")[0]
+        assert leido["feature_cut_low"] is None
+        assert leido["feature_cut_high"] is None
+    finally:
+        _restore()
+
+
 def test_B_leer_conocimiento_filtrado_por_direction_y_timing():
     _fresh()
     try:

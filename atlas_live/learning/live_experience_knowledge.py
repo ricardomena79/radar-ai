@@ -72,6 +72,22 @@ CREATE INDEX IF NOT EXISTS idx_lek_condicion ON live_experience_knowledge(direct
 CREATE INDEX IF NOT EXISTS idx_lek_as_of ON live_experience_knowledge(computed_as_of);
 """
 
+# FIX 2026-09-12 (misión "HACER QUE EL APRENDIZAJE REALMENTE FUNCIONE",
+# autorizado explícitamente en Plan Mode): columnas aditivas nuevas --
+# los cortes de tercil de la feature usada para bucketizar (hoy siempre
+# `volatility_14d_pct`), iguales para las 4 filas de bucket de un mismo
+# grupo/`computed_at` -- permiten que `learned_evidence.get_learned_evidence()`
+# determine a qué bucket (alto/medio/bajo) pertenece la volatilidad REAL
+# de un candidato, en vez de consultar siempre el agregado
+# `poblacion_total` (bug de wiring confirmado, ver commit). Migración
+# vía `_ensure_column()` (mismo patrón ya usado en todo el proyecto):
+# filas viejas quedan con `NULL` en ambas columnas -- nunca se
+# recalculan retroactivamente, nunca rompe una lectura existente.
+_COLUMNAS_ADITIVAS = (
+    ("feature_cut_low", "REAL"),
+    ("feature_cut_high", "REAL"),
+)
+
 
 def _ensure_column(conn: sqlite3.Connection, table: str, column: str, decl: str) -> None:
     """Migración aditiva local y mínima (deliberadamente NO importada de
@@ -90,6 +106,8 @@ def _connect() -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=15000")
     conn.executescript(_SCHEMA)  # CREATE TABLE/INDEX IF NOT EXISTS -- nunca DROP, nunca recrea
+    for columna, decl in _COLUMNAS_ADITIVAS:
+        _ensure_column(conn, "live_experience_knowledge", columna, decl)
     return conn
 
 
@@ -115,8 +133,9 @@ def record_experience_knowledge(
                (direction, timing_deteccion, bucket, n_evaluables, n_aciertos_20, pct_20,
                 wilson_lower_bound_20_pct, wilson_upper_bound_20_pct, baseline_pct_20, lift_20,
                 mediana_max_advance_pct, n_aciertos_50, pct_50, n_aciertos_100, pct_100,
-                validation_state, methodology_version, computed_as_of, computed_at, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                validation_state, methodology_version, computed_as_of, computed_at, created_at,
+                feature_cut_low, feature_cut_high)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             [
                 (
                     r["direction"], r["timing_deteccion"], r["bucket"], r["n_evaluables"], r["n_aciertos_20"],
@@ -124,6 +143,7 @@ def record_experience_knowledge(
                     r["baseline_pct_20"], r["lift_20"], r["mediana_max_advance_pct"],
                     r["n_aciertos_50"], r["pct_50"], r["n_aciertos_100"], r["pct_100"],
                     r["validation_state"], methodology_version, r["computed_as_of"], r["computed_at"], created_at,
+                    r.get("feature_cut_low"), r.get("feature_cut_high"),
                 )
                 for r in rows
             ],

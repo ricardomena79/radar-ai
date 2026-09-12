@@ -209,6 +209,42 @@ def test_H_agrupa_por_direction_timing_y_tercil():
     assert {"alto", "medio", "bajo", "poblacion_total"} <= buckets_alcista  # terciles reales, no solo población
 
 
+def test_H2_expone_los_cortes_de_tercil_reales_en_cada_fila():
+    # FIX 2026-09-12 -- antes de este fix, `ref.cuts` se calculaba pero
+    # nunca salía de esta función (código muerto, ver `learned_evidence.py`).
+    rows = [
+        _row(market_date="2026-08-01", direction="ALCISTA", timing="al_comienzo", volatility_14d_pct=v, max_advance_pct=30.0)
+        for v in range(1, 41)
+    ]
+    salida = les.compute_own_experience_table("2026-08-24", rows=rows, feature_cols=("volatility_14d_pct",), min_rows=30)
+    for fila in salida:
+        assert fila["feature_cut_low"] is not None
+        assert fila["feature_cut_high"] is not None
+        assert fila["feature_cut_low"] < fila["feature_cut_high"]
+
+
+def test_H3_sin_muestra_suficiente_para_corte_cuts_quedan_none():
+    rows = [_row(market_date="2026-08-01", direction="NEUTRAL", timing="indeterminado", volatility_14d_pct=v, max_advance_pct=10.0) for v in range(5)]
+    salida = les.compute_own_experience_table("2026-08-24", rows=rows, min_rows=30)
+    poblacion = next(f for f in salida if f["direction"] == "NEUTRAL")
+    assert poblacion["feature_cut_low"] is None
+    assert poblacion["feature_cut_high"] is None
+
+
+def test_H4_con_mas_de_una_feature_no_se_inventa_cual_corte_exponer():
+    rows = [
+        {**_row(market_date="2026-08-01", direction="ALCISTA", timing="al_comienzo", volatility_14d_pct=v,
+                max_advance_pct=30.0), "daily_range_pct": v}
+        for v in range(1, 41)
+    ]
+    salida = les.compute_own_experience_table(
+        "2026-08-24", rows=rows, feature_cols=("volatility_14d_pct", "daily_range_pct"), min_rows=30,
+    )
+    for fila in salida:
+        assert fila["feature_cut_low"] is None
+        assert fila["feature_cut_high"] is None
+
+
 def test_I_muestra_insuficiente_queda_marcada_explicitamente():
     rows = [_row(market_date="2026-08-01", direction="NEUTRAL", timing="indeterminado", max_advance_pct=10.0) for _ in range(5)]
     salida = les.compute_own_experience_table("2026-08-24", rows=rows, min_rows=1)

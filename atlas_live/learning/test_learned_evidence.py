@@ -173,16 +173,93 @@ def test_I_no_importa_ningun_modulo_de_decision():
 
 # --- J: sin volatility válida, nunca un bucket inventado --------------------
 
-def test_J_sin_volatility_no_inventa_bucket():
+def test_J_sin_cortes_de_tercil_no_inventa_bucket():
+    # Grupo sin `feature_cut_low`/`feature_cut_high` persistidos (muestra
+    # insuficiente para un corte, o fila vieja anterior al fix 2026-09-12)
+    # -- con o sin volatilidad, el resultado es IDÉNTICO -- siempre
+    # consulta "poblacion_total", nunca inventa alto/medio/bajo sin los
+    # cortes reales.
     _fresh()
     try:
         lek.record_experience_knowledge([_knowledge_row(bucket="poblacion_total")])
         r_sin_vol = le.get_learned_evidence("ALCISTA", "al_comienzo", "2026-08-25", volatility_14d_pct=None)
         r_con_vol = le.get_learned_evidence("ALCISTA", "al_comienzo", "2026-08-25", volatility_14d_pct=7.3)
-        # Con o sin volatilidad, el resultado es IDÉNTICO -- siempre
-        # consulta "poblacion_total", nunca inventa alto/medio/bajo sin
-        # los cortes reales.
         assert r_sin_vol == r_con_vol
+        assert r_sin_vol["bucket"] == "poblacion_total"
+    finally:
+        _restore()
+
+
+# --- J2-J5: FIX 2026-09-12 -- matching real por bucket de volatilidad ------
+
+def _grupo_con_cortes(computed_at="2026-08-24T20:00:00+00:00"):
+    """4 filas del MISMO grupo/cálculo (mismo `computed_at`), con cortes
+    reales `feature_cut_low=5.0, feature_cut_high=10.0` -- cada bucket con
+    una tasa de éxito DISTINTA para poder confirmar cuál se consultó."""
+    cortes = {"feature_cut_low": 5.0, "feature_cut_high": 10.0}
+    return [
+        {**_knowledge_row(bucket="poblacion_total", pct_20=20.0, computed_at=computed_at), **cortes},
+        {**_knowledge_row(bucket="bajo", pct_20=1.0, computed_at=computed_at), **cortes},
+        {**_knowledge_row(bucket="medio", pct_20=20.0, computed_at=computed_at), **cortes},
+        {**_knowledge_row(bucket="alto", pct_20=90.0, computed_at=computed_at), **cortes},
+    ]
+
+
+def test_J2_volatilidad_baja_consulta_el_bucket_bajo_real():
+    _fresh()
+    try:
+        lek.record_experience_knowledge(_grupo_con_cortes())
+        r = le.get_learned_evidence("ALCISTA", "al_comienzo", "2026-08-25", volatility_14d_pct=3.0)  # <= 5.0 -> bajo
+        assert r["bucket"] == "bajo"
+        assert r["historical_success_pct_20"] == 1.0
+    finally:
+        _restore()
+
+
+def test_J3_volatilidad_alta_consulta_el_bucket_alto_real():
+    _fresh()
+    try:
+        lek.record_experience_knowledge(_grupo_con_cortes())
+        r = le.get_learned_evidence("ALCISTA", "al_comienzo", "2026-08-25", volatility_14d_pct=15.0)  # > 10.0 -> alto
+        assert r["bucket"] == "alto"
+        assert r["historical_success_pct_20"] == 90.0
+    finally:
+        _restore()
+
+
+def test_J4_volatilidad_media_consulta_el_bucket_medio_real():
+    _fresh()
+    try:
+        lek.record_experience_knowledge(_grupo_con_cortes())
+        r = le.get_learned_evidence("ALCISTA", "al_comienzo", "2026-08-25", volatility_14d_pct=7.0)  # entre 5 y 10 -> medio
+        assert r["bucket"] == "medio"
+        assert r["historical_success_pct_20"] == 20.0
+    finally:
+        _restore()
+
+
+def test_J5_sin_volatilidad_pero_con_cortes_disponibles_usa_poblacion_total():
+    _fresh()
+    try:
+        lek.record_experience_knowledge(_grupo_con_cortes())
+        r = le.get_learned_evidence("ALCISTA", "al_comienzo", "2026-08-25", volatility_14d_pct=None)
+        assert r["bucket"] == "poblacion_total"
+        assert r["historical_success_pct_20"] == 20.0
+    finally:
+        _restore()
+
+
+def test_J6_bucket_especifico_ausente_degrada_a_poblacion_total():
+    # Caso defensivo: cortes presentes en poblacion_total, pero la fila
+    # del bucket específico no existe (no debería pasar en producción,
+    # las 4 se insertan juntas -- se verifica igual, en vez de asumir).
+    _fresh()
+    try:
+        fila = {**_knowledge_row(bucket="poblacion_total", pct_20=20.0), "feature_cut_low": 5.0, "feature_cut_high": 10.0}
+        lek.record_experience_knowledge([fila])
+        r = le.get_learned_evidence("ALCISTA", "al_comienzo", "2026-08-25", volatility_14d_pct=3.0)
+        assert r["bucket"] == "poblacion_total"
+        assert r["historical_success_pct_20"] == 20.0
     finally:
         _restore()
 

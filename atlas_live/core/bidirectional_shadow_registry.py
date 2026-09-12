@@ -270,6 +270,63 @@ def _veredictos_contra_outcome(reg, ticker: str, market_date: str, decision_base
     }
 
 
+def _latest_snapshots_deduped(dkr, market_date: Optional[str], limit: int) -> List[Dict[str, Any]]:
+    """FIX 2026-09-12 (misión "HACER QUE EL APRENDIZAJE REALMENTE
+    FUNCIONE", autorizado explícitamente en Plan Mode) -- reemplaza a
+    `dkr.list_snapshots(market_date, limit)` como fuente de este universo.
+
+    Bug real confirmado con datos de producción: `list_snapshots()` hace
+    `ORDER BY id ASC LIMIT ?` -- con la tabla real en 357.805 filas y
+    `limit=5000` (el default), un caller que no pagina explícitamente
+    termina viendo SOLO las 5.000 filas MÁS ANTIGUAS (1,4% del total,
+    las primeras horas tras el deploy de Hito 3.0, antes de que casi
+    ninguna condición hubiera madurado) -- nunca el resto de la historia,
+    y la ventana ciega CRECE cada día. Además, esa tabla es
+    transition-only POR FILA (cada barrido que recalcula la evidencia de
+    una candidata agrega una fila), no por candidata-día -- 357.805 filas
+    corresponden a solo 9.778 pares (ticker, market_date) reales
+    (~36 filas por candidata-día en promedio); contar cada transición
+    intradía como un caso independiente sobrecuenta y viola independencia
+    estadística.
+
+    Esta función trae el ÚLTIMO snapshot real (mayor `id`) de cada
+    `(ticker, market_date)` -- el estado en el que esa candidata quedó
+    ese día, nunca un estado intermedio ya superado por el barrido
+    siguiente -- sobre el 100% de la historia (sin `ORDER BY id ASC
+    LIMIT` truncando desde el principio). No modifica
+    `decision_knowledge_registry.py` -- reutiliza sus propios
+    `_db_exists()`/`_ro_connect()` (solo lectura REAL, `mode=ro`, nunca
+    crea el archivo si no existe -- mismo guard que ya usa
+    `list_snapshots()`), sin escribir nada nuevo ahí. `limit` se aplica
+    DESPUÉS del dedup (sobre pares candidata-día, no sobre filas crudas)
+    -- con 9.778 pares reales hoy, el default de 5.000 ya no trunca
+    silenciosamente el caso común; documentado igual como límite
+    explícito, nunca "sin acotar"."""
+    if not dkr._db_exists():
+        return []
+
+    query = """
+        SELECT s.* FROM decision_knowledge_snapshot s
+        JOIN (
+            SELECT ticker, market_date, MAX(id) AS max_id
+            FROM decision_knowledge_snapshot
+            {where}
+            GROUP BY ticker, market_date
+        ) m ON s.id = m.max_id
+        ORDER BY s.id ASC LIMIT ?
+    """
+    if market_date is not None:
+        query = query.format(where="WHERE market_date = ?")
+        params: List[Any] = [market_date, limit]
+    else:
+        query = query.format(where="")
+        params = [limit]
+
+    with dkr._ro_connect() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [dict(r) for r in rows]
+
+
 def _construir_universo_bidireccional(market_date: Optional[str], limit: int) -> Dict[str, Any]:
     """Reconstruye, de forma READ-ONLY, el universo completo -- no solo el
     subconjunto que `bidirectional_shadow_log` ya persistió (acotado a
@@ -298,7 +355,7 @@ def _construir_universo_bidireccional(market_date: Optional[str], limit: int) ->
     from atlas_live.core import knowledge_eligibility as ke
     from atlas_live.radar import candidate_registry as reg
 
-    snapshots = dkr.list_snapshots(market_date=market_date, limit=limit)
+    snapshots = _latest_snapshots_deduped(dkr, market_date, limit)
 
     grupos: Dict[str, List[Dict[str, Any]]] = {"A": [], "B": [], "C": []}
     for s in snapshots:
@@ -350,12 +407,19 @@ def _construir_universo_bidireccional(market_date: Optional[str], limit: int) ->
     }
 
 
-def full_bidirectional_report(market_date: Optional[str] = None, limit: int = 5000) -> Dict[str, Any]:
+def full_bidirectional_report(market_date: Optional[str] = None, limit: int = 200_000) -> Dict[str, Any]:
     """Orquesta el reporte del experimento bidireccional: reconstruye el
     universo completo A/B/C (`_construir_universo_bidireccional()`),
     agrega conteos, y expone `universo_conocimiento` en la MISMA forma
     que ya consume `base_vs_informed_verdict.build_verdict()`/
     `build_bidirectional_verdict()` -- reutilizable sin adaptar nada.
+
+    `limit` default subido de 5.000 a 200.000 (FIX 2026-09-12, misión
+    "HACER QUE EL APRENDIZAJE REALMENTE FUNCIONE"): el universo se
+    calcula sobre pares (ticker, market_date) DEDUPLICADOS
+    (`_latest_snapshots_deduped()`), no sobre filas crudas -- hoy son
+    9.778 pares reales, muy por debajo de este límite; sigue siendo un
+    límite explícito y documentado, nunca "sin acotar".
 
     Nunca lanza -- cualquier excepción queda atrapada."""
     resultado: Dict[str, Any] = {
