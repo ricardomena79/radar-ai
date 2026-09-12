@@ -79,6 +79,58 @@ def _load_rows_from_db(as_of_date: str) -> List[Dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+def _load_rows_from_db_by_stage(as_of_date: str) -> List[Dict[str, Any]]:
+    """FIX 2026-09-12 (misión "RESOLVER LA DESCONEXIÓN ENTRE APRENDIZAJE Y
+    DECISIÓN", autorizado explícitamente en Plan Mode): fuente alternativa
+    de experiencia, agrupada por `alert_stage` (la variable que REALMENTE
+    determina `estado_final` vía `priority_classifier.classify_final_priority()`)
+    en vez de `timing_deteccion` (que `_load_rows_from_db()` usa, y que la
+    investigación de esta misión demostró que NO corresponde de forma
+    confiable a `alert_stage` para el 69% de las detecciones reales).
+
+    Lee `alert_stage_log` (no `candidate_detection`) -- cada fila
+    corresponde a una TRANSICIÓN real de etapa ya ocurrida (nunca a un
+    barrido repetido, `record_alert_stage()` ya es transition-only). Se
+    queda con la PRIMERA vez que la candidata alcanzó cada `stage`
+    distinto ese día (`MIN(id)` agrupado por `ticker, market_date, stage`)
+    -- una candidata que pasó por 3 etapas reales ese día aporta 3 filas
+    (una por etapa realmente alcanzada), nunca 30 por repetir la misma
+    etapa en sweeps sucesivos.
+
+    Mismo JOIN, mismos filtros de calidad (`is_final=1`,
+    `confiable_para_aprendizaje=1`) y mismo filtro anti-leakage
+    (`market_date < as_of_date`) que `_load_rows_from_db()` -- la
+    definición de outcome NO se toca, solo cambia la fuente de la
+    condición. `stage AS timing_deteccion` para que el resultado encaje
+    TAL CUAL en `compute_own_experience_table()`/`compute_reference_table()`
+    (genéricas sobre el nombre de columna, reutilizadas sin cambios,
+    nunca reimplementadas)."""
+    import sqlite3
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            """SELECT a.ticker AS ticker, a.market_date AS market_date,
+                      a.direction AS direction,
+                      a.stage AS timing_deteccion,
+                      a.volatility_14d_pct AS volatility_14d_pct,
+                      o.max_return_after_detection_pct AS max_advance_pct
+               FROM alert_stage_log a
+               JOIN (
+                   SELECT ticker, market_date, stage, MIN(id) AS min_id
+                   FROM alert_stage_log
+                   GROUP BY ticker, market_date, stage
+               ) primera_vez ON primera_vez.min_id = a.id
+               JOIN candidate_outcome o ON o.ticker = a.ticker AND o.market_date = a.market_date
+               WHERE o.is_final = 1 AND o.confiable_para_aprendizaje = 1 AND a.market_date < ?""",
+            (as_of_date,),
+        ).fetchall()
+    finally:
+        conn.close()
+    return [dict(r) for r in rows]
+
+
 def compute_own_experience_table(
     as_of_date: str,
     feature_cols: Sequence[str] = ("volatility_14d_pct",),
@@ -164,3 +216,26 @@ def compute_own_experience_table(
                 "feature_cut_low": feature_cut_low, "feature_cut_high": feature_cut_high,
             })
     return salida
+
+
+def compute_own_experience_table_by_stage(
+    as_of_date: str,
+    feature_cols: Sequence[str] = ("volatility_14d_pct",),
+    min_rows: int = experiments.MIN_PRIOR_ROWS_FOR_CUTS,
+    rows: Optional[List[Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
+    """FIX 2026-09-12 (misión "RESOLVER LA DESCONEXIÓN ENTRE APRENDIZAJE Y
+    DECISIÓN") -- wrapper delgado: la ÚNICA diferencia con
+    `compute_own_experience_table()` es la fuente de `rows` cuando no se
+    pasan explícitas (`_load_rows_from_db_by_stage()` en vez de
+    `_load_rows_from_db()`) -- agrupa por `alert_stage` en vez de
+    `timing_deteccion`. Reutiliza `compute_own_experience_table()` TAL
+    CUAL para toda la matemática (Wilson, terciles, baseline, lift,
+    walk-forward redundante) -- cero lógica estadística duplicada. Cada
+    fila de salida sigue etiquetada `"timing_deteccion"` en el dict (el
+    nombre de columna es genérico en `compute_reference_table()`, nunca
+    interpretado semánticamente) -- su VALOR real es un `alert_stage`
+    (`PREPARACION`/`ALERTA_TEMPRANA`/.../`FLUJO_VENDEDOR`)."""
+    if rows is None:
+        rows = _load_rows_from_db_by_stage(as_of_date)
+    return compute_own_experience_table(as_of_date, feature_cols=feature_cols, min_rows=min_rows, rows=rows)

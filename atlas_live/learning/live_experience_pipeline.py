@@ -117,3 +117,72 @@ def run_experience_learning_cycle(
         except Exception as exc:
             resumen["continuous_evaluation"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
     return resumen
+
+
+def run_experience_learning_cycle_by_stage(
+    as_of_date: str,
+    feature_cols: Sequence[str] = ("volatility_14d_pct",),
+    min_rows: int = experiments.MIN_PRIOR_ROWS_FOR_CUTS,
+) -> Dict[str, Any]:
+    """FIX 2026-09-12 (misión "RESOLVER LA DESCONEXIÓN ENTRE APRENDIZAJE Y
+    DECISIÓN", autorizado explícitamente en Plan Mode): segunda generación
+    de conocimiento (v2, `lek.METHODOLOGY_VERSION_V2`), agrupada por
+    `alert_stage` -- la variable que REALMENTE determina `estado_final` --
+    en vez de `timing_deteccion` (v1, `run_experience_learning_cycle()`,
+    SIN NINGÚN CAMBIO, sigue corriendo exactamente igual y sigue
+    acumulando conocimiento v1, nunca reemplazado ni interrumpido).
+
+    Mismo patrón exacto que la función v1: aislado (nunca propaga una
+    excepción), mismo criterio de walk-forward
+    (`_load_rows_from_db_by_stage()`, `market_date < as_of_date`, mismos
+    filtros de calidad de outcome, sin tocar su definición), mismo
+    disparador externo. Única diferencia real: la fuente de `rows`
+    (`live_experience_scoring.compute_own_experience_table_by_stage()`,
+    que lee `alert_stage_log` en vez de `candidate_detection`) y el
+    `methodology_version` con el que se persiste."""
+    resumen: Dict[str, Any] = {
+        "as_of_date": as_of_date,
+        "ejecutado_at": _now_iso(),
+        "ok": False,
+        "n_experiencias": 0,
+        "n_grupos": 0,
+        "n_grupos_robustos": 0,
+        "n_insertadas": 0,
+        "methodology_version": lek.METHODOLOGY_VERSION_V2,
+        "error": None,
+    }
+    tabla = []
+    try:
+        rows = les._load_rows_from_db_by_stage(as_of_date)
+        resumen["n_experiencias"] = len(rows)
+
+        if not rows:
+            resumen["ok"] = True
+            return resumen
+
+        tabla = les.compute_own_experience_table_by_stage(
+            as_of_date, feature_cols=feature_cols, min_rows=min_rows, rows=rows,
+        )
+        resumen["n_grupos"] = len(tabla)
+        resumen["n_grupos_robustos"] = sum(1 for f in tabla if f["validation_state"] == "VALIDACION_ROBUSTA")
+
+        n_insertadas = lek.record_experience_knowledge(tabla, methodology_version=lek.METHODOLOGY_VERSION_V2)
+        resumen["n_insertadas"] = n_insertadas
+        resumen["ok"] = True
+    except Exception as exc:  # el aprendizaje NUNCA puede tumbar al llamador
+        resumen["error"] = f"{type(exc).__name__}: {exc}"
+        resumen["ok"] = False
+
+    # Evaluación continua (Hito 3.6) event-driven, mismo patrón que v1 --
+    # `fuente="stage"` para que la ventana reciente se relea desde
+    # `alert_stage_log` (ver continuous_evaluation_registry.py), nunca
+    # desde `candidate_detection.phase_tag` (que no tiene estos valores).
+    if resumen["ok"] and tabla:
+        try:
+            from atlas_live.core import continuous_evaluation_registry as cer
+            resumen["continuous_evaluation"] = cer.evaluate_conditions_from_experience_table(
+                tabla, as_of_date, fuente="stage",
+            )
+        except Exception as exc:
+            resumen["continuous_evaluation"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+    return resumen

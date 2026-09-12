@@ -713,6 +713,70 @@ def test_L_learned_evidence_no_disponible_no_rompe_el_endpoint(monkeypatch):
         _rw.get_last_quotes = orig_last_quotes
 
 
+def test_L2_veredicto_3_3_real_ya_no_queda_en_sin_veredicto_bug_methodology_version():
+    """BUG REAL encontrado y corregido 2026-09-12 (misión "RESOLVER LA
+    DESCONEXIÓN ENTRE APRENDIZAJE Y DECISIÓN"), confirmado con datos
+    reales de producción: `ker.latest_eligibility_for()` se llamaba con
+    `atlas_decision.methodology_version` (`CORE_METHODOLOGY_VERSION`,
+    "v1_wraps_priority_classifier") mientras `record_eligibility_snapshot()`
+    guardaba bajo el `methodology_version` de `learned_evidence` (LEK,
+    ej. "v2_direction_alert_stage") -- dos strings DISTINTOS, la lectura
+    nunca encontraba lo que la escritura ya había guardado. En producción,
+    el 100% de las 795 filas reales de `shadow_observation_log` tenían
+    `eligibility_state="SIN_VEREDICTO_3.3"`. Este test ejercita el
+    ENDPOINT REAL (no una función aislada) con evidencia ELEGIBLE real y
+    confirma, releyendo el registro real de 3.3 después del request, que
+    el veredicto SÍ se encuentra -- `ELEGIBLE`, nunca `None`."""
+    import tempfile
+    import uuid as _uuid
+    from pathlib import Path
+
+    from atlas_live.core import decision_knowledge_registry as dk_registry
+    from atlas_live.core import knowledge_eligibility_registry as ker
+    from atlas_live.learning import learned_evidence as le
+    from atlas_live.learning import live_experience_knowledge as lek
+
+    orig_live_opps = reg.live_opportunities
+    orig_last_quotes = _rw.get_last_quotes
+    orig_get_learned_evidence = le.get_learned_evidence
+    orig_dk_db = dk_registry.DB_PATH
+    orig_ker_db = ker.DB_PATH
+
+    dk_registry.DB_PATH = Path(tempfile.gettempdir()) / f"atlas_test_l2_dk_{_uuid.uuid4().hex}.db"
+    ker.DB_PATH = Path(tempfile.gettempdir()) / f"atlas_test_l2_ker_{_uuid.uuid4().hex}.db"
+
+    reg.live_opportunities = lambda market_date: [
+        {"ticker": "SBLK", "price_at_detection": 29.0, "stage": "ALERTA_TEMPRANA",
+         "direction": "ALCISTA", "racional_available": True},
+    ]
+    _rw.get_last_quotes = lambda: {"SBLK": _fresh_quote(30.02, 3.3, age_seconds=10)}
+    le.get_learned_evidence = lambda direction, timing, market_date, **k: {
+        "available": True, "validation_state": "VALIDACION_ROBUSTA", "sample_size": 600,
+        "historical_success_pct_20": 45.0, "baseline_pct_20": 20.0, "lift_20": 2.25,
+        "wilson_lower_bound_20_pct": 30.0, "wilson_upper_bound_20_pct": 50.0,
+        "computed_as_of": "2026-08-24", "computed_at": "2026-08-24T20:00:00+00:00",
+        "methodology_version": lek.METHODOLOGY_VERSION_V2,
+    }
+    try:
+        r = _client().get("/api/radar-oportunidades")
+        assert r.status_code == 200
+        o = r.get_json()["oportunidades"][0]
+        assert o["learned_evidence"]["validation_state"] == "VALIDACION_ROBUSTA"
+
+        # Releído del registro REAL de 3.3, con la clave CORRECTA (la
+        # misma que la escritura real usó) -- antes del fix, esto daba
+        # `None` sin importar la evidencia.
+        veredicto = ker.latest_eligibility_for("ALCISTA", "ALERTA_TEMPRANA", lek.METHODOLOGY_VERSION_V2)
+        assert veredicto is not None
+        assert veredicto["eligibility_state"] == "ELEGIBLE"
+    finally:
+        reg.live_opportunities = orig_live_opps
+        _rw.get_last_quotes = orig_last_quotes
+        le.get_learned_evidence = orig_get_learned_evidence
+        dk_registry.DB_PATH = orig_dk_db
+        ker.DB_PATH = orig_ker_db
+
+
 def test_caso_g_oportunidad_prioritaria_nunca_tiene_estado_validacion_vencido():
     """G: verificación end-to-end -- una señal que normalmente daría
     OPORTUNIDAD_PRIORITARIA (INICIO + ALCISTA) nunca llega a serlo si el

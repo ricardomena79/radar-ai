@@ -264,6 +264,44 @@ def test_J6_bucket_especifico_ausente_degrada_a_poblacion_total():
         _restore()
 
 
+# --- FIX 2026-09-12: consulta v2 (alert_stage), mismo módulo, sin cambios de firma --
+
+def test_J7_consulta_v2_con_alert_stage_real():
+    _fresh()
+    try:
+        lek.record_experience_knowledge(
+            [_knowledge_row(direction="ALCISTA", timing_deteccion="ALERTA_FUERTE", pct_20=45.0)],
+            methodology_version=lek.METHODOLOGY_VERSION_V2,
+        )
+        r = le.get_learned_evidence(
+            "ALCISTA", "ALERTA_FUERTE", "2026-08-25", methodology_version=lek.METHODOLOGY_VERSION_V2,
+        )
+        assert r["available"] is True
+        assert r["historical_success_pct_20"] == 45.0
+        assert r["methodology_version"] == lek.METHODOLOGY_VERSION_V2
+    finally:
+        _restore()
+
+
+def test_J8_v1_y_v2_no_se_mezclan_en_la_consulta():
+    _fresh()
+    try:
+        lek.record_experience_knowledge(
+            [_knowledge_row(direction="ALCISTA", timing_deteccion="al_comienzo", pct_20=10.0)],
+            methodology_version=lek.METHODOLOGY_VERSION,
+        )
+        # Mismo direction+segunda-clave, pero bajo v2 nunca se insertó nada
+        # -- la consulta v2 no debe "encontrar" la fila v1 por accidente.
+        r_v2 = le.get_learned_evidence(
+            "ALCISTA", "al_comienzo", "2026-08-25", methodology_version=lek.METHODOLOGY_VERSION_V2,
+        )
+        assert r_v2["available"] is False
+        r_v1 = le.get_learned_evidence("ALCISTA", "al_comienzo", "2026-08-25")
+        assert r_v1["available"] is True
+    finally:
+        _restore()
+
+
 # --- K: errores de la capa de conocimiento no tumban el radar --------------
 
 def test_K_error_de_conocimiento_no_propaga_excepcion():

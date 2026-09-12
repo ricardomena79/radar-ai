@@ -95,6 +95,28 @@ def test_B_leer_conocimiento_filtrado_por_direction_y_timing():
         _restore()
 
 
+# --- FIX 2026-09-12: v1 y v2 coexisten sin mezclarse ------------------------
+
+def test_B2_v1_y_v2_conviven_en_la_misma_tabla_sin_mezclarse():
+    _fresh()
+    try:
+        lek.record_experience_knowledge(
+            [_row(direction="ALCISTA", timing_deteccion="al_comienzo", pct_20=10.0)],
+            methodology_version=lek.METHODOLOGY_VERSION,
+        )
+        lek.record_experience_knowledge(
+            [_row(direction="ALCISTA", timing_deteccion="ALERTA_TEMPRANA", pct_20=90.0)],
+            methodology_version=lek.METHODOLOGY_VERSION_V2,
+        )
+        solo_v1 = lek.get_knowledge_for("2026-08-25", methodology_version=lek.METHODOLOGY_VERSION)
+        solo_v2 = lek.get_knowledge_for("2026-08-25", methodology_version=lek.METHODOLOGY_VERSION_V2)
+        assert len(solo_v1) == 1 and solo_v1[0]["pct_20"] == 10.0
+        assert len(solo_v2) == 1 and solo_v2[0]["pct_20"] == 90.0
+        assert lek.METHODOLOGY_VERSION != lek.METHODOLOGY_VERSION_V2
+    finally:
+        _restore()
+
+
 # --- C: dos computed_as_of distintos coexisten ------------------------------
 
 def test_C_dos_computed_as_of_distintos_coexisten():

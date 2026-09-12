@@ -947,6 +947,7 @@ def _api_radar_oportunidades_impl():
     from atlas_live.core import shadow_observation_registry as sor
     from atlas_live.learning import historical_scoring as hsc
     from atlas_live.learning import learned_evidence as le
+    from atlas_live.learning import live_experience_knowledge as lek
     from atlas_live.memory import market_hours as _mh
     from atlas_live.radar import candidate_gates as gates
     from atlas_live.radar import candidate_registry as radar_registry
@@ -1181,9 +1182,61 @@ def _api_radar_oportunidades_impl():
         # de que este campo exista. Puramente observacional -- ver
         # `atlas_live/learning/learned_evidence.py` para el filtro anti-
         # look-ahead (más estricto que Fase 2, `computed_as_of < market_date`).
+        #
+        # FIX 2026-09-12 (misión "RESOLVER LA DESCONEXIÓN ENTRE APRENDIZAJE
+        # Y DECISIÓN", autorizado explícitamente en Plan Mode): la consulta
+        # PRIMARIA pasa de `(direction, timing_deteccion_hoy)` -- v1, la
+        # investigación de esta misión demostró que NO corresponde de forma
+        # confiable a `alert_stage` (la variable que REALMENTE determina
+        # `estado_final`, ver `alert_stage.py`/`priority_classifier.py`)
+        # para el 69% de las detecciones reales -- a `(direction, stage)`,
+        # v2 (`lek.METHODOLOGY_VERSION_V2`): la MISMA variable `o["stage"]`
+        # que ya alimenta `features.stage` más arriba (línea ~1175). Esto
+        # hace que SITUACIÓN APRENDIDA = SITUACIÓN DECIDIDA por
+        # construcción, sin traducir nada -- `learned_evidence.py` no
+        # cambió de firma (`timing_deteccion`/`methodology_version` ya eran
+        # genéricos), y `get_learned_evidence()` no distingue v1 de v2 más
+        # que por lo que se le pasa. v1 sigue generándose a diario
+        # (`radar_worker._maybe_generate_experience_knowledge()`, sin
+        # cambios) -- solo deja de ser la fuente que alimenta esta
+        # consulta. `stage="DETECCION_TEMPRANA"` (candidata sin fila real
+        # en `alert_stage_log`) nunca tiene conocimiento v2 -- correcto:
+        # esa etiqueta es de PRESENTACIÓN (`candidate_registry.DETECCION_TEMPRANA`),
+        # nunca un valor real de `alert_stage.classify_alert_stage()`.
         o["learned_evidence"] = le.get_learned_evidence(
-            o.get("direction"), o.get("timing_deteccion_hoy"), market_date, volatility_14d_pct=vol,
+            o.get("direction"), o.get("stage"), market_date, volatility_14d_pct=vol,
+            methodology_version=lek.METHODOLOGY_VERSION_V2,
         )
+
+        # BUG REAL ENCONTRADO Y CORREGIDO 2026-09-12 (misión "RESOLVER LA
+        # DESCONEXIÓN ENTRE APRENDIZAJE Y DECISIÓN"), confirmado con datos
+        # reales de producción vía `railway ssh`: `knowledge_eligibility_registry
+        # .record_eligibility_snapshot()` guarda cada fila con la clave
+        # `(direction, timing_deteccion, methodology_version)` donde
+        # `methodology_version` sale de `eligibility_result["methodology_version"]`
+        # -- es decir, del `methodology_version` de `learned_evidence` (LEK,
+        # ej. `"v1_direction_timing_volatility_tercile"`). Pero las lecturas
+        # de abajo (`ker.latest_eligibility_for()`, `areg.is_revoked()`)
+        # usaban `atlas_decision.methodology_version` --
+        # `atlas_decision_core.CORE_METHODOLOGY_VERSION`
+        # (`"v1_wraps_priority_classifier"`), un STRING COMPLETAMENTE
+        # DISTINTO -- la lectura NUNCA podía encontrar lo que la escritura
+        # ya había guardado. Confirmado en producción: el 100% de las 795
+        # filas reales de `shadow_observation_log` tenían
+        # `eligibility_state="SIN_VEREDICTO_3.3"` -- el veredicto de 3.3
+        # NUNCA llegaba al camino en vivo, sin importar qué tan madura
+        # fuera la evidencia real. Esto es INDEPENDIENTE del hallazgo
+        # `timing_deteccion`/`alert_stage` de esta misión -- es un segundo
+        # bug real, en la MISMA cadena, que bloqueaba el gate de Fase 3.5
+        # SIEMPRE (`eligibility_state=None` -> `BLOQUEADO`, nunca
+        # `ACTIVADO`, sin importar `mechanism_state`). Se corrige usando la
+        # MISMA clave que la escritura real: el `methodology_version` de
+        # `o["learned_evidence"]` (el que efectivamente se usó para
+        # calcular la eligibilidad), nunca `atlas_decision.methodology_version`
+        # (que sigue viajando, sin cambios, como `core_methodology_version`
+        # -- una dimensión distinta y correctamente usada en los `record_*`
+        # de abajo, nunca parte de este bug).
+        lek_methodology_version = (o["learned_evidence"] or {}).get("methodology_version") or lek.METHODOLOGY_VERSION_V2
 
         # Segunda llamada -- CON learned_evidence -- SOLO para exponer el
         # shadow. `apply_recalibration` permanece False (default): esta
@@ -1234,7 +1287,7 @@ def _api_radar_oportunidades_impl():
                 decision_shadow=shadow_decision.decision_shadow,
                 shadow_differs=shadow_decision.shadow_differs,
                 learned_evidence=o["learned_evidence"],
-                direction=o.get("direction"), timing_deteccion=o.get("timing_deteccion_hoy"),
+                direction=o.get("direction"), timing_deteccion=o.get("stage"),
                 core_methodology_version=atlas_decision.methodology_version,
                 apply_recalibration_active=False,
             )
@@ -1254,7 +1307,7 @@ def _api_radar_oportunidades_impl():
         try:
             eligibilidad = ke.classify_eligibility(o["learned_evidence"], market_date)
             ker.record_eligibility_snapshot(
-                direction=o.get("direction"), timing_deteccion=o.get("timing_deteccion_hoy"),
+                direction=o.get("direction"), timing_deteccion=o.get("stage"),
                 evaluated_as_of=market_date, eligibility_result=eligibilidad,
             )
         except Exception:
@@ -1274,7 +1327,7 @@ def _api_radar_oportunidades_impl():
         # fallo acá nunca puede romper la respuesta del endpoint.
         try:
             veredicto_3_3 = ker.latest_eligibility_for(
-                o.get("direction"), o.get("timing_deteccion_hoy"), atlas_decision.methodology_version,
+                o.get("direction"), o.get("stage"), lek_methodology_version,
             )
             observacion = so.classify_shadow_observation(
                 decision=atlas_decision.decision, decision_shadow=shadow_decision.decision_shadow,
@@ -1286,7 +1339,7 @@ def _api_radar_oportunidades_impl():
             sor.record_shadow_observation(
                 ticker=o["ticker"], market_date=market_date,
                 decision_timestamp=atlas_decision.decision_timestamp.isoformat(),
-                direction=o.get("direction"), timing_deteccion=o.get("timing_deteccion_hoy"),
+                direction=o.get("direction"), timing_deteccion=o.get("stage"),
                 core_methodology_version=atlas_decision.methodology_version,
                 observation=observacion, learned_evidence=o["learned_evidence"],
             )
@@ -1318,7 +1371,7 @@ def _api_radar_oportunidades_impl():
             bsr.record_bidirectional_observation(
                 ticker=o["ticker"], market_date=market_date,
                 decision_timestamp=atlas_decision.decision_timestamp.isoformat(),
-                direction=o.get("direction"), timing_deteccion=o.get("timing_deteccion_hoy"),
+                direction=o.get("direction"), timing_deteccion=o.get("stage"),
                 core_methodology_version=atlas_decision.methodology_version,
                 decision_base=atlas_decision.decision, resultado=bidireccional,
                 learned_evidence=o["learned_evidence"], eligibility_state=eligibility_state_bidi,
@@ -1348,7 +1401,7 @@ def _api_radar_oportunidades_impl():
             mechanism_state = areg.get_mechanism_state()
             if mechanism_state == "ON_CONTROLADO":
                 is_revoked = areg.is_revoked(
-                    o.get("direction"), o.get("timing_deteccion_hoy"), atlas_decision.methodology_version,
+                    o.get("direction"), o.get("stage"), lek_methodology_version,
                 )
                 eligibility_state_35 = (veredicto_3_3 or {}).get("eligibility_state")
                 gate = ag.classify_activation(
@@ -1367,7 +1420,7 @@ def _api_radar_oportunidades_impl():
                 areg.record_activation_state(
                     ticker=o["ticker"], market_date=market_date,
                     decision_timestamp=atlas_decision.decision_timestamp.isoformat(),
-                    direction=o.get("direction"), timing_deteccion=o.get("timing_deteccion_hoy"),
+                    direction=o.get("direction"), timing_deteccion=o.get("stage"),
                     core_methodology_version=atlas_decision.methodology_version,
                     mechanism_state=mechanism_state, eligibility_state=eligibility_state_35,
                     gate=gate, decision_controlada=decision_controlada,

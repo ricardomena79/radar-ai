@@ -291,9 +291,26 @@ def test_J_archivos_protegidos_sin_diff():
     # permitido dentro de "atlas_live/learning" -- el orquestador event-
     # driven y su propio test. Cualquier OTRO archivo de esa carpeta (o de
     # cualquiera de los demás protegidos) sigue disparando este guard.
+    #
+    # FIX 2026-09-12 (misión "RESOLVER LA DESCONEXIÓN ENTRE APRENDIZAJE Y
+    # DECISIÓN", autorizado explícitamente en Plan Mode): 3 archivos más de
+    # `atlas_live/learning` quedan exceptuados -- `live_experience_scoring.py`
+    # (nueva fuente por `alert_stage`), `live_experience_knowledge.py`
+    # (nueva constante `METHODOLOGY_VERSION_V2`, misma tabla) y
+    # `learned_evidence.py` (matching real por bucket de volatilidad, del
+    # commit `7ba3dd4`, más consulta genérica v1/v2 de esta misión) --
+    # ambos cambios explícitamente autorizados y documentados en el plan.
+    # Cualquier OTRO archivo de `atlas_live/learning` sigue disparando el
+    # guard.
     excepciones_hito_3_6 = [
         ":(exclude)atlas_live/learning/live_experience_pipeline.py",
         ":(exclude)atlas_live/learning/test_live_experience_pipeline.py",
+        ":(exclude)atlas_live/learning/live_experience_scoring.py",
+        ":(exclude)atlas_live/learning/test_live_experience_scoring.py",
+        ":(exclude)atlas_live/learning/live_experience_knowledge.py",
+        ":(exclude)atlas_live/learning/test_live_experience_knowledge.py",
+        ":(exclude)atlas_live/learning/learned_evidence.py",
+        ":(exclude)atlas_live/learning/test_learned_evidence.py",
     ]
     resultado = subprocess.run(
         ["git", "diff", "--stat", "--"] + protegidos + excepciones_hito_3_6,

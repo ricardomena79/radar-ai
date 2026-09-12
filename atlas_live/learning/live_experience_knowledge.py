@@ -44,6 +44,18 @@ DB_PATH = db_path("live_experience_knowledge.db", default=Path(__file__).parent)
 # versiones distintas nunca deben mezclarse al leer/comparar.
 METHODOLOGY_VERSION = "v1_direction_timing_volatility_tercile"
 
+# FIX 2026-09-12 (misión "RESOLVER LA DESCONEXIÓN ENTRE APRENDIZAJE Y
+# DECISIÓN", autorizado explícitamente en Plan Mode): segunda generación de
+# conocimiento, agrupada por `alert_stage` (la variable que REALMENTE
+# determina `estado_final`) en vez de `timing_deteccion` -- ver
+# `live_experience_scoring.compute_own_experience_table_by_stage()`. Misma
+# tabla, mismo esquema, sin ningún cambio de columnas -- se distingue
+# exclusivamente por este `methodology_version`, exactamente el mismo
+# mecanismo que ya usa todo el sistema para no mezclar metodologías
+# (`knowledge_eligibility.py`, `decision_outcome_tribunal.py`, etc.). v1
+# NUNCA se borra ni se deja de generar -- v2 es aditiva, no un reemplazo.
+METHODOLOGY_VERSION_V2 = "v2_direction_alert_stage"
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS live_experience_knowledge (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

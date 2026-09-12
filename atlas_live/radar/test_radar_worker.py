@@ -152,6 +152,7 @@ def test_sweep_usa_universo_completo_equity_mas_etfs_apalancados():
     _fresh()
     saved = _install_fakes(session="regular", quotes={})
     orig_meta = w.broad_universe.fetch_broad_universe_meta
+    orig_racional = w.broad_universe.racional_symbols
     captured = {}
     w.broad_universe.fetch_broad_universe_meta = lambda: {
         "AAPL": {"type": "EQUITY", "name": "Apple Inc."},
@@ -160,6 +161,13 @@ def test_sweep_usa_universo_completo_equity_mas_etfs_apalancados():
         "MSTU": {"type": "ETF", "name": "T-Rex 2X Long MSTR Daily Target ETF"},
         "XYZW": {"type": "WARRANT", "name": "XYZ Corp Warrants"},
     }
+    # Fase 1 de ampliación (2026-09-07): run_sweep_once() ahora también
+    # llama a racional_symbols() por dentro de build_expanded_universe() --
+    # se mockea vacío acá para que esta prueba siga aislada y siga
+    # verificando EXCLUSIVAMENTE el filtro de tipo del universo base
+    # (QQQ/XYZW afuera, MSTU adentro por apalancado). El comportamiento de
+    # unión con Racional se prueba aparte, en los tests de abajo.
+    w.broad_universe.racional_symbols = lambda: set()
     orig_fetch = w.fetch_universe_quotes
 
     def _capturing_fetch(symbols, tradier_provider=None, fallback_provider=None):
@@ -174,6 +182,44 @@ def test_sweep_usa_universo_completo_equity_mas_etfs_apalancados():
         assert captured["symbols"] == ["AAPL", "MSTU", "ZZZZ"]
     finally:
         w.broad_universe.fetch_broad_universe_meta = orig_meta
+        w.broad_universe.racional_symbols = orig_racional
+        w.fetch_universe_quotes = orig_fetch
+        _uninstall_fakes(saved)
+        _restore()
+
+
+def test_sweep_amplia_universo_con_racional_sin_filtrar_por_tipo():
+    """Fase 1 de ampliación hacia Racional (2026-09-07, autorizada
+    explícitamente): un ETF normal, un UNIT genuino y un símbolo Racional
+    sin identidad en absoluto deben llegar igual al barrido -- el filtro de
+    tipo (EQUITY + ETF apalancado) sigue aplicando SOLO al universo base,
+    nunca a lo que se agrega desde Racional. Sin duplicados: AAPL está en
+    ambos lados y aparece una sola vez."""
+    _fresh()
+    saved = _install_fakes(session="regular", quotes={})
+    orig_meta = w.broad_universe.fetch_broad_universe_meta
+    orig_racional = w.broad_universe.racional_symbols
+    captured = {}
+    w.broad_universe.fetch_broad_universe_meta = lambda: {
+        "AAPL": {"type": "EQUITY", "name": "Apple Inc."},
+        "QQQ": {"type": "ETF", "name": "Invesco QQQ Trust Series 1"},  # ETF normal, Racional
+        "BEP": {"type": "UNIT", "name": "Brookfield Renewable Partners L.P. Limited Partnership Units"},
+    }
+    w.broad_universe.racional_symbols = lambda: {"AAPL", "QQQ", "BEP", "GHOSTRAC"}
+    orig_fetch = w.fetch_universe_quotes
+
+    def _capturing_fetch(symbols, tradier_provider=None, fallback_provider=None):
+        captured["symbols"] = symbols
+        return orig_fetch(symbols, tradier_provider=tradier_provider, fallback_provider=fallback_provider)
+
+    w.fetch_universe_quotes = _capturing_fetch
+    try:
+        w.run_sweep_once()
+        assert captured["symbols"] == ["AAPL", "BEP", "GHOSTRAC", "QQQ"]
+        assert len(captured["symbols"]) == len(set(captured["symbols"]))  # sin duplicados
+    finally:
+        w.broad_universe.fetch_broad_universe_meta = orig_meta
+        w.broad_universe.racional_symbols = orig_racional
         w.fetch_universe_quotes = orig_fetch
         _uninstall_fakes(saved)
         _restore()
@@ -225,6 +271,112 @@ def test_E_no_se_re_ejecuta_el_mismo_dia_si_ya_se_genero():
         finally:
             lep.run_experience_learning_cycle = orig_run
         assert llamadas == []  # nunca se volvió a llamar -- ya estaba marcado para esa fecha
+    finally:
+        _restore()
+
+
+# ---------------------------------------------------------------------------
+# FIX 2026-09-12 (misión "RESOLVER LA DESCONEXIÓN ENTRE APRENDIZAJE Y
+# DECISIÓN") -- v2 corre en paralelo a v1, aislado, sin afectarla ni ser
+# afectado por ella.
+# ---------------------------------------------------------------------------
+
+def test_v2_corre_junto_a_v1_ambos_marcadores_quedan_puestos():
+    _fresh()
+    try:
+        from atlas_live.learning import live_experience_pipeline as lep
+
+        orig_v1 = lep.run_experience_learning_cycle
+        orig_v2 = lep.run_experience_learning_cycle_by_stage
+        llamadas_v1, llamadas_v2 = [], []
+        lep.run_experience_learning_cycle = lambda as_of_date, **k: (
+            llamadas_v1.append(as_of_date) or {"ejecutado_at": "t1", "ok": True}
+        )
+        lep.run_experience_learning_cycle_by_stage = lambda as_of_date, **k: (
+            llamadas_v2.append(as_of_date) or {"ejecutado_at": "t2", "ok": True}
+        )
+        try:
+            w._maybe_generate_experience_knowledge("2026-08-24")
+        finally:
+            lep.run_experience_learning_cycle = orig_v1
+            lep.run_experience_learning_cycle_by_stage = orig_v2
+
+        assert llamadas_v1 == ["2026-08-24"]
+        assert llamadas_v2 == ["2026-08-24"]
+        meta = reg.get_meta()
+        assert meta.get("conocimiento_generado_para") == "2026-08-24"
+        assert meta.get("conocimiento_v2_generado_para") == "2026-08-24"
+    finally:
+        _restore()
+
+
+def test_v2_falla_no_afecta_a_v1():
+    _fresh()
+    try:
+        from atlas_live.learning import live_experience_pipeline as lep
+
+        orig_v1 = lep.run_experience_learning_cycle
+        orig_v2 = lep.run_experience_learning_cycle_by_stage
+        lep.run_experience_learning_cycle = lambda as_of_date, **k: {"ejecutado_at": "t1", "ok": True}
+        lep.run_experience_learning_cycle_by_stage = lambda as_of_date, **k: (_ for _ in ()).throw(
+            RuntimeError("fallo simulado v2")
+        )
+        try:
+            w._maybe_generate_experience_knowledge("2026-08-24")  # NO debe lanzar
+        finally:
+            lep.run_experience_learning_cycle = orig_v1
+            lep.run_experience_learning_cycle_by_stage = orig_v2
+
+        meta = reg.get_meta()
+        assert meta.get("conocimiento_generado_para") == "2026-08-24"  # v1 sigue OK
+        assert meta.get("conocimiento_v2_generado_para") != "2026-08-24"  # v2 nunca se marcó
+        assert "RuntimeError" in (meta.get("conocimiento_v2_ultimo_error") or "")
+    finally:
+        _restore()
+
+
+def test_v1_falla_no_afecta_a_v2():
+    _fresh()
+    try:
+        from atlas_live.learning import live_experience_pipeline as lep
+
+        orig_v1 = lep.run_experience_learning_cycle
+        orig_v2 = lep.run_experience_learning_cycle_by_stage
+        lep.run_experience_learning_cycle = lambda as_of_date, **k: (_ for _ in ()).throw(
+            RuntimeError("fallo simulado v1")
+        )
+        lep.run_experience_learning_cycle_by_stage = lambda as_of_date, **k: {"ejecutado_at": "t2", "ok": True}
+        try:
+            w._maybe_generate_experience_knowledge("2026-08-24")
+        finally:
+            lep.run_experience_learning_cycle = orig_v1
+            lep.run_experience_learning_cycle_by_stage = orig_v2
+
+        meta = reg.get_meta()
+        assert meta.get("conocimiento_generado_para") != "2026-08-24"
+        assert meta.get("conocimiento_v2_generado_para") == "2026-08-24"
+    finally:
+        _restore()
+
+
+def test_v2_no_se_re_ejecuta_el_mismo_dia_si_ya_se_genero():
+    _fresh()
+    try:
+        reg.set_meta(conocimiento_generado_para="2026-08-24", conocimiento_v2_generado_para="2026-08-24")
+        from atlas_live.learning import live_experience_pipeline as lep
+
+        orig_v1 = lep.run_experience_learning_cycle
+        orig_v2 = lep.run_experience_learning_cycle_by_stage
+        llamadas_v1, llamadas_v2 = [], []
+        lep.run_experience_learning_cycle = lambda as_of_date, **k: llamadas_v1.append(as_of_date)
+        lep.run_experience_learning_cycle_by_stage = lambda as_of_date, **k: llamadas_v2.append(as_of_date)
+        try:
+            w._maybe_generate_experience_knowledge("2026-08-24")
+        finally:
+            lep.run_experience_learning_cycle = orig_v1
+            lep.run_experience_learning_cycle_by_stage = orig_v2
+        assert llamadas_v1 == []
+        assert llamadas_v2 == []
     finally:
         _restore()
 

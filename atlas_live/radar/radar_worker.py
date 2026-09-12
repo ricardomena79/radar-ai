@@ -273,6 +273,26 @@ def _maybe_generate_experience_knowledge(market_date: str) -> None:
     except Exception as exc:
         _record_error("experience_knowledge", exc, {"conocimiento_ultimo_error": f"{type(exc).__name__}: {exc}"})
 
+    # FIX 2026-09-12 (misión "RESOLVER LA DESCONEXIÓN ENTRE APRENDIZAJE Y
+    # DECISIÓN", autorizado explícitamente en Plan Mode): segunda
+    # generación de conocimiento (v2, agrupada por `alert_stage` -- la
+    # variable que REALMENTE determina la decisión), en PARALELO a la v1
+    # de arriba -- misma marca de tiempo, marcador propio independiente
+    # (`conocimiento_v2_generado_para`), try/except propio: un fallo acá
+    # nunca afecta a v1 ni a `maybe_run_eod_evaluation()`.
+    if meta.get("conocimiento_v2_generado_para") != market_date:
+        try:
+            from atlas_live.learning import live_experience_pipeline as lep
+
+            resumen_v2 = lep.run_experience_learning_cycle_by_stage(market_date)
+            reg.set_meta(
+                conocimiento_v2_generado_para=market_date,
+                conocimiento_v2_ultima_ejecucion_at=resumen_v2["ejecutado_at"],
+                conocimiento_v2_resumen=resumen_v2,
+            )
+        except Exception as exc:
+            _record_error("experience_knowledge_v2", exc, {"conocimiento_v2_ultimo_error": f"{type(exc).__name__}: {exc}"})
+
 
 def _maybe_run_observation_compaction(market_date: str) -> None:
     """Compaction de `candidate_observation` (2026-09-07, autorizado

@@ -513,3 +513,109 @@ def test_sin_vocabulario_de_ejecucion_financiera():
         fuente = inspect.getsource(func).lower()
         for palabra in ("broker", "place_order", "execute_trade"):
             assert palabra not in fuente
+
+
+# ---------------------------------------------------------------------------
+# FIX 2026-09-12 -- fuente="stage" (misión "RESOLVER LA DESCONEXIÓN ENTRE
+# APRENDIZAJE Y DECISIÓN")
+# ---------------------------------------------------------------------------
+
+def test_fuente_default_timing_deteccion_comportamiento_identico():
+    # Sin pasar `fuente`, debe llamar a `_recent_condition_rows` (v1),
+    # NUNCA a la variante por stage -- cero cambio de comportamiento.
+    _fresh()
+    try:
+        with mock.patch.object(cer, "_recent_condition_rows", return_value=[]) as espia_v1, \
+             mock.patch.object(cer, "_recent_condition_rows_by_stage") as espia_v2:
+            cer.evaluate_condition(
+                direction=_DIRECTION, timing_deteccion=_TIMING, methodology_version=_METHOD, as_of_date=_AS_OF,
+            )
+        assert espia_v1.call_count == 1
+        assert espia_v2.call_count == 0
+    finally:
+        _restore()
+
+
+def test_fuente_stage_usa_recent_condition_rows_by_stage():
+    _fresh()
+    try:
+        with mock.patch.object(cer, "_recent_condition_rows") as espia_v1, \
+             mock.patch.object(cer, "_recent_condition_rows_by_stage", return_value=[]) as espia_v2:
+            cer.evaluate_condition(
+                direction=_DIRECTION, timing_deteccion="ALERTA_FUERTE", methodology_version="v2_direction_alert_stage",
+                as_of_date=_AS_OF, fuente="stage",
+            )
+        assert espia_v1.call_count == 0
+        assert espia_v2.call_count == 1
+    finally:
+        _restore()
+
+
+def test_recent_condition_rows_by_stage_lee_alert_stage_log_real():
+    from atlas_live.radar import candidate_registry as reg
+
+    orig_reg_db = reg.DB_PATH
+    _fresh()
+    try:
+        reg.DB_PATH = Path(tempfile.gettempdir()) / f"atlas_test_cer_reg_{_uuid.uuid4().hex}.db"
+        reg._schema_ready_for = None
+        reg.record_detection(
+            "AAA", "2026-08-01", "regular", "2026-08-01T14:00:00Z", "s1",
+            10.0, 5.0, 10000, 5000, 2.0, 100_000.0, [{"name": "cambio_de_precio", "reason": "x", "value": 5.0}],
+        )
+        reg.record_alert_stage(
+            "AAA", "2026-08-01", "2026-08-01T14:00:00Z", "ALERTA_FUERTE",
+            volatility_14d_pct=12.0, direction="ALCISTA",
+        )
+        reg.record_outcome(
+            "AAA", "2026-08-01", 0.0, 13.0, 30.0, 30.0, True, False, False, "EXPLOSION",
+            confiable_para_aprendizaje=True, is_final=True,
+        )
+        filas = cer._recent_condition_rows_by_stage("ALCISTA", "ALERTA_FUERTE", 500, "2026-08-02")
+        assert len(filas) == 1
+        assert filas[0]["ticker"] == "AAA"
+        # Walk-forward: mismo día -> excluida.
+        assert cer._recent_condition_rows_by_stage("ALCISTA", "ALERTA_FUERTE", 500, "2026-08-01") == []
+    finally:
+        reg.DB_PATH = orig_reg_db
+        _restore()
+
+
+def test_evaluate_conditions_from_experience_table_fuente_stage_usa_methodology_v2():
+    _fresh()
+    try:
+        tabla = [{
+            "direction": "ALCISTA", "timing_deteccion": "ALERTA_FUERTE", "bucket": "poblacion_total",
+            "n_evaluables": 600, "n_aciertos_20": 300, "pct_20": 50.0,
+        }]
+        with mock.patch.object(cer, "evaluate_condition", return_value={"evaluation_state": "VALIDO"}) as espia:
+            resultado = cer.evaluate_conditions_from_experience_table(tabla, "2026-08-24", fuente="stage")
+        assert resultado["n_condiciones"] == 1
+        _, kwargs = espia.call_args
+        assert kwargs["methodology_version"] == "v2_direction_alert_stage"
+        assert kwargs["fuente"] == "stage"
+    finally:
+        _restore()
+
+
+def test_evaluate_conditions_from_experience_table_default_usa_methodology_v1():
+    _fresh()
+    try:
+        tabla = [{
+            "direction": "ALCISTA", "timing_deteccion": "al_comienzo", "bucket": "poblacion_total",
+            "n_evaluables": 600, "n_aciertos_20": 300, "pct_20": 50.0,
+        }]
+        with mock.patch.object(cer, "evaluate_condition", return_value={"evaluation_state": "VALIDO"}) as espia:
+            cer.evaluate_conditions_from_experience_table(tabla, "2026-08-24")
+        _, kwargs = espia.call_args
+        assert kwargs["methodology_version"] == "v1_direction_timing_volatility_tercile"
+        assert kwargs["fuente"] == "timing_deteccion"
+    finally:
+        _restore()
+
+
+def test_recent_condition_rows_by_stage_es_read_only():
+    fuente = inspect.getsource(cer._recent_condition_rows_by_stage)
+    assert "mode=ro" in fuente
+    assert "PRAGMA query_only=ON" in fuente
+    assert "INSERT" not in fuente.upper()

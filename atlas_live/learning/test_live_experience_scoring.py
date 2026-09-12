@@ -278,6 +278,96 @@ def test_salida_es_extensible_incluye_50_y_100_sin_costo_adicional():
 
 
 # ---------------------------------------------------------------------------
+# FIX 2026-09-12 -- agrupación por alert_stage (misión "RESOLVER LA
+# DESCONEXIÓN ENTRE APRENDIZAJE Y DECISIÓN")
+# ---------------------------------------------------------------------------
+
+def _seed_stage(ticker, market_date, observed_at, stage, direction, volatility_14d_pct=None):
+    reg.record_alert_stage(
+        ticker, market_date, observed_at, stage,
+        volatility_14d_pct=volatility_14d_pct, direction=direction,
+    )
+
+
+def test_K1_load_rows_by_stage_una_fila_por_etapa_real_no_por_sweep():
+    _fresh()
+    try:
+        _seed("AAA", "2026-08-01", "ALCISTA", "al_comienzo", 5.0, 30.0)
+        # 3 sweeps sucesivos, pero solo 2 etapas REALES distintas (PREPARACION
+        # se repite -- record_alert_stage() ya es transition-only, así que
+        # esto simula la única forma real en que podría insertarse 2 veces:
+        # PREPARACION -> ALERTA_TEMPRANA -> PREPARACION de nuevo).
+        _seed_stage("AAA", "2026-08-01", "2026-08-01T09:31:00Z", "PREPARACION", "ALCISTA", 12.0)
+        _seed_stage("AAA", "2026-08-01", "2026-08-01T09:35:00Z", "ALERTA_TEMPRANA", "ALCISTA", 12.0)
+        _seed_stage("AAA", "2026-08-01", "2026-08-01T09:40:00Z", "PREPARACION", "ALCISTA", 12.0)
+        rows = les._load_rows_from_db_by_stage("2026-08-02")
+        # 2 stages DISTINTOS presentes (PREPARACION, ALERTA_TEMPRANA) -- la
+        # 3ra fila (PREPARACION repetida) no duplica, mismo (ticker,
+        # market_date, stage) ya cubierto por la primera.
+        stages = sorted(r["timing_deteccion"] for r in rows)
+        assert stages == ["ALERTA_TEMPRANA", "PREPARACION"]
+    finally:
+        _restore()
+
+
+def test_K2_load_rows_by_stage_respeta_walk_forward():
+    _fresh()
+    try:
+        _seed("AAA", "2026-08-01", "ALCISTA", "al_comienzo", 5.0, 30.0)
+        _seed_stage("AAA", "2026-08-01", "2026-08-01T09:31:00Z", "ALERTA_TEMPRANA", "ALCISTA", 12.0)
+        assert les._load_rows_from_db_by_stage("2026-08-01") == []  # mismo día -> excluido
+        assert len(les._load_rows_from_db_by_stage("2026-08-02")) == 1  # día siguiente -> incluido
+    finally:
+        _restore()
+
+
+def test_K3_load_rows_by_stage_excluye_no_confiables_y_no_finales():
+    _fresh()
+    try:
+        _seed("FINAL1", "2026-08-01", "ALCISTA", "al_comienzo", 5.0, 30.0, is_final=True)
+        _seed_stage("FINAL1", "2026-08-01", "2026-08-01T09:31:00Z", "ALERTA_TEMPRANA", "ALCISTA", 12.0)
+        _seed("ENCURSO1", "2026-08-01", "ALCISTA", "al_comienzo", 5.0, 90.0, is_final=False)
+        _seed_stage("ENCURSO1", "2026-08-01", "2026-08-01T09:31:00Z", "ALERTA_TEMPRANA", "ALCISTA", 12.0)
+        rows = les._load_rows_from_db_by_stage("2026-08-02")
+        assert {r["ticker"] for r in rows} == {"FINAL1"}
+    finally:
+        _restore()
+
+
+def test_K4_compute_own_experience_table_by_stage_agrupa_por_alert_stage():
+    rows = [
+        {"direction": "ALCISTA", "timing_deteccion": "ALERTA_FUERTE", "volatility_14d_pct": 12.0,
+         "max_advance_pct": 30.0, "market_date": "2026-08-01"}
+        for _ in range(5)
+    ] + [
+        {"direction": "BAJISTA", "timing_deteccion": "FLUJO_VENDEDOR", "volatility_14d_pct": 8.0,
+         "max_advance_pct": 5.0, "market_date": "2026-08-01"}
+        for _ in range(5)
+    ]
+    salida = les.compute_own_experience_table_by_stage("2026-08-24", rows=rows, min_rows=1)
+    grupos = {(f["direction"], f["timing_deteccion"]) for f in salida}
+    assert ("ALCISTA", "ALERTA_FUERTE") in grupos
+    assert ("BAJISTA", "FLUJO_VENDEDOR") in grupos
+
+
+def test_K5_compute_own_experience_table_by_stage_reutiliza_wilson_sin_reimplementar():
+    # Mismo resultado que compute_own_experience_table() para las MISMAS
+    # rows -- confirma que no hay lógica estadística duplicada/divergente.
+    rows = [
+        {"direction": "ALCISTA", "timing_deteccion": "ALERTA_FUERTE", "volatility_14d_pct": 12.0,
+         "max_advance_pct": v, "market_date": "2026-08-01"}
+        for v in [30.0, 10.0, 45.0, 5.0, 25.0]
+    ]
+    salida_directa = les.compute_own_experience_table("2026-08-24", rows=rows, min_rows=1)
+    salida_by_stage = les.compute_own_experience_table_by_stage("2026-08-24", rows=rows, min_rows=1)
+
+    def _sin_computed_at(salida):
+        return [{k: v for k, v in fila.items() if k != "computed_at"} for fila in salida]
+
+    assert _sin_computed_at(salida_directa) == _sin_computed_at(salida_by_stage)
+
+
+# ---------------------------------------------------------------------------
 # Caso J -- no toca ningún módulo protegido
 # ---------------------------------------------------------------------------
 

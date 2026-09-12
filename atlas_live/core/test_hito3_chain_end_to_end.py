@@ -502,3 +502,137 @@ def test_6_cadena_completa_en_una_sola_ejecucion_continua():
         assert baseline.decision == "OPORTUNIDAD_PRIORITARIA"
     finally:
         _restore()
+
+
+# --- 7/8: FIX 2026-09-12 (misión "RESOLVER LA DESCONEXIÓN ENTRE
+# APRENDIZAJE Y DECISIÓN") -- la cadena real con una condición v2
+# (etiquetada con un valor de `alert_stage`, no `timing_deteccion`) y el
+# hallazgo honesto sobre el límite real del ÚNICO camino de activación
+# existente (Fase 3.5) ------------------------------------------------------
+
+def test_7_cadena_real_con_condicion_v2_etiquetada_por_alert_stage():
+    """La cadena de Hito 3 (3.0-3.5) es genérica sobre el string de
+    "condición" -- nunca interpreta su significado (confirmado por
+    lectura de código en el plan de esta misión). Este test prueba, con
+    la MISMA cadena real de los tests 1-6, que una condición etiquetada
+    con un valor de `alert_stage` real ("ALERTA_TEMPRANA", nunca un
+    `timing_deteccion`) fluye igual de punta a punta -- confirmando que
+    server.py puede pasar `o.get("stage")` en vez de
+    `o.get("timing_deteccion_hoy")` sin que ninguna fase de Hito 3 se
+    entere ni necesite cambiar."""
+    _fresh()
+    try:
+        stage_v2 = "ALERTA_TEMPRANA"
+        methodology_v2 = "v2_direction_alert_stage"
+        candidate = adc.CandidateSnapshot(ticker=_TICKER, market_date=_MARKET_DATE, tiene_precio_actual=True)
+        features = adc.DecisionFeatures(stage="ALERTA_TEMPRANA", direction=_DIRECTION, change_pct_confiable=True)
+        baseline = adc.decide(candidate, features)
+        assert baseline.decision == "VIGILAR"  # ALERTA_TEMPRANA -> VIGILAR, ver priority_classifier.py
+
+        le = _learned_evidence(wilson_upper=25.0, baseline=35.0)
+        le["methodology_version"] = methodology_v2
+        shadow = adc.decide(candidate, features, learned_evidence=le)
+        assert shadow.decision_shadow == "PREPARACION"  # downgrade de VIGILAR
+        assert shadow.shadow_differs is True
+
+        eligibilidad = ke.classify_eligibility(le, _MARKET_DATE)
+        assert eligibilidad["eligibility_state"] == "ELEGIBLE"
+        ker.record_eligibility_snapshot(
+            direction=_DIRECTION, timing_deteccion=stage_v2,
+            evaluated_as_of=_MARKET_DATE, eligibility_result=eligibilidad,
+        )
+        # NOTA (bug real corregido 2026-09-12, ver server.py): la clave de
+        # lectura debe ser el `methodology_version` de LEK (el mismo que
+        # `record_eligibility_snapshot()` usó para escribir, tomado de
+        # `eligibility_result["methodology_version"]`) -- NUNCA
+        # `baseline.methodology_version` (`CORE_METHODOLOGY_VERSION`, una
+        # dimensión distinta). Antes del fix, usar la clave equivocada acá
+        # habría dado `None` siempre, exactamente el bug confirmado en
+        # producción (795/795 filas con `eligibility_state="SIN_VEREDICTO_3.3"`).
+        veredicto = ker.latest_eligibility_for(_DIRECTION, stage_v2, methodology_v2)
+        assert veredicto["eligibility_state"] == "ELEGIBLE"
+
+        observacion = so.classify_shadow_observation(
+            decision=baseline.decision, decision_shadow=shadow.decision_shadow,
+            shadow_differs=shadow.shadow_differs, eligibility_state=veredicto["eligibility_state"],
+            computed_as_of=le["computed_as_of"], market_date=_MARKET_DATE,
+        )
+        assert sor.record_shadow_observation(
+            ticker=_TICKER, market_date=_MARKET_DATE,
+            decision_timestamp=baseline.decision_timestamp.isoformat(),
+            direction=_DIRECTION, timing_deteccion=stage_v2,
+            core_methodology_version=baseline.methodology_version,
+            observation=observacion, learned_evidence=le,
+        ) is True
+
+        areg.set_mechanism_state("ON_CONTROLADO", "test v2")
+        gate = ag.classify_activation(
+            mechanism_state="ON_CONTROLADO", eligibility_state=veredicto["eligibility_state"],
+            is_revoked=areg.is_revoked(_DIRECTION, stage_v2, methodology_v2),
+            computed_as_of=le["computed_as_of"], market_date=_MARKET_DATE,
+        )
+        assert gate["activation_state"] == "ACTIVADO"
+        controlada = adc.decide(candidate, features, learned_evidence=le, apply_recalibration=True)
+        assert controlada.decision == "PREPARACION"
+        assert baseline.decision == "VIGILAR"  # nunca se movió
+    finally:
+        _restore()
+
+
+def test_8_limite_honesto_el_camino_real_de_activacion_no_puede_producir_upgrades_todavia():
+    """HALLAZGO de esta misión, demostrado con código real, no solo
+    afirmado: el ÚNICO call site real de `apply_recalibration=True`
+    (Fase 3.5, `server.py`) pasa por `atlas_decision_core.decide()`, cuyo
+    `_compute_shadow_decision()` interno es DOWNGRADE-ONLY
+    (`_SHADOW_DOWNGRADE_ONE_TIER` nunca tiene `NO_TOCAR` como clave) --
+    nunca fue conectado al `bidirectional_shadow.compute_bidirectional_decision()`
+    (que SÍ puede proponer `NO_TOCAR`->`VIGILAR`). Este test prueba que,
+    incluso con evidencia ELEGIBLE y favorable para un upgrade real, el
+    camino de activación REAL de hoy NO cambia una decisión `NO_TOCAR` --
+    confirmando el límite exacto, no solo documentándolo. Conectar
+    `apply_recalibration=True` a la decisión bidireccional sería un
+    cambio funcional real a un mecanismo protegido (Fase 3.5) -- fuera de
+    alcance de esta misión, señalado explícitamente para una autorización
+    separada."""
+    _fresh()
+    try:
+        candidate = adc.CandidateSnapshot(ticker=_TICKER, market_date=_MARKET_DATE, tiene_precio_actual=True)
+        features = adc.DecisionFeatures(stage="NO_PERSEGUIR", direction=_DIRECTION, change_pct_confiable=True)
+        baseline = adc.decide(candidate, features)
+        assert baseline.decision == "NO_TOCAR"
+
+        # Evidencia ELEGIBLE y FAVORABLE para un upgrade real
+        # (wilson_lower_bound > baseline) -- exactamente lo que
+        # `bidirectional_shadow.compute_bidirectional_decision()` necesita
+        # para proponer NO_TOCAR -> VIGILAR.
+        le = _learned_evidence(wilson_upper=60.0, baseline=10.0)  # lower = 50.0 > baseline = 10.0
+        eligibilidad = ke.classify_eligibility(le, _MARKET_DATE)
+        assert eligibilidad["eligibility_state"] == "ELEGIBLE"
+
+        from atlas_live.core import bidirectional_shadow as bidi
+
+        shadow_downgrade = adc.decide(candidate, features, learned_evidence=le)
+        resultado_bidi = bidi.compute_bidirectional_decision(
+            decision_base=baseline.decision,
+            decision_shadow_downgrade=shadow_downgrade.decision_shadow,
+            eligibility_state=eligibilidad["eligibility_state"],
+            learned_evidence=le,
+        )
+        # El mecanismo bidireccional SÍ propondría un upgrade real.
+        assert resultado_bidi["decision_informada"] == "VIGILAR"
+        assert resultado_bidi["upgrade_aplicado"] is True
+
+        # Pero el ÚNICO camino real de activación (apply_recalibration=True
+        # vía atlas_decision_core.decide()) NUNCA lo aplica -- incluso con
+        # el mecanismo encendido y el gate real dando ACTIVADO.
+        areg.set_mechanism_state("ON_CONTROLADO", "test límite honesto")
+        gate = ag.classify_activation(
+            mechanism_state="ON_CONTROLADO", eligibility_state=eligibilidad["eligibility_state"],
+            is_revoked=False, computed_as_of=le["computed_as_of"], market_date=_MARKET_DATE,
+        )
+        assert gate["activation_state"] == "ACTIVADO"
+        controlada = adc.decide(candidate, features, learned_evidence=le, apply_recalibration=True)
+        assert controlada.decision == "NO_TOCAR"  # NUNCA cambia a VIGILAR por este camino, hoy
+        assert controlada.decision != resultado_bidi["decision_informada"]
+    finally:
+        _restore()

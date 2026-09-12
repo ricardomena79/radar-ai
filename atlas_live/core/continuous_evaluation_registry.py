@@ -165,6 +165,61 @@ def _recent_condition_rows(
     return [dict(r) for r in rows]
 
 
+def _recent_condition_rows_by_stage(
+    direction: str, stage: str, n_ventana: int, as_of_date: str
+) -> List[Dict[str, Any]]:
+    """FIX 2026-09-12 (misión "RESOLVER LA DESCONEXIÓN ENTRE APRENDIZAJE Y
+    DECISIÓN", autorizado explícitamente en Plan Mode -- única
+    modificación a este archivo de Hito 3.6, dependencia estrictamente
+    necesaria y documentada en el plan: sin esto, las condiciones v2
+    (etiquetadas con valores de `alert_stage`, ej. `"ALERTA_FUERTE"`) se
+    buscarían contra `candidate_detection.phase_tag`, que NUNCA tiene esos
+    valores -- la ventana reciente daría siempre `[]`, y 3.6 quedaría
+    silenciosamente roto para v2).
+
+    Misma consulta, mismos filtros de calidad y walk-forward que
+    `_recent_condition_rows()` -- SOLO cambia la fuente
+    (`alert_stage_log` en vez de `candidate_detection`), igual que
+    `live_experience_scoring._load_rows_from_db_by_stage()` (misma lógica,
+    reimplementada acá de forma independiente por el mismo criterio ya
+    documentado en este archivo: 3.6 nunca importa la Fase 2 privada).
+    Toma la PRIMERA vez que la candidata alcanzó `stage` ese día
+    (`MIN(id)`), nunca cada sweep repetido."""
+    from atlas_live.radar.candidate_registry import DB_PATH as RADAR_DB_PATH
+
+    if not Path(RADAR_DB_PATH).exists():
+        return []
+    uri = Path(RADAR_DB_PATH).resolve().as_uri() + "?mode=ro"
+    conn = sqlite3.connect(uri, uri=True, timeout=15)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA query_only=ON")
+    try:
+        rows = conn.execute(
+            """SELECT a.ticker AS ticker, a.market_date AS market_date,
+                      a.direction AS direction,
+                      a.stage AS timing_deteccion,
+                      a.volatility_14d_pct AS volatility_14d_pct,
+                      o.max_return_after_detection_pct AS max_advance_pct
+               FROM alert_stage_log a
+               JOIN (
+                   SELECT ticker, market_date, stage, MIN(id) AS min_id
+                   FROM alert_stage_log
+                   GROUP BY ticker, market_date, stage
+               ) primera_vez ON primera_vez.min_id = a.id
+               JOIN candidate_outcome o ON o.ticker = a.ticker AND o.market_date = a.market_date
+               WHERE o.is_final = 1 AND o.confiable_para_aprendizaje = 1
+                 AND a.market_date < ?
+                 AND a.direction = ?
+                 AND a.stage = ?
+               ORDER BY a.market_date DESC
+               LIMIT ?""",
+            (as_of_date, direction, stage, n_ventana),
+        ).fetchall()
+    finally:
+        conn.close()
+    return [dict(r) for r in rows]
+
+
 # --- persistencia (transition-only) ------------------------------------
 
 def _last_evaluation(
@@ -267,6 +322,7 @@ def evaluate_condition(
     as_of_date: str,
     n_ventana: int = DEFAULT_N_VENTANA,
     auto_revoke: bool = False,
+    fuente: str = "timing_deteccion",
 ) -> Dict[str, Any]:
     """Evalúa UNA condición de punta a punta: lee su ventana reciente
     (solo lectura), recalcula Wilson/baseline con
@@ -278,7 +334,15 @@ def evaluate_condition(
     estaba ya revocada -- llama a `activation_registry.revoke()` (Fase
     3.5, sin modificarla). Nunca lanza -- cualquier excepción termina en
     `NO_EVALUABLE`, sin revocar, con el detalle real del error persistido
-    en `error_detalle`."""
+    en `error_detalle`.
+
+    `fuente` (FIX 2026-09-12, misión "RESOLVER LA DESCONEXIÓN ENTRE
+    APRENDIZAJE Y DECISIÓN"): `"timing_deteccion"` (default, comportamiento
+    IDÉNTICO al de siempre, cero cambios) o `"stage"` (v2 -- la ventana
+    reciente se lee de `alert_stage_log` vía
+    `_recent_condition_rows_by_stage()` en vez de `_recent_condition_rows()`;
+    `timing_deteccion` en este caso es, en realidad, un valor de
+    `alert_stage` -- mismo genérico ya usado en el resto del proyecto)."""
     from atlas_live.core import activation_registry as areg
     from atlas_live.learning import live_experience_scoring as les
 
@@ -315,7 +379,10 @@ def evaluate_condition(
     }
 
     try:
-        ventana = _recent_condition_rows(direction, timing_deteccion, n_ventana, as_of_date)
+        if fuente == "stage":
+            ventana = _recent_condition_rows_by_stage(direction, timing_deteccion, n_ventana, as_of_date)
+        else:
+            ventana = _recent_condition_rows(direction, timing_deteccion, n_ventana, as_of_date)
 
         if not ventana:
             clasificacion = {
@@ -399,18 +466,27 @@ def evaluate_condition(
 
 # --- camino event-driven --------------------------------------------------
 
-def evaluate_conditions_from_experience_table(tabla: List[Dict[str, Any]], as_of_date: str) -> Dict[str, Any]:
+def evaluate_conditions_from_experience_table(
+    tabla: List[Dict[str, Any]], as_of_date: str, fuente: str = "timing_deteccion",
+) -> Dict[str, Any]:
     """Punto de entrada EVENT-DRIVEN -- llamado por
-    `live_experience_pipeline.run_experience_learning_cycle()` (Fase 2,
-    tocada mínimamente) inmediatamente después de que `tabla` ya se
-    calculó Y persistió. La fuente de condiciones es `tabla` misma -- sin
-    ninguna consulta de enumeración nueva. `auto_revoke=True` para cada
-    condición, pero la revocación real sigue exigiendo TODOS los guards
-    de `evaluate_condition()` (DEGRADADO robusto, no ya revocada). Nunca
-    lanza -- cualquier excepción por condición queda contenida, no
-    interrumpe la evaluación del resto."""
+    `live_experience_pipeline.run_experience_learning_cycle()`/
+    `run_experience_learning_cycle_by_stage()` inmediatamente después de
+    que `tabla` ya se calculó Y persistió. La fuente de condiciones es
+    `tabla` misma -- sin ninguna consulta de enumeración nueva.
+    `auto_revoke=True` para cada condición, pero la revocación real sigue
+    exigiendo TODOS los guards de `evaluate_condition()` (DEGRADADO
+    robusto, no ya revocada). Nunca lanza -- cualquier excepción por
+    condición queda contenida, no interrumpe la evaluación del resto.
+
+    `fuente` (FIX 2026-09-12): `"timing_deteccion"` (default, sin cambios)
+    o `"stage"` (v2) -- determina tanto de dónde se relee la ventana
+    reciente (ver `evaluate_condition()`) como el `methodology_version`
+    con el que se persiste (`lek.METHODOLOGY_VERSION` vs
+    `lek.METHODOLOGY_VERSION_V2`)."""
     from atlas_live.learning import live_experience_knowledge as lek
 
+    methodology_version = lek.METHODOLOGY_VERSION_V2 if fuente == "stage" else lek.METHODOLOGY_VERSION
     resultado: Dict[str, Any] = {"ok": True, "as_of_date": as_of_date, "n_condiciones": 0, "evaluaciones": [], "error": None}
     try:
         condiciones: Set[Tuple[str, str]] = {
@@ -421,8 +497,9 @@ def evaluate_conditions_from_experience_table(tabla: List[Dict[str, Any]], as_of
             try:
                 snapshot = evaluate_condition(
                     direction=direction, timing_deteccion=timing_deteccion,
-                    methodology_version=lek.METHODOLOGY_VERSION,
+                    methodology_version=methodology_version,
                     as_of_date=as_of_date, n_ventana=DEFAULT_N_VENTANA, auto_revoke=True,
+                    fuente=fuente,
                 )
                 resultado["evaluaciones"].append(snapshot)
             except Exception as exc:  # defensa adicional -- evaluate_condition ya no debería lanzar

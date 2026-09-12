@@ -55,7 +55,18 @@ adelante, nunca el mismo día D, sin importar a qué hora se haya calculado.
 Esto es deliberadamente MÁS estricto que `live_experience_knowledge.
 get_knowledge_for()`/`latest_knowledge_as_of()` (Fase 2, que usan `<=`
 por diseño, para sus propios tests de verificación) -- este módulo no
-modifica esas funciones, define su propia consulta más conservadora."""
+modifica esas funciones, define su propia consulta más conservadora.
+
+Consulta genérica v1/v2 (FIX 2026-09-12, misión "RESOLVER LA DESCONEXIÓN
+ENTRE APRENDIZAJE Y DECISIÓN"): esta función NUNCA cambió de firma --
+`timing_deteccion` y `methodology_version` ya eran parámetros genéricos.
+El llamador decide la semántica: pasar `timing_deteccion_hoy` con
+`methodology_version=lek.METHODOLOGY_VERSION` (v1, comportamiento
+histórico, sin cambios) o pasar el `alert_stage` real de la candidata
+(`o["stage"]`) con `methodology_version=lek.METHODOLOGY_VERSION_V2` (v2,
+la unidad que REALMENTE determina `estado_final` -- ver `alert_stage.py`/
+`priority_classifier.py`, sin modificar). Este módulo no impone cuál se
+usa -- eso se decide en `server.py`."""
 
 from typing import Any, Dict, Optional
 
