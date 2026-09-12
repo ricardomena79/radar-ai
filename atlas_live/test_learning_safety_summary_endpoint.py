@@ -76,3 +76,8 @@ def test_contra_el_estado_real_no_filtra_eventos():
     _sin_eventos(body)
     assert "activation_mechanism_state" in body
     assert body["activation_mechanism_state"] in ("OFF", "ON_CONTROLADO")
+    # 2026-09-11 (misión "HACER OPERATIVO EL APRENDIZAJE REAL"): el veredicto
+    # BASE vs INFORMADA debe estar presente y ser uno de los 4 valores conocidos.
+    from atlas_live.core import base_vs_informed_verdict as bvi
+
+    assert body["base_vs_informed_verdict"]["veredicto"] in bvi.VERDICTS

@@ -59,6 +59,7 @@ def test_dbs_vacias_conteos_en_cero_mecanismo_off():
         assert resumen["evaluacion_continua"]["ok"] is True
         assert resumen["evaluacion_continua"]["n_eventos"] == 0
         assert resumen["evaluacion_continua"]["n_revocaciones_disparadas"] == 0
+        assert resumen["base_vs_informed_verdict"]["veredicto"] == "CONOCIMIENTO_CONSULTADO_SIN_EFECTO_DECISIONAL"
     finally:
         _restore()
 
@@ -116,6 +117,10 @@ def test_nunca_filtra_la_clave_eventos_ni_detalle_por_condicion():
     assert resumen["shadow_observation"]["universo_conocimiento_conteos"]["C_elegible_con_divergencia"] == 2
     assert resumen["activacion"]["conteos_por_estado"]["ACTIVADO"] == 1
     assert resumen["evaluacion_continua"]["n_revocaciones_disparadas"] == 1
+    # El veredicto se calcula sobre el universo_conocimiento del mock (grupo C
+    # con 1 evento sin veredicto real -> NO_EVALUABLE, nunca un ticker filtrado).
+    assert resumen["base_vs_informed_verdict"]["veredicto"] == "NO_EVALUABLE"
+    assert resumen["base_vs_informed_verdict"]["universo"]["n_C_elegible_con_divergencia"] == 1
 
 
 # --- 3) fail-safe por capa: un fallo en una no vacía las otras 3 -----------

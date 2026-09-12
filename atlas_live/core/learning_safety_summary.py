@@ -13,9 +13,17 @@ detalle por ticker/condición, incluyendo Wilson/baseline reales) a la
 salida pública. Ver `test_learning_safety_summary.py` para la prueba
 explícita, recursiva, de que ninguna fuga de detalle ocurre.
 
+Extendido 2026-09-11 (misión "HACER OPERATIVO EL APRENDIZAJE REAL",
+autorizado en Plan Mode): agrega `base_vs_informed_verdict`, el veredicto
+estadístico de `base_vs_informed_verdict.build_verdict()` (nuevo módulo,
+puro) sobre el `universo_conocimiento` que YA calcula
+`shadow_observation_registry.full_shadow_observation_report()` -- mismo
+criterio de agregados-únicamente: se agregan conteos y el veredicto, nunca
+la lista de eventos con ticker/fecha reales.
+
 Puro orquestador de lectura -- nunca escribe nada, nunca activa nada,
 nunca lanza (cada sub-bloque queda aislado en su propio try/except, un
-fallo en una capa no puede vaciar las otras 3)."""
+fallo en una capa no puede vaciar las otras)."""
 
 from __future__ import annotations
 
@@ -53,6 +61,7 @@ def _default_summary() -> Dict[str, Any]:
         "evaluacion_continua": {
             "ok": False, "n_eventos": 0, "conteos_por_estado": {}, "n_revocaciones_disparadas": 0,
         },
+        "base_vs_informed_verdict": None,
     }
 
 
@@ -87,6 +96,15 @@ def build_safety_summary() -> Dict[str, Any]:
                 grupo: _get(_get(universo, grupo, {}), "n_eventos", 0) for grupo in _UNIVERSO_GRUPOS
             },
         }
+        try:
+            from atlas_live.core import base_vs_informed_verdict as bvi
+            from atlas_live.radar.candidate_registry import META_MUESTRA_MINIMA
+
+            resultado["base_vs_informed_verdict"] = bvi.build_verdict(
+                universo, piso_muestra_minima=META_MUESTRA_MINIMA,
+            )
+        except Exception:
+            pass
     except Exception:
         pass
 
