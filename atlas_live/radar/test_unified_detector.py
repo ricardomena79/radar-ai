@@ -336,6 +336,71 @@ def test_N_storage_OK_persiste_normalmente_sin_cambio_de_comportamiento():
         _reset_storage_guard()
 
 
+# --- Interruptor maestro del hilo (2026-09-12, misión "ELIMINAR EL
+# CONSUMO INNECESARIO DE shadow_unified_detector") -----------------------
+
+def test_unified_detector_enabled_default_true_sin_variable_de_entorno():
+    """`_env_bool` debe devolver el default cuando la variable no está
+    seteada -- mismo criterio que `ATLAS_CATALYST_WORKER_ENABLED`."""
+    import os
+    orig = os.environ.pop("ATLAS_UNIFIED_DETECTOR_ENABLED", None)
+    try:
+        assert ud._env_bool("ATLAS_UNIFIED_DETECTOR_ENABLED", True) is True
+    finally:
+        if orig is not None:
+            os.environ["ATLAS_UNIFIED_DETECTOR_ENABLED"] = orig
+
+
+def test_env_bool_respeta_false():
+    import os
+    orig = os.environ.get("ATLAS_UNIFIED_DETECTOR_ENABLED")
+    try:
+        os.environ["ATLAS_UNIFIED_DETECTOR_ENABLED"] = "false"
+        assert ud._env_bool("ATLAS_UNIFIED_DETECTOR_ENABLED", True) is False
+    finally:
+        if orig is None:
+            os.environ.pop("ATLAS_UNIFIED_DETECTOR_ENABLED", None)
+        else:
+            os.environ["ATLAS_UNIFIED_DETECTOR_ENABLED"] = orig
+
+
+def test_start_shadow_detector_no_arranca_hilo_si_deshabilitado():
+    """Con el flag en False, `start_shadow_detector()` nunca crea el hilo
+    -- cero CPU, cero disco, para siempre, sin importar mechanism_state,
+    storage_guard ni el tamaño del Volume."""
+    orig_enabled = ud.UNIFIED_DETECTOR_ENABLED
+    orig_thread = ud._thread
+    ud._thread = None
+    try:
+        ud.UNIFIED_DETECTOR_ENABLED = False
+        ud.start_shadow_detector()
+        assert ud._thread is None
+    finally:
+        ud.UNIFIED_DETECTOR_ENABLED = orig_enabled
+        ud._thread = orig_thread
+
+
+def test_start_shadow_detector_arranca_hilo_si_habilitado():
+    """Con el flag en True (default, comportamiento actual sin cambios),
+    `start_shadow_detector()` sigue arrancando el hilo exactamente igual
+    que antes de este cambio."""
+    orig_enabled = ud.UNIFIED_DETECTOR_ENABLED
+    orig_thread = ud._thread
+    ud._thread = None
+    try:
+        ud.UNIFIED_DETECTOR_ENABLED = True
+        ud.start_shadow_detector()
+        assert ud._thread is not None
+        assert ud._thread.is_alive()
+    finally:
+        ud.request_stop()
+        if ud._thread is not None:
+            ud._thread.join(timeout=5)
+        ud._thread = orig_thread
+        ud._stop.clear()
+        ud.UNIFIED_DETECTOR_ENABLED = orig_enabled
+
+
 if __name__ == "__main__":
     import traceback
 

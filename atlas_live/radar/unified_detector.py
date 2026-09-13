@@ -59,6 +59,27 @@ from atlas_live.radar.sweep_history import SweepHistory, SweepSnapshot
 SHADOW_LOOP_INTERVAL_SECONDS = 60.0
 AFTERHOURS_MIN_INTERVAL_SECONDS = 300.0
 
+
+def _env_bool(name: str, default: bool) -> bool:
+    v = os.environ.get(name)
+    if v is None:
+        return default
+    return v.strip().lower() in ("1", "true", "yes", "on", "si", "sí")
+
+
+# Interruptor maestro del HILO completo (2026-09-12, misión "ELIMINAR EL
+# CONSUMO INNECESARIO DE shadow_unified_detector", autorizado
+# explícitamente). Distinto de `SHADOW_PERSISTENCE_ENABLED` (abajo), que
+# solo pausa el INSERT -- este flag evita que el hilo llegue a existir,
+# así que tampoco evalúa `gates.evaluate_all_gates()` sobre el universo
+# completo cada `SHADOW_LOOP_INTERVAL_SECONDS` (el "trabajo inútil" que
+# `SHADOW_PERSISTENCE_ENABLED=false` por sí solo no evita). Mismo patrón
+# exacto que `ATLAS_CATALYST_WORKER_ENABLED`/`ATLAS_MARKET_VIEW_ENABLED`.
+# Default "true" -- este cambio, por sí solo, no altera nada en
+# producción; requiere setear ATLAS_UNIFIED_DETECTOR_ENABLED=false en
+# Railway como acción aparte y explícita para detener el hilo.
+UNIFIED_DETECTOR_ENABLED = _env_bool("ATLAS_UNIFIED_DETECTOR_ENABLED", True)
+
 # Contención de crecimiento de almacenamiento (2026-09-08, autorizado
 # explícitamente -- ver ethereal-mixing-anchor.md, "Contención urgente de
 # crecimiento de storage"): `shadow_candidate_detection` es append-only,
@@ -253,8 +274,13 @@ def _loop() -> None:
 def start_shadow_detector() -> None:
     """Arranca el hilo de fondo del detector shadow (una sola vez por
     proceso) -- mismo patrón que `radar_worker.start_universe_radar()`/
-    `catalyst_worker.start_catalyst_worker()`."""
+    `catalyst_worker.start_catalyst_worker()`. No hace nada si está
+    deshabilitado por entorno (`ATLAS_UNIFIED_DETECTOR_ENABLED=false`) --
+    el radar técnico real sigue funcionando sin cambios en cualquier caso
+    (mismo criterio que `catalyst_worker.start_catalyst_worker()`)."""
     global _thread
+    if not UNIFIED_DETECTOR_ENABLED:
+        return
     if _thread is not None:
         return
     _stop.clear()
