@@ -8,7 +8,7 @@ No hace red, no decide cadencia -- solo procesa UN barrido ya obtenido.
 import os
 import uuid
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from atlas.data.models.quote import Quote
 from atlas_live import storage_guard
@@ -28,6 +28,84 @@ from atlas_live.radar.sweep_history import SweepHistory, SweepSnapshot
 # ejecución produzca un estado inconsistente dentro de una sola
 # predicción).
 ATLAS_MAGNITUD_PREDICTION_SOURCE_ENV = "ATLAS_MAGNITUD_PREDICTION_SOURCE"
+
+# Hito 3 (2026-09-14, PLAN Radar/Finnhub, autorizado explícitamente):
+# histéresis simétrica de `alert_stage` -- causa raíz confirmada por
+# auditoría de código: `classify_alert_stage()` es puro y sin memoria, y
+# sus inputs (`direction`/`change_pct_confiable`/`timing_deteccion`)
+# parpadean sweep a sweep cuando `relative_volume` oscila cerca de
+# `phase_classifier.CHANGE_PCT_MIN_RVOL_TO_TRUST_ZERO` (caso real RUM: 6
+# transiciones en 33 min). N=2 por defecto -- exige 2 sweeps consecutivos
+# de acuerdo antes de persistir un CAMBIO de ventana (subida o bajada,
+# mismo criterio para ambas: la evidencia real de RUM muestra que
+# NO_PERSEGUIR fue tan espurio como CONFIRMACION, ninguna dirección es más
+# "confiable" que la otra por defecto). Ver `_confirm_alert_stage_with_hysteresis()`.
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+ALERT_STAGE_HYSTERESIS_SWEEPS = _env_int("ATLAS_ALERT_STAGE_HYSTERESIS_SWEEPS", 2)
+
+# Estado en memoria de proceso, por `(ticker, market_date)` -- se pisa cada
+# sweep, nunca persistido (mismo criterio que `_last_quotes` de
+# `radar_worker.py`). Entradas de un `market_date` anterior quedan
+# huérfanas pero triviales en memoria (un dict de tickers activos, nunca
+# el universo completo) -- se limpian solas cuando ese ticker vuelve a
+# confirmar una ventana bajo el `market_date` nuevo.
+_pending_stage_by_ticker: Dict[Tuple[str, str], Dict[str, Any]] = {}
+
+
+def _confirm_alert_stage_with_hysteresis(ticker: str, market_date: str, raw_stage: str) -> Optional[str]:
+    """Devuelve el `raw_stage` a PERSISTIR en `alert_stage_log` solo cuando
+    queda confirmado (recién en el sweep que cruza `ALERT_STAGE_HYSTERESIS_SWEEPS`
+    sweeps consecutivos de acuerdo) -- `None` en cualquier otro caso: (a) ya
+    coincide con lo último confirmado (`reg.latest_alert_stage()`, nada que
+    hacer, comportamiento idéntico al de siempre), o (b) todavía no
+    acumuló suficientes sweeps consecutivos (sigue pendiente).
+
+    Mecanismo de recuperación explícito (pedido del usuario, nunca una
+    señal congelada para siempre): un `raw_stage` que se mantiene N sweeps
+    SIEMPRE termina confirmándose, sin importar cuánto ruido hubo antes --
+    la única forma de no avanzar es que el ruido siga cambiando de valor
+    sweep a sweep (en cuyo caso, correctamente, no hay todavía una señal
+    clara que confirmar).
+
+    `classify_alert_stage()` en sí queda puro/sin cambios -- esta función
+    vive en el LLAMADOR (`_tag_alert_stage`), nunca dentro de `alert_stage.py`."""
+    key = (ticker, market_date)
+    confirmado = reg.latest_alert_stage(ticker, market_date)
+    if raw_stage == confirmado:
+        _pending_stage_by_ticker.pop(key, None)
+        return None
+
+    if confirmado is None:
+        # Primera alerta real de esta candidata hoy -- se confirma de
+        # inmediato, sin histéresis. No es "oscilación" (que por definición
+        # exige un estado YA establecido flip-floppeando) -- el caso real
+        # que motiva este fix (RUM: 6 transiciones en 33 min) oscila ENTRE
+        # etapas ya confirmadas, nunca en la primera aparición de una
+        # candidata. Decisión de diseño explícita (no forzada por el plan
+        # al pie de la letra, pero derivada de él): evita retrasar 1 sweep
+        # cada detección nueva sin ningún beneficio real contra ruido.
+        _pending_stage_by_ticker.pop(key, None)
+        return raw_stage
+
+    pending = _pending_stage_by_ticker.get(key)
+    if pending is not None and pending.get("raw_stage") == raw_stage:
+        pending["count"] += 1
+    else:
+        pending = {"raw_stage": raw_stage, "count": 1}
+        _pending_stage_by_ticker[key] = pending
+
+    if pending["count"] >= ALERT_STAGE_HYSTERESIS_SWEEPS:
+        _pending_stage_by_ticker.pop(key, None)
+        return raw_stage
+    return None
 
 
 @dataclass
@@ -234,14 +312,22 @@ def _tag_alert_stage(
     except Exception:
         racional_available = None
 
-    reg.record_alert_stage(
-        symbol, market_date, observed_at, stage,
-        relative_volume_hoy=relative_volume_hoy, volatility_14d_pct=volatility_14d_pct,
-        dias_volumen_elevado=dias_volumen_elevado, aceleracion_volumen=aceleracion_volumen,
-        timing_deteccion_hoy=tag.timing_deteccion, racional_available=racional_available,
-        direction=tag.direction, change_pct_confiable=tag.change_pct_confiable,
-        retroceso_desde_maximo_pct=retroceso_desde_maximo_pct,
-    )
+    # Hito 3 (2026-09-14): histéresis -- `stage` (RAW, recién calculado)
+    # solo se PERSISTE en `alert_stage_log` tras confirmarse con
+    # `ALERT_STAGE_HYSTERESIS_SWEEPS` sweeps consecutivos de acuerdo.
+    # Nunca afecta a `_tag_magnitud_prediction` de abajo (Hito 9 --
+    # Magnitud Prediction v2 no se toca): sigue usando el `stage` RAW de
+    # este sweep, exactamente igual que antes de este cambio.
+    stage_to_commit = _confirm_alert_stage_with_hysteresis(symbol, market_date, stage)
+    if stage_to_commit is not None:
+        reg.record_alert_stage(
+            symbol, market_date, observed_at, stage_to_commit,
+            relative_volume_hoy=relative_volume_hoy, volatility_14d_pct=volatility_14d_pct,
+            dias_volumen_elevado=dias_volumen_elevado, aceleracion_volumen=aceleracion_volumen,
+            timing_deteccion_hoy=tag.timing_deteccion, racional_available=racional_available,
+            direction=tag.direction, change_pct_confiable=tag.change_pct_confiable,
+            retroceso_desde_maximo_pct=retroceso_desde_maximo_pct,
+        )
 
     _tag_magnitud_prediction(
         symbol, market_date, observed_at, quote, stage,

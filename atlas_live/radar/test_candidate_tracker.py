@@ -515,6 +515,126 @@ def test_caida_real_con_volumen_da_flujo_vendedor_no_alerta_temprana():
         _restore()
 
 
+# ---------------------------------------------------------------------------
+# Hito 3 (2026-09-14, PLAN Radar/Finnhub) -- histéresis de alert_stage.
+# ---------------------------------------------------------------------------
+
+def _reset_hysteresis_state():
+    tracker._pending_stage_by_ticker = {}
+
+
+def test_hist_primera_alerta_se_confirma_de_inmediato_sin_histéresis():
+    _reset_hysteresis_state()
+    r = tracker._confirm_alert_stage_with_hysteresis("XYZ", "2026-09-14", "PREPARACION")
+    assert r == "PREPARACION"
+
+
+def test_hist_subida_requiere_2_sweeps_consecutivos_de_acuerdo(monkeypatch):
+    _reset_hysteresis_state()
+    monkeypatch.setattr(reg, "latest_alert_stage", lambda ticker, market_date: "ALERTA_TEMPRANA")
+    # 1er sweep con un nuevo valor -- todavía pendiente.
+    r1 = tracker._confirm_alert_stage_with_hysteresis("XYZ", "2026-09-14", "INICIO")
+    assert r1 is None
+    # 2do sweep consecutivo con el MISMO valor -- confirma.
+    r2 = tracker._confirm_alert_stage_with_hysteresis("XYZ", "2026-09-14", "INICIO")
+    assert r2 == "INICIO"
+
+
+def test_hist_bajada_mismo_criterio_simetrico(monkeypatch):
+    _reset_hysteresis_state()
+    monkeypatch.setattr(reg, "latest_alert_stage", lambda ticker, market_date: "CONFIRMACION")
+    r1 = tracker._confirm_alert_stage_with_hysteresis("XYZ", "2026-09-14", "NO_PERSEGUIR")
+    assert r1 is None
+    r2 = tracker._confirm_alert_stage_with_hysteresis("XYZ", "2026-09-14", "NO_PERSEGUIR")
+    assert r2 == "NO_PERSEGUIR"
+
+
+def test_hist_ruido_alternante_nunca_confirma(monkeypatch):
+    """Reproduce conceptualmente el patrón real de RUM (6 transiciones en
+    33 min): un valor que nunca se repite 2 veces seguidas nunca cruza el
+    piso de confirmación."""
+    _reset_hysteresis_state()
+    monkeypatch.setattr(reg, "latest_alert_stage", lambda ticker, market_date: "CONFIRMACION")
+    secuencia = ["NO_PERSEGUIR", "CONFIRMACION", "NO_PERSEGUIR", "CONFIRMACION", "NO_PERSEGUIR"]
+    resultados = [tracker._confirm_alert_stage_with_hysteresis("XYZ", "2026-09-14", s) for s in secuencia]
+    assert all(r is None for r in resultados)
+
+
+def test_hist_recuperacion_confirma_en_cuanto_2_sweeps_coinciden(monkeypatch):
+    """Mecanismo de recuperación explícito: tras ruido, en cuanto el mismo
+    valor se repite 2 veces seguidas, confirma -- nunca queda congelado
+    para siempre."""
+    _reset_hysteresis_state()
+    monkeypatch.setattr(reg, "latest_alert_stage", lambda ticker, market_date: "CONFIRMACION")
+    secuencia = ["NO_PERSEGUIR", "ALERTA_TEMPRANA", "NO_PERSEGUIR", "NO_PERSEGUIR"]
+    resultados = [tracker._confirm_alert_stage_with_hysteresis("XYZ", "2026-09-14", s) for s in secuencia]
+    assert resultados == [None, None, None, "NO_PERSEGUIR"]
+
+
+def test_hist_ya_confirmado_no_hace_nada(monkeypatch):
+    _reset_hysteresis_state()
+    monkeypatch.setattr(reg, "latest_alert_stage", lambda ticker, market_date: "INICIO")
+    r = tracker._confirm_alert_stage_with_hysteresis("XYZ", "2026-09-14", "INICIO")
+    assert r is None
+
+
+def test_hist_configurable_via_constante(monkeypatch):
+    """N configurable -- con N=3, 2 sweeps consecutivos siguen sin
+    confirmar."""
+    _reset_hysteresis_state()
+    monkeypatch.setattr(tracker, "ALERT_STAGE_HYSTERESIS_SWEEPS", 3)
+    monkeypatch.setattr(reg, "latest_alert_stage", lambda ticker, market_date: "PREPARACION")
+    r1 = tracker._confirm_alert_stage_with_hysteresis("XYZ", "2026-09-14", "ALERTA_TEMPRANA")
+    r2 = tracker._confirm_alert_stage_with_hysteresis("XYZ", "2026-09-14", "ALERTA_TEMPRANA")
+    r3 = tracker._confirm_alert_stage_with_hysteresis("XYZ", "2026-09-14", "ALERTA_TEMPRANA")
+    assert [r1, r2, r3] == [None, None, "ALERTA_TEMPRANA"]
+
+
+def test_hist_caso_real_rum_reduce_escrituras_reales_a_alert_stage_log():
+    """Regresión de extremo a extremo -- con `process_sweep()` real (no la
+    función de histéresis aislada), un patrón ruidoso tipo RUM
+    (ALERTA_TEMPRANA -> CONFIRMACION -> NO_PERSEGUIR -> CONFIRMACION ->
+    NO_PERSEGUIR -> CONFIRMACION en sweeps sucesivos, simulado fijando
+    directamente `classify_alert_stage`) debe generar MUCHAS MENOS
+    transiciones reales en `alert_stage_log` que sweeps ruidosos -- nunca
+    una fila por cada parpadeo."""
+    _fresh()
+    _reset_hysteresis_state()
+    try:
+        h = SweepHistory()
+        secuencia_stages = [
+            "ALERTA_TEMPRANA", "CONFIRMACION", "NO_PERSEGUIR",
+            "CONFIRMACION", "NO_PERSEGUIR", "CONFIRMACION",
+        ]
+        orig_classify = tracker.als.classify_alert_stage
+        idx = {"i": 0}
+
+        def _fake_classify(*a, **k):
+            s = secuencia_stages[min(idx["i"], len(secuencia_stages) - 1)]
+            idx["i"] += 1
+            return s
+
+        tracker.als.classify_alert_stage = _fake_classify
+        try:
+            for _ in secuencia_stages:
+                tracker.process_sweep({"RUM": _quote("RUM", 10.0, 26.85, rvol=0.01)}, h, "2026-09-14", "regular", _now())
+        finally:
+            tracker.als.classify_alert_stage = orig_classify
+
+        historial = reg.alert_stage_history_for_ticker("RUM", "2026-09-14")
+        # Sin histéresis, el patrón de arriba habría escrito 6 filas
+        # (record_alert_stage ya dedupea repeticiones consecutivas idénticas,
+        # pero acá NINGÚN valor consecutivo se repite dos veces seguidas en
+        # bruto) -- con histéresis, solo confirma cuando un valor se repite
+        # 2 veces seguidas: ALERTA_TEMPRANA (sweep1, primera alerta, directo)
+        # y CONFIRMACION (sweeps 4+5 consecutivos... en verdad el patrón de
+        # arriba nunca repite 2 veces seguidas fuera del primero, así que
+        # debe quedar en 1 sola fila -- la primera).
+        assert len(historial) < len(secuencia_stages)
+    finally:
+        _restore()
+
+
 def test_tag_alert_stage_conecta_pm_rvol_via_process_sweep_caso_tipo_atec():
     """Integración de extremo a extremo (2026-09-11, corrección PM-RVOL
     autorizada explícitamente) -- NO solo `classify_alert_stage()` aislado:
@@ -848,7 +968,15 @@ def test_caso_real_yyai_pico_y_caida_fuerza_no_perseguir():
 
             # sweep 3: retrocede fuerte desde el pico (~13.4%) -- sigue
             # positiva contra el precio base, timing/dirección seguirían
-            # dando INICIO si no fuera por el retroceso nuevo.
+            # dando INICIO si no fuera por el retroceso nuevo. Con
+            # histéresis (Hito 3, 2026-09-14): INICIO ya estaba CONFIRMADO
+            # desde el sweep 1, así que este cambio de ventana queda
+            # pendiente hasta un segundo sweep consecutivo de acuerdo.
+            tracker.process_sweep({"YYAI": _quote("YYAI", 1.36, 11.5, rvol=11.7)}, h, "2026-08-18", "regular", _now())
+            assert reg.latest_alert_stage("YYAI", "2026-08-18") == "INICIO"  # todavía pendiente de confirmación
+
+            # sweep 4: mismo retroceso persiste -- 2do sweep consecutivo de
+            # acuerdo, NO_PERSEGUIR queda confirmado.
             tracker.process_sweep({"YYAI": _quote("YYAI", 1.36, 11.5, rvol=11.7)}, h, "2026-08-18", "regular", _now())
             assert reg.latest_alert_stage("YYAI", "2026-08-18") == "NO_PERSEGUIR"
 
