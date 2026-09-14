@@ -44,6 +44,7 @@ from atlas.data.universe import get_equities
 from atlas_live.catalyst import catalyst_collector as coll
 from atlas_live.catalyst import catalyst_provider as prov
 from atlas_live.catalyst import catalyst_registry as reg
+from atlas_live.data_fusion import finnhub_shared_budget
 from atlas_live.memory import market_hours
 from atlas_live.radar import candidate_registry as candreg
 from atlas_live.radar import radar_worker
@@ -160,6 +161,13 @@ def run_tier1_once(
         if i > 0 and inter_call_delay_seconds > 0:
             time.sleep(inter_call_delay_seconds)
         ticker = c["ticker"]
+        # 2026-09-14 (autorizado explícitamente, presupuesto compartido de
+        # Finnhub): sin cupo, se salta ESTE ticker sin llamar a la red --
+        # no es un error del proveedor (no se cuenta en `errores`, no
+        # dispara el cooldown por 401/429), es simplemente "sin cupo
+        # todavía" -- el próximo ciclo lo vuelve a intentar.
+        if not finnhub_shared_budget.try_acquire("catalyst_worker"):
+            continue
         try:
             noticias = provider.get_company_news(ticker, desde, hasta)
         except ProviderError as exc:
@@ -245,6 +253,9 @@ def run_tier3_once(
     for i, ticker in enumerate(batch):
         if i > 0 and inter_call_delay_seconds > 0:
             time.sleep(inter_call_delay_seconds)
+        # Mismo criterio que Tier 1 -- ver comentario ahí.
+        if not finnhub_shared_budget.try_acquire("catalyst_worker"):
+            continue
         try:
             noticias = provider.get_company_news(ticker, desde, hasta)
         except ProviderError as exc:

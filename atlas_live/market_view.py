@@ -47,6 +47,7 @@ from atlas.data.providers.base import RateLimitError
 from atlas.data.providers.tradier_provider import TRADIER_CHUNK_SIZE, TradierProvider
 from atlas.data.providers.tradier_symbol_map import normalize
 from atlas.data.universe import load_universe
+from atlas_live.data_fusion import finnhub_shared_budget
 from atlas_live.data_fusion.finnhub_provider import FinnhubProvider
 from atlas_live.data_fusion.multi_source_resolver import (
     es_fresco_independiente,
@@ -168,6 +169,7 @@ _snapshot: Dict[str, Any] = {
     "finnhub_success": 0,
     "finnhub_errors": 0,
     "finnhub_aborted": 0,
+    "finnhub_budget_rejected": 0,
     "cache_used": 0,
     "sin_dato_final": 0,
     "cycles_total": 0,
@@ -237,8 +239,21 @@ def _build_finnhub_provider() -> Optional[FinnhubProvider]:
         return None
 
 
+class BudgetRejectedError(Exception):
+    """AJUSTE 2 (2026-09-14, autorizado explícitamente): señal interna --
+    nunca sale de este archivo -- para distinguir un rechazo del
+    presupuesto compartido de Finnhub (`finnhub_shared_budget.try_acquire()`
+    devolvió `False`, la request real NUNCA se disparó) de un error real
+    del proveedor. `_fetch_one_finnhub_unit()` la lanza en vez de devolver
+    `{}` en silencio; `_fetch_with_circuit_breaker()` la captura en una
+    rama propia que SOLO incrementa `stats['budget_rejected']` -- nunca
+    `stats['errors']`, nunca abre el circuito, nunca se confunde con un
+    fallo real de Finnhub. Yahoo nunca la lanza (no consulta el
+    presupuesto), así que su camino queda exactamente igual que antes."""
+
+
 def _empty_circuit_stats() -> Dict[str, int]:
-    return {"attempted": 0, "success": 0, "errors": 0, "aborted": 0}
+    return {"attempted": 0, "success": 0, "errors": 0, "aborted": 0, "budget_rejected": 0}
 
 
 def _fetch_with_circuit_breaker(
@@ -312,17 +327,26 @@ def _fetch_with_circuit_breaker(
             for future in done:
                 unit = pending.pop(future)
                 n = unit_len(unit)
-                stats["attempted"] += n
                 try:
                     by_symbol = future.result()
+                    stats["attempted"] += n
                     result.update(by_symbol)
                     got = len(by_symbol)
                     stats["success"] += got
                     stats["errors"] += max(0, n - got)
+                except BudgetRejectedError:
+                    # AJUSTE 2: un rechazo del presupuesto compartido
+                    # nunca intentó la red -- no cuenta como intento real
+                    # ni como error real, nunca abre el circuito. Se
+                    # registra aparte para poder auditarlo sin
+                    # contaminar la métrica de salud real de Finnhub.
+                    stats["budget_rejected"] += n
                 except RateLimitError:
+                    stats["attempted"] += n
                     stats["errors"] += n
                     circuit_open = True
                 except Exception:
+                    stats["attempted"] += n
                     stats["errors"] += n
 
                 if not circuit_open and stats["attempted"] >= min_sample:
@@ -373,6 +397,18 @@ def _fetch_yahoo_batch(symbols: List[str]) -> Tuple[Dict[str, Any], Dict[str, in
 
 
 def _fetch_one_finnhub_unit(provider: FinnhubProvider, symbol: str) -> Dict[str, Any]:
+    """2026-09-14 (autorizado explícitamente, presupuesto compartido de
+    Finnhub): antes de la request real, consulta el presupuesto
+    compartido -- market_view es el consumidor de MENOR prioridad de los
+    3 (ver `finnhub_shared_budget.py`). Sin cupo -> AJUSTE 2 (mismo día):
+    lanza `BudgetRejectedError` en vez de devolver `{}` en silencio, para
+    que `_fetch_with_circuit_breaker()` pueda distinguirlo de un error
+    real de Finnhub -- la red nunca se toca en ese caso. Un error real
+    del proveedor (`get_quote()` falla) sigue devolviendo `{}` tal cual
+    ya hacía -- comportamiento intacto, `_fetch_with_circuit_breaker()`
+    ya lo cuenta como error real vía `max(0, n - got)`."""
+    if not finnhub_shared_budget.try_acquire("market_view"):
+        raise BudgetRejectedError(symbol)
     try:
         return {symbol: provider.get_quote(symbol)}
     except Exception:
@@ -662,6 +698,7 @@ def _run_cycle_body(symbols_override: Optional[List[str]] = None) -> float:
         _snapshot["finnhub_success"] = finnhub_stats["success"]
         _snapshot["finnhub_errors"] = finnhub_stats["errors"]
         _snapshot["finnhub_aborted"] = finnhub_stats["aborted"]
+        _snapshot["finnhub_budget_rejected"] = finnhub_stats["budget_rejected"]
         _snapshot["cache_used"] = cache_used_count
         _snapshot["sin_dato_final"] = sin_dato_count
         _snapshot["ultimo_error"] = None

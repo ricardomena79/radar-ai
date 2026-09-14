@@ -90,7 +90,10 @@ def _patch(monkeypatch, universe_symbols, quotes_by_symbol, fail_on_calls=None, 
     finnhub_quotes_by_symbol = finnhub_quotes_by_symbol or {}
 
     def _stats(attempted, success):
-        return {"attempted": attempted, "success": success, "errors": attempted - success, "aborted": 0}
+        return {
+            "attempted": attempted, "success": success, "errors": attempted - success,
+            "aborted": 0, "budget_rejected": 0,
+        }
 
     def _fake_yahoo_batch(symbols):
         found = {s: yahoo_quotes_by_symbol[s] for s in symbols if s in yahoo_quotes_by_symbol}
@@ -1123,6 +1126,156 @@ def test_circuit_breaker_finnhub_aborta_tras_errores(monkeypatch):
     assert result == {}
     assert stats["aborted"] > 0
     assert stats["attempted"] < 50
+
+
+# --- Presupuesto compartido de Finnhub (2026-09-14, autorizado explícitamente) ---
+
+def test_finnhub_unit_consulta_presupuesto_antes_de_la_request_real(monkeypatch):
+    """Sin cupo -> `provider.get_quote()` NUNCA se llama -- confirma que
+    el chequeo ocurre ANTES de la request real, no después. AJUSTE 2
+    (2026-09-14): sin cupo ahora LANZA `BudgetRejectedError` en vez de
+    devolver `{}` en silencio, para que `_fetch_with_circuit_breaker()`
+    pueda distinguirlo de un error real de Finnhub."""
+    llamadas_reales = []
+
+    class _SpyProvider:
+        def get_quote(self, symbol):
+            llamadas_reales.append(symbol)
+            return _FakeQuote(symbol, 10.0, 1.0)
+
+    monkeypatch.setattr(mv.finnhub_shared_budget, "try_acquire", lambda consumer: False)
+    try:
+        mv._fetch_one_finnhub_unit(_SpyProvider(), "AFRM")
+        assert False, "debía lanzar BudgetRejectedError"
+    except mv.BudgetRejectedError:
+        pass
+    assert llamadas_reales == []  # la request real nunca se disparó
+
+
+def test_finnhub_unit_con_cupo_hace_la_request_normalmente(monkeypatch):
+    """Con cupo, comportamiento IDÉNTICO al de antes de este cambio."""
+    q = _FakeQuote("AFRM", 71.44, 5.07)
+
+    class _RealProvider:
+        def get_quote(self, symbol):
+            return q
+
+    monkeypatch.setattr(mv.finnhub_shared_budget, "try_acquire", lambda consumer: True)
+    resultado = mv._fetch_one_finnhub_unit(_RealProvider(), "AFRM")
+    assert resultado == {"AFRM": q}
+
+
+# --- AJUSTE 2 (2026-09-14, autorizado explícitamente): no contaminar las
+# métricas reales de Finnhub con rechazos de presupuesto ---------------
+
+def test_ajuste2_rechazo_de_presupuesto_no_incrementa_errors(monkeypatch):
+    """Un rechazo de presupuesto NUNCA se cuenta como error real de
+    Finnhub -- `stats['errors']` debe quedar en 0 aunque TODOS los
+    símbolos se rechacen por falta de cupo."""
+    monkeypatch.setattr(mv.finnhub_shared_budget, "try_acquire", lambda consumer: False)
+
+    class _NuncaLlamado:
+        def get_quote(self, symbol):
+            raise AssertionError("nunca debería llegar acá -- el presupuesto ya rechazó")
+
+    symbols = [f"SYM{i}" for i in range(10)]
+    result, stats = mv._fetch_finnhub_batch(symbols, _NuncaLlamado())
+    assert result == {}
+    assert stats["errors"] == 0
+    assert stats["attempted"] == 0
+
+
+def test_ajuste2_rechazo_de_presupuesto_incrementa_solo_su_propio_contador(monkeypatch):
+    """El rechazo de presupuesto se cuenta EXCLUSIVAMENTE en
+    `stats['budget_rejected']` -- separado y auditable, nunca mezclado
+    con `errors`/`success`/`aborted`."""
+    monkeypatch.setattr(mv.finnhub_shared_budget, "try_acquire", lambda consumer: False)
+
+    class _NuncaLlamado:
+        def get_quote(self, symbol):
+            raise AssertionError("no debería llamarse")
+
+    symbols = [f"SYM{i}" for i in range(7)]
+    result, stats = mv._fetch_finnhub_batch(symbols, _NuncaLlamado())
+    assert stats["budget_rejected"] == 7
+    assert stats["errors"] == 0
+    assert stats["success"] == 0
+    assert stats["aborted"] == 0
+
+
+def test_ajuste2_error_real_de_finnhub_si_incrementa_errors(monkeypatch):
+    """Con cupo disponible, un error REAL del proveedor (`get_quote()`
+    falla) sigue contando como error real -- comportamiento intacto,
+    nunca confundido con un rechazo de presupuesto."""
+    monkeypatch.setattr(mv.finnhub_shared_budget, "try_acquire", lambda consumer: True)
+    monkeypatch.setattr(mv, "CIRCUIT_MIN_SAMPLE", 1000)  # nunca abre el circuito en este test
+
+    class _SiempreFalla:
+        def get_quote(self, symbol):
+            raise RuntimeError("Finnhub caído de verdad")
+
+    symbols = [f"SYM{i}" for i in range(5)]
+    result, stats = mv._fetch_finnhub_batch(symbols, _SiempreFalla())
+    assert result == {}
+    assert stats["errors"] == 5
+    assert stats["budget_rejected"] == 0
+    assert stats["attempted"] == 5
+
+
+def test_ajuste2_circuit_breaker_sigue_funcionando_para_errores_reales(monkeypatch):
+    """Un rechazo de presupuesto NUNCA abre el circuito -- pero una tasa
+    real de errores de Finnhub (con cupo disponible) sigue abriéndolo
+    exactamente igual que antes de AJUSTE 2."""
+    monkeypatch.setattr(mv, "CIRCUIT_MIN_SAMPLE", 5)
+    monkeypatch.setattr(mv, "CIRCUIT_ERROR_RATE", 0.8)
+    monkeypatch.setattr(mv, "FINNHUB_BATCH_WORKERS", 2)
+    monkeypatch.setattr(mv.finnhub_shared_budget, "try_acquire", lambda consumer: True)
+
+    class _SiempreFalla:
+        def get_quote(self, symbol):
+            raise RuntimeError("Finnhub caído de verdad")
+
+    symbols = [f"SYM{i}" for i in range(50)]
+    result, stats = mv._fetch_finnhub_batch(symbols, _SiempreFalla())
+    assert result == {}
+    assert stats["aborted"] > 0  # el circuito SÍ abrió -- comportamiento intacto
+    assert stats["attempted"] < 50
+    assert stats["budget_rejected"] == 0
+
+
+def test_ajuste2_rechazo_de_presupuesto_nunca_abre_el_circuito(monkeypatch):
+    """Con TODO rechazado por presupuesto (nunca se tocó la red), el
+    circuito nunca debe abrirse -- `aborted` debe quedar en 0, todos los
+    símbolos llegan a intentarse (aunque todos terminen rechazados)."""
+    monkeypatch.setattr(mv, "CIRCUIT_MIN_SAMPLE", 5)
+    monkeypatch.setattr(mv, "CIRCUIT_ERROR_RATE", 0.8)
+    monkeypatch.setattr(mv, "FINNHUB_BATCH_WORKERS", 2)
+    monkeypatch.setattr(mv.finnhub_shared_budget, "try_acquire", lambda consumer: False)
+
+    class _NuncaLlamado:
+        def get_quote(self, symbol):
+            raise AssertionError("no debería llamarse")
+
+    symbols = [f"SYM{i}" for i in range(50)]
+    result, stats = mv._fetch_finnhub_batch(symbols, _NuncaLlamado())
+    assert result == {}
+    assert stats["aborted"] == 0
+    assert stats["budget_rejected"] == 50
+    assert stats["errors"] == 0
+
+
+def test_finnhub_unit_pide_cupo_con_el_consumidor_market_view(monkeypatch):
+    consumidores_pedidos = []
+    monkeypatch.setattr(
+        mv.finnhub_shared_budget, "try_acquire",
+        lambda consumer: consumidores_pedidos.append(consumer) or True,
+    )
+    class _P:
+        def get_quote(self, symbol):
+            return _FakeQuote(symbol, 1.0, 1.0)
+
+    mv._fetch_one_finnhub_unit(_P(), "AFRM")
+    assert consumidores_pedidos == ["market_view"]
 
 
 def test_symbols_override_limita_el_universo_del_ciclo(monkeypatch):

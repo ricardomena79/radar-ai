@@ -22,6 +22,7 @@ from typing import Callable, Dict, List, Optional
 
 from atlas.data.collectors.data_collector import DataCollector
 from atlas.data.providers.base import ProviderError, QuoteNotFoundError, RateLimitError
+from atlas_live.data_fusion import finnhub_shared_budget
 
 # El canal es EXCLUSIVO para Plan A + Plan B: como mucho 2 símbolos. Cualquier
 # exceso se ignora, para que nadie pueda usar este endpoint como un escáner
@@ -65,7 +66,20 @@ def _fetch_one(
     NO se reintenta `RateLimitError`: reintentar dentro del mismo request no
     ayuda (el límite sigue vigente) y solo gastaría cuota; sale "unavailable"
     y el frontend conserva el "último recibido".
+
+    2026-09-14 (autorizado explícitamente, presupuesto compartido de
+    Finnhub): antes de intentar la red, consulta el presupuesto compartido
+    -- hot_quote es el consumidor de MAYOR prioridad de los 3 (visible al
+    usuario en tiempo real), así que en la práctica casi nunca debería
+    encontrarse sin cupo. Se chequea UNA vez por símbolo, no por reintento
+    (mismo criterio que `RateLimitError`: sin cupo, no tiene sentido
+    reintentar dentro del mismo request). El request puede resolver por
+    Yahoo o por Finnhub según `MultiProvider` -- se consulta el presupuesto
+    de todos modos, igual que el propio docstring del módulo ya trata todo
+    el tráfico de hot_quote como si contara contra el límite de Finnhub.
     """
+    if not finnhub_shared_budget.try_acquire("hot_quote"):
+        return {"symbol": symbol, "status": "unavailable", "reason": "SinCupoFinnhub"}
     last_reason = "ProviderError"
     for attempt in range(max_attempts):
         try:

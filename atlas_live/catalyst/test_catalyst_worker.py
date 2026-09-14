@@ -11,6 +11,7 @@ from pathlib import Path
 from atlas.data.providers.base import ProviderError
 from atlas_live.catalyst import catalyst_registry as creg
 from atlas_live.catalyst import catalyst_worker as worker
+from atlas_live.data_fusion import finnhub_shared_budget as budget
 from atlas_live.radar import candidate_registry as candreg
 
 _ORIG_CREG_DB = creg.DB_PATH
@@ -85,6 +86,71 @@ def test_tier1_procesa_candidatas_del_dia_y_registra_poll_state():
         poll = creg.get_poll_state("ZYME")
         assert poll["last_poll_ok"] == 1
         assert poll["n_events_found"] == 1
+    finally:
+        _restore()
+
+
+def test_tier1_sin_cupo_de_presupuesto_no_llama_al_proveedor(monkeypatch):
+    # 2026-09-14, autorizado explícitamente: sin cupo compartido, la
+    # request real a Finnhub NUNCA se dispara -- ni siquiera se cuenta
+    # como error (no dispara cooldown, no rompe el ciclo).
+    _fresh()
+    try:
+        market_date = "2026-08-23"
+        now = datetime(2026, 8, 23, 15, 0, tzinfo=timezone.utc)
+        candreg.record_detection(
+            "ZYME", market_date, "regular", now.isoformat(), "sweep-1",
+            price_at_detection=10.0, change_pct_at_detection=5.0,
+            volume_at_detection=1000, average_volume_at_detection=200,
+            relative_volume_at_detection=5.0, dollar_volume_at_detection=10000.0,
+            gates_fired=[{"gate": "acceleration"}],
+        )
+        provider = _FakeProvider(news_by_symbol={"ZYME": [{"id": 1, "headline": "x", "datetime": 0}]})
+        monkeypatch.setattr(worker.finnhub_shared_budget, "try_acquire", lambda consumer: False)
+        resultado = worker.run_tier1_once(provider, market_date, now, inter_call_delay_seconds=0.0)
+        assert provider.news_calls == []  # la request real nunca se disparó
+        assert resultado["errores"] == 0  # sin cupo NO es un error de proveedor
+        assert resultado["cooldown_triggered"] is False
+    finally:
+        _restore()
+
+
+def test_tier1_pide_cupo_con_el_consumidor_catalyst_worker(monkeypatch):
+    _fresh()
+    try:
+        market_date = "2026-08-23"
+        now = datetime(2026, 8, 23, 15, 0, tzinfo=timezone.utc)
+        candreg.record_detection(
+            "ZYME", market_date, "regular", now.isoformat(), "sweep-1",
+            price_at_detection=10.0, change_pct_at_detection=5.0,
+            volume_at_detection=1000, average_volume_at_detection=200,
+            relative_volume_at_detection=5.0, dollar_volume_at_detection=10000.0,
+            gates_fired=[{"gate": "acceleration"}],
+        )
+        provider = _FakeProvider()
+        consumidores_pedidos = []
+        monkeypatch.setattr(
+            worker.finnhub_shared_budget, "try_acquire",
+            lambda consumer: consumidores_pedidos.append(consumer) or True,
+        )
+        worker.run_tier1_once(provider, market_date, now, inter_call_delay_seconds=0.0)
+        assert consumidores_pedidos == ["catalyst_worker"]
+    finally:
+        _restore()
+
+
+def test_tier3_sin_cupo_de_presupuesto_no_llama_al_proveedor(monkeypatch):
+    _fresh()
+    try:
+        now = datetime(2026, 8, 23, 15, 0, tzinfo=timezone.utc)
+        provider = _FakeProvider(news_by_symbol={"AAA": [{"id": 1, "headline": "x", "datetime": 0}]})
+        monkeypatch.setattr(worker.finnhub_shared_budget, "try_acquire", lambda consumer: False)
+        resultado = worker.run_tier3_once(
+            provider, now, symbols=["AAA", "BBB"], batch_size=2, inter_call_delay_seconds=0.0,
+        )
+        assert provider.news_calls == []
+        assert resultado["errores"] == 0
+        assert resultado["cooldown_triggered"] is False
     finally:
         _restore()
 
@@ -178,9 +244,13 @@ def test_tier3_avanza_el_cursor_round_robin_entre_llamadas():
 # contra una key bloqueada.)
 # ---------------------------------------------------------------------------
 
-def test_tier1_401_corta_el_lote_y_no_prueba_el_resto():
+def test_tier1_401_corta_el_lote_y_no_prueba_el_resto(monkeypatch):
     _fresh()
     try:
+        # Este test ejercita el corte por 401, no el presupuesto compartido
+        # -- se concede siempre, para no depender del estado acumulado real
+        # entre tests (ver test_finnhub_shared_budget.py para eso).
+        monkeypatch.setattr(worker.finnhub_shared_budget, "try_acquire", lambda consumer: True)
         market_date = "2026-08-23"
         now = datetime(2026, 8, 23, 15, 0, tzinfo=timezone.utc)
         for ticker in ("AAA", "BBB", "CCC"):
@@ -203,9 +273,10 @@ def test_tier1_401_corta_el_lote_y_no_prueba_el_resto():
         _restore()
 
 
-def test_tier1_error_generico_no_activa_cooldown_sigue_con_el_resto():
+def test_tier1_error_generico_no_activa_cooldown_sigue_con_el_resto(monkeypatch):
     _fresh()
     try:
+        monkeypatch.setattr(worker.finnhub_shared_budget, "try_acquire", lambda consumer: True)
         market_date = "2026-08-23"
         now = datetime(2026, 8, 23, 15, 0, tzinfo=timezone.utc)
         for ticker in ("AAA", "BBB"):
@@ -236,9 +307,10 @@ def test_tier2_429_señala_cooldown():
         _restore()
 
 
-def test_tier3_401_corta_el_lote_y_no_prueba_el_resto():
+def test_tier3_401_corta_el_lote_y_no_prueba_el_resto(monkeypatch):
     _fresh()
     try:
+        monkeypatch.setattr(worker.finnhub_shared_budget, "try_acquire", lambda consumer: True)
         now = datetime(2026, 8, 23, tzinfo=timezone.utc)
         simbolos = ["AAA", "BBB", "CCC", "DDD"]
         provider = _FakeProvider(
@@ -286,6 +358,7 @@ def test_run_cycle_no_llama_al_proveedor_si_esta_en_cooldown(monkeypatch):
 def test_run_cycle_401_en_tier1_detiene_tier2_y_tier3_del_mismo_ciclo(monkeypatch):
     _fresh()
     try:
+        monkeypatch.setattr(worker.finnhub_shared_budget, "try_acquire", lambda consumer: True)
         market_date = "2026-08-23"
         candreg.record_detection(
             "AAA", market_date, "regular", datetime(2026, 8, 23, 15, 0, tzinfo=timezone.utc).isoformat(),

@@ -150,6 +150,38 @@ def test_generic_provider_error_marked_unavailable():
     assert out["quotes"][0]["reason"] == "ProviderError"
 
 
+# --------------------------- presupuesto compartido de Finnhub (2026-09-14) ---------------------------
+
+def test_sin_cupo_de_presupuesto_no_llama_al_proveedor(monkeypatch):
+    provider = _StubProvider()
+    collector = DataCollector(provider)
+    monkeypatch.setattr(hot_quote.finnhub_shared_budget, "try_acquire", lambda consumer: False)
+    out = hot_quote.collect_hot_quotes(["SPY"], collector)
+    assert provider.calls == []  # la request real nunca se disparó
+    assert out["quotes"][0]["status"] == "unavailable"
+    assert out["quotes"][0]["reason"] == "SinCupoFinnhub"
+
+
+def test_con_cupo_comportamiento_identico_al_anterior(monkeypatch):
+    provider = _StubProvider()
+    collector = DataCollector(provider)
+    monkeypatch.setattr(hot_quote.finnhub_shared_budget, "try_acquire", lambda consumer: True)
+    out = hot_quote.collect_hot_quotes(["SPY"], collector)
+    assert provider.calls == ["SPY"]
+    assert out["quotes"][0]["status"] == "ok"
+
+
+def test_pide_cupo_con_el_consumidor_hot_quote(monkeypatch):
+    consumidores_pedidos = []
+    monkeypatch.setattr(
+        hot_quote.finnhub_shared_budget, "try_acquire",
+        lambda consumer: consumidores_pedidos.append(consumer) or True,
+    )
+    collector = DataCollector(_StubProvider())
+    hot_quote.collect_hot_quotes(["SPY"], collector)
+    assert consumidores_pedidos == ["hot_quote"]
+
+
 def test_empty_symbols_returns_server_time_and_no_quotes():
     now = datetime(2026, 8, 7, 13, 45, 10, tzinfo=timezone.utc)
     # Con lista vacía no se toca el collector (puede ser None, como en el

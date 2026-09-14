@@ -37,7 +37,7 @@ import pandas as pd
 import requests
 
 from atlas.data.models.quote import Quote
-from atlas.data.providers.base import DataProvider, ProviderError, QuoteNotFoundError
+from atlas.data.providers.base import DataProvider, ProviderError, QuoteNotFoundError, RateLimitError
 
 QUOTE_URL = "https://finnhub.io/api/v1/quote"
 CANDLE_URL = "https://finnhub.io/api/v1/stock/candle"
@@ -72,6 +72,16 @@ class FinnhubProvider(DataProvider):
         except requests.RequestException as exc:
             raise ProviderError(f"Fallo de red al consultar Finnhub para '{symbol}': {exc}") from exc
 
+        if response.status_code == 429:
+            # 2026-09-14 (autorizado explícitamente, investigación de
+            # rate-limit de esta sesión): distinguir rate-limit del resto
+            # de errores HTTP -- `RateLimitError` es subclase de
+            # `ProviderError` (nunca rompe un `except ProviderError`
+            # existente, ver `hot_quote.py`/`catalyst_worker.py`), y
+            # `market_view.py` YA la trata especialmente (abre el
+            # circuito de inmediato, sin esperar la muestra estadística
+            # de 20 intentos) -- cero cambios necesarios ahí.
+            raise RateLimitError(f"Finnhub rate-limit (HTTP 429) para '{symbol}': {response.text}")
         if response.status_code != 200:
             raise ProviderError(f"Finnhub devolvió HTTP {response.status_code} para '{symbol}': {response.text}")
 
