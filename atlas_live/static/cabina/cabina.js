@@ -103,13 +103,20 @@ const PM_STATE_LABELS = {
   NO_DATA: "sin datos",
 };
 
+// Hito 6 (2026-09-14, PLAN Radar/Finnhub): título explícito para no
+// interpretar "RVOL bajo" como "sin interés" cuando el volumen premarket
+// (comparado contra el UNIVERSO de hoy, no contra el promedio histórico
+// del símbolo) muestra actividad real -- caso real SOXS/SKDD.
+const PM_VOLUMEN_TITLE =
+  "Vol. premarket -- percentil del dollar_volume acumulado HOY contra TODO el universo escaneado en este barrido. NO es RVOL (no usa average_volume/relative_volume) -- puede ser alto aunque RVOL esté cerca de 0 en premarket temprano.";
+
 function _pmVolumenHtml(o) {
   const state = o.premarket_volume_percentile_state;
   if (state === "VALID" && o.premarket_volume_percentile != null) {
-    return `<div class="vol-pm">Vol. premarket: percentil ${fmtNum(o.premarket_volume_percentile, 0)}</div>`;
+    return `<div class="vol-pm" title="${PM_VOLUMEN_TITLE}">Vol. premarket: percentil ${fmtNum(o.premarket_volume_percentile, 0)}</div>`;
   }
   const label = PM_STATE_LABELS[state] || (state ? state.toLowerCase() : "sin dato");
-  return `<div class="vol-pm dim">Vol. premarket: ${label}</div>`;
+  return `<div class="vol-pm dim" title="${PM_VOLUMEN_TITLE}">Vol. premarket: ${label}</div>`;
 }
 
 let _oportunidades = [];
@@ -163,6 +170,14 @@ function _ordenarOportunidades(oportunidades) {
     // el orden por detección más reciente que ya existía.
     const antiguaDiff = Number(_esAntigua(a)) - Number(_esAntigua(b));
     if (antiguaDiff !== 0) return antiguaDiff;
+    // Hito 7 (2026-09-14, PLAN Radar/Finnhub) -- tie-break incremental,
+    // puramente de presentación: `prioridad_score` (server.py, entre
+    // bucket/antigüedad y detected_at) NUNCA cambia el bucket ni excluye
+    // nada, solo reordena dentro del mismo grupo -- caso de validación:
+    // ACVA (ya explotado, forward return real ~0.87%) queda por debajo de
+    // una candidata temprana genuina aunque ambos compartan bucket.
+    const prioridadDiff = (b.prioridad_score || 0) - (a.prioridad_score || 0);
+    if (prioridadDiff !== 0) return prioridadDiff;
     return (b.detected_at || "").localeCompare(a.detected_at || "");
   });
 }
@@ -227,6 +242,18 @@ function _renderOportunidadesEn(el, top) {
       ? `<div class="badge-antigua" title="Sin reconfirmación de etapa reciente">⏱ Sin confirmación hace ${Math.round(minsSinConfirmar)} min</div>`
       : "";
 
+    // Hito 8 (2026-09-14, PLAN Radar/Finnhub) -- preferir executable_price
+    // (precio confiable/comprable) cuando existe; si es null (BID_ONLY/
+    // STALE_REGULAR_CLOSE), se sigue mostrando el precio de SEÑAL
+    // (price_actual, nunca oculto) con un badge explícito -- Fix 1
+    // (BID_ONLY_MAX_PLAUSIBLE_CHANGE_PCT=55.0) no se toca, sigue siendo el
+    // que decide si un bid-only llega a mostrarse acá.
+    const precioMostrado = o.executable_price != null ? o.executable_price : o.price_actual;
+    const soloSenal = o.executable_price == null && o.price_actual != null;
+    const badgeSoloSenal = soloSenal
+      ? `<div class="badge-antigua" title="${o.bid_only_reason || "Precio de señal, no confirmado como ejecutable"}">Solo señal -- no ejecutable</div>`
+      : "";
+
     return `
     <div class="opp-row${rank1}${antigua ? " opp-antigua" : ""}">
       <div class="rank-badge">${i + 1}</div>
@@ -234,13 +261,14 @@ function _renderOportunidadesEn(el, top) {
         <div class="ticker">${o.ticker}</div>
         <div class="meta">${detectadaHace}${o.racional_available ? " · Racional" : ""}</div>
         ${badgeAntigua}
+        ${badgeSoloSenal}
       </div>
       <div class="px-col">
-        <div class="price">${o.price_actual != null ? "$" + fmtNum(o.price_actual, 2) : "--"}</div>
+        <div class="price">${precioMostrado != null ? "$" + fmtNum(precioMostrado, 2) : "--"}</div>
         <div class="chg ${chgClass}">${fmtPct(chg)}</div>
       </div>
       <div class="vol-col">
-        <div class="vol-val">${rvol != null ? "RVOL " + fmtNum(rvol) + "x" : "--"}</div>
+        <div class="vol-val" title="RVOL -- volumen acumulado hoy vs. promedio de SESIÓN REGULAR completa (Quote.average_volume). Estructuralmente bajo en los primeros minutos de premarket -- ver Vol. premarket abajo.">${rvol != null ? "RVOL " + fmtNum(rvol) + "x" : "--"}</div>
         ${_pmVolumenHtml(o)}
       </div>
       <div class="proj-col">${_proyeccionHtml(o)}</div>

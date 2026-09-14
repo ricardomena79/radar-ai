@@ -798,3 +798,77 @@ def test_caso_g_oportunidad_prioritaria_nunca_tiene_estado_validacion_vencido():
     finally:
         reg.live_opportunities = orig_live_opps
         _rw.get_last_quotes = orig_last_quotes
+
+
+# ---------------------------------------------------------------------------
+# Hito 7 (2026-09-14, PLAN Radar/Finnhub) -- prioridad_score, tie-break
+# incremental de presentación.
+# ---------------------------------------------------------------------------
+
+def test_prioridad_score_funcion_pura_temprana_alta_vs_tardia_baja():
+    calc = server._calcular_prioridad_score
+    temprana = calc(pm_early_signal_at_detection=95.0, relative_volume_hoy=4.0, predicted_pct=15.0, retroceso_desde_maximo_pct=None)
+    tardia_agotada = calc(pm_early_signal_at_detection=None, relative_volume_hoy=1.0, predicted_pct=None, retroceso_desde_maximo_pct=18.0)
+    assert temprana > tardia_agotada
+
+
+def test_prioridad_score_caso_real_acva_da_score_bajo():
+    """Caso de validación real del plan: ACVA +43,6% con forward return
+    real ~0,87% -- ya explotado (sin pm_early_signal, NOT_EARLY) y con
+    retroceso fuerte desde el máximo -- debe dar un score bajo."""
+    calc = server._calcular_prioridad_score
+    acva = calc(pm_early_signal_at_detection=None, relative_volume_hoy=0.5, predicted_pct=None, retroceso_desde_maximo_pct=15.0)
+    assert acva < 20.0
+
+
+def test_prioridad_score_nunca_negativo_ni_sobre_100():
+    calc = server._calcular_prioridad_score
+    assert calc(None, None, None, None) == 0.0
+    assert calc(100.0, 999.0, 999.0, 0.0) == 90.0  # 40+30+20, sin penalizacion
+    assert calc(0.0, 0.0, 0.0, 999.0) == 0.0
+
+
+def test_prioridad_score_expuesto_en_el_endpoint_sin_tocar_estado_final():
+    orig_live_opps = reg.live_opportunities
+    orig_last_quotes = _rw.get_last_quotes
+    reg.live_opportunities = lambda market_date: [
+        {"ticker": "SOXS", "price_at_detection": 10.0, "stage": "ALERTA_TEMPRANA",
+         "racional_available": True, "pm_early_signal_at_detection": 99.9,
+         "relative_volume_hoy": 3.0, "retroceso_desde_maximo_pct": None},
+    ]
+    _rw.get_last_quotes = lambda: {"SOXS": _fresh_quote(10.2, 2.0)}
+    try:
+        r = _client().get("/api/radar-oportunidades")
+        assert r.status_code == 200
+        body = r.get_json()
+        o = body["oportunidades"][0]
+        assert "prioridad_score" in o
+        assert o["prioridad_score"] > 0
+        # el tie-break nunca cambia estado_final -- sigue determinado
+        # únicamente por priority_classifier/atlas_decision_core.
+        assert o["estado_final"] == "VIGILAR"
+    finally:
+        reg.live_opportunities = orig_live_opps
+        _rw.get_last_quotes = orig_last_quotes
+
+
+def test_prioridad_score_flag_apagado_por_defecto_ignora_pm_early_signal():
+    """El flag ATLAS_PREMARKET_VOLUME_SIGNAL_ENABLED nace en False -- el
+    componente pm_early_signal del tie-break queda en 0 aunque el campo
+    congelado tenga un valor alto."""
+    assert server.ATLAS_PREMARKET_VOLUME_SIGNAL_ENABLED is False
+    orig_live_opps = reg.live_opportunities
+    orig_last_quotes = _rw.get_last_quotes
+    reg.live_opportunities = lambda market_date: [
+        {"ticker": "SOXS", "price_at_detection": 10.0, "stage": "ALERTA_TEMPRANA",
+         "racional_available": True, "pm_early_signal_at_detection": 99.9,
+         "relative_volume_hoy": None, "retroceso_desde_maximo_pct": None},
+    ]
+    _rw.get_last_quotes = lambda: {"SOXS": _fresh_quote(10.2, 2.0)}
+    try:
+        r = _client().get("/api/radar-oportunidades")
+        o = r.get_json()["oportunidades"][0]
+        assert o["prioridad_score"] == 0.0  # pm_early_signal ignorado con el flag apagado
+    finally:
+        reg.live_opportunities = orig_live_opps
+        _rw.get_last_quotes = orig_last_quotes

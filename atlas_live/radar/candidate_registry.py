@@ -1054,6 +1054,14 @@ def live_opportunities(market_date: str) -> List[Dict[str, Any]]:
             # historical_scoring.score_candidate() en el endpoint.
             "volatility_14d_pct_at_detection": d.get("volatility_14d_pct_at_detection"),
             "daily_range_pct_at_detection": d.get("daily_range_pct_at_detection"),
+            # Hito 4/7 (2026-09-14, PLAN Radar/Finnhub) -- señal compuesta de
+            # volumen premarket temprano, puramente informativa (ver
+            # `candidate_gates.pm_early_signal()`). Se expone SIEMPRE
+            # (congelada en la detección) -- el flag
+            # ATLAS_PREMARKET_VOLUME_SIGNAL_ENABLED controla si el endpoint
+            # la usa como criterio de ranking (Hito 7), no si se muestra acá.
+            "pm_early_signal_at_detection": d.get("pm_early_signal_at_detection"),
+            "pm_early_signal_state_at_detection": d.get("pm_early_signal_state_at_detection"),
         })
     return out
 

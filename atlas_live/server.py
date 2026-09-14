@@ -577,6 +577,16 @@ def api_universo_resumen():
       el MISMO conjunto (EQUITY + ETF apalancado) que ya usa
       `radar_worker.py::run_sweep_once()` para decidir qué escanea -- no se
       recalcula ni se filtra distinto acá.
+    - `racional_catalogo_total` (2026-09-07, corrección de presentación,
+      autorizado explícitamente): tamaño REAL de `racional_universe.json`
+      (vía `racional_symbols()`, la misma variable `racional` ya calculada
+      arriba -- cero cómputo nuevo), SIN intersectar con el universo
+      operativo. `disponibles_racional` sigue siendo la intersección --
+      nunca debe leerse como "cuánto tiene Racional", solo como "cuánto del
+      universo que Atlas ya escanea también está en el catálogo (parcial)
+      de Racional". `racional_declarado_app` es el número que Racional
+      publica en su propia App -- una cita textual, no algo que Atlas mida
+      ni verifique.
     - `top_volumen` sale de `radar_worker.get_last_quotes()` -- las quotes
       del ÚLTIMO barrido real ya en memoria (mismo mecanismo que ya usa
       este endpoint hermano para el precio en vivo de las oportunidades) --
@@ -613,7 +623,9 @@ def api_universo_resumen():
     return jsonify({
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "universo_total": len(universo),
+        "racional_catalogo_total": len(racional),
         "disponibles_racional": disponibles_racional,
+        "racional_declarado_app": "+10.000 (declarado por Racional en su App móvil -- Atlas todavía no tiene ese catálogo completo)",
         "con_dato_de_volumen_ahora": len(quotes),
         "top_volumen": top_volumen,
     })
@@ -784,6 +796,16 @@ def api_radar_informe_dia():
             "ultimas_250": radar_registry.magnitud_precision_rolling(250, solo_racional=True),
             "ultimas_500": radar_registry.magnitud_precision_rolling(500, solo_racional=True),
         },
+        # Criterio de MÁXIMO INTRADÍA (2026-09-13, autorizado explícitamente
+        # -- reabre a propósito la decisión de "cierre" del 2026-08-23):
+        # "acierto" = el precio real llegó a la predicción o más, EN
+        # CUALQUIER momento del día (`minutes_to_max` en el detalle de cada
+        # caso), sin importar si al cierre se perdió la suba. Bloque nuevo
+        # y paralelo -- `precision_de_magnitud_acumulada`/`_racional_acumulada`
+        # (cierre) de arriba NO se tocan, ambos criterios conviven.
+        "precision_de_magnitud_maximo_intradia": radar_registry.magnitud_precision_report_max(date_param),
+        "precision_de_magnitud_maximo_intradia_acumulada": radar_registry.magnitud_precision_report_max(),
+        "precision_de_magnitud_maximo_intradia_racional_acumulada": radar_registry.magnitud_precision_report_max_racional(),
     })
 
 
@@ -827,6 +849,52 @@ def api_radar_alert_stages():
 # función (que sigue exactamente igual, ahora en
 # `_api_radar_oportunidades_impl()`).
 _oportunidades_lock = threading.Lock()
+
+# Hito 4/7 (2026-09-14, PLAN Radar/Finnhub): default False, nunca
+# activado silenciosamente -- la calibración real
+# (scripts/diagnostico_pm_volumen_calibracion.py) no encontró evidencia
+# suficiente de que `pm_early_signal` discrimine de forma incremental.
+# `pm_early_signal_at_detection` se congela SIEMPRE (candidate_tracker.py,
+# incondicional) -- este flag SOLO controla si su valor participa del
+# tie-break de ranking de abajo.
+ATLAS_PREMARKET_VOLUME_SIGNAL_ENABLED = os.environ.get(
+    "ATLAS_PREMARKET_VOLUME_SIGNAL_ENABLED", "false"
+).strip().lower() in ("1", "true", "yes", "on", "si", "sí")
+
+
+def _calcular_prioridad_score(
+    pm_early_signal_at_detection,
+    relative_volume_hoy,
+    predicted_pct,
+    retroceso_desde_maximo_pct,
+) -> float:
+    """Hito 7 (2026-09-14, PLAN Radar/Finnhub) -- tie-break INCREMENTAL,
+    puramente de presentación: NUNCA reemplaza el bucket categórico de
+    `priority_classifier.classify_final_priority()` (que sigue
+    determinando `estado_final` sin cambios), solo desempata DENTRO de un
+    mismo bucket/antigüedad en `cabina.js::_ordenarOportunidades()`.
+
+    Pesos derivados de la calibración real de Hito 4
+    (`scripts/diagnostico_pm_volumen_calibracion.py`) -- declarados
+    honestamente como MODESTOS porque esa calibración no encontró una
+    señal fuerte y aislada: cada componente aporta poco por sí solo, la
+    combinación es direccional (favorece "temprano + volumen + evidencia
+    histórica positiva", penaliza "ya se movió mucho y retrocedió" -- caso
+    de validación real ACVA: +43,6% con forward return real ~0,87%, alto
+    `retroceso_desde_maximo_pct` -> score bajo, pese a la magnitud ya
+    alcanzada) sin pretender ser un score predictivo fuerte. Clampeado a
+    [0, 100]. Nunca inventa datos: cada componente ausente aporta 0, nunca
+    `None` propagado ni una excepción."""
+    score = 0.0
+    if pm_early_signal_at_detection is not None:
+        score += 40.0 * (min(100.0, max(0.0, pm_early_signal_at_detection)) / 100.0)
+    if relative_volume_hoy is not None and relative_volume_hoy > 0:
+        score += 30.0 * min(1.0, relative_volume_hoy / 5.0)
+    if predicted_pct is not None and predicted_pct > 0:
+        score += 20.0 * min(1.0, predicted_pct / 20.0)
+    if retroceso_desde_maximo_pct is not None and retroceso_desde_maximo_pct > 0:
+        score -= 30.0 * min(1.0, retroceso_desde_maximo_pct / 20.0)
+    return round(max(0.0, min(100.0, score)), 2)
 
 
 @app.route("/api/radar-oportunidades")
@@ -1441,6 +1509,22 @@ def _api_radar_oportunidades_impl():
                 )
         except Exception:
             pass
+
+        # Hito 7 (2026-09-14): tie-break incremental, puramente de
+        # presentación -- ver `_calcular_prioridad_score()`. Nunca puede
+        # fallar el request completo.
+        try:
+            pm_signal_para_ranking = (
+                o.get("pm_early_signal_at_detection") if ATLAS_PREMARKET_VOLUME_SIGNAL_ENABLED else None
+            )
+            o["prioridad_score"] = _calcular_prioridad_score(
+                pm_signal_para_ranking,
+                o.get("relative_volume_hoy"),
+                (o.get("prediccion_magnitud_congelada") or {}).get("predicted_pct"),
+                o.get("retroceso_desde_maximo_pct"),
+            )
+        except Exception:
+            o["prioridad_score"] = 0.0
 
     conteos: dict = {}
     conteos_estado_final: dict = {}
