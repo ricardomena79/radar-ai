@@ -16,7 +16,10 @@ Batching real: a diferencia de Finnhub (que no tiene endpoint de lote y
 por eso `FinnhubProvider.get_quotes()` itera símbolo por símbolo),
 `/v1/markets/quotes` de Tradier acepta cientos de símbolos separados por
 coma en un solo request -- `get_quotes()` lo aprovecha en chunks de
-`TRADIER_CHUNK_SIZE`.
+`TRADIER_CHUNK_SIZE`. Cada chunk se intenta de forma AISLADA
+(`get_quotes_by_chunk()`, 2026-09-14) -- un chunk que falla (timeout,
+HTTP != 200) nunca descarta los chunks que sí funcionaron en la misma
+llamada; solo se lanza `ProviderError` si TODOS los chunks fallan.
 
 Símbolo no reconocido: Tradier responde HTTP 200 con el símbolo listado en
 `quotes.unmatched_symbols` (o simplemente ausente de `quotes.quote`) -- NO
@@ -26,8 +29,9 @@ siempre de `tradier_symbol_map.normalize()`, nunca se reformatea acá.
 """
 
 import os
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 import requests
@@ -127,6 +131,53 @@ ASK_BROKEN_MIN_RATIO = 1.25
 # evidencia real cuando esté disponible.
 BID_ONLY_MAX_AGE_SECONDS = _env_float("ATLAS_BID_ONLY_MAX_AGE_SECONDS", 5 * BID_ASK_MAX_AGE_SECONDS)
 
+# --- Plausibilidad del BID_ONLY (2026-09-14, auditoría read-only + fix ------
+# autorizado explícitamente) -------------------------------------------------
+#
+# Casos reales encontrados en producción (consulta de solo lectura contra
+# `radar_candidates.db`, 2026-09-14): AIN e IONR (y ~15+ tickers más)
+# generaron una "caída" de entre 59,87% y 77,68% TODOS LOS DÍAS, a la misma
+# hora (primer sweep de premarket, ~08:00 UTC), siempre vía
+# `price_basis="tradier_bid_only"` -- el bid usado (ej. $15,50 para AIN,
+# $0,73 para IONR) es un valor CONGELADO que se repite idéntico entre
+# fechas distintas, mientras el precio real del símbolo (confirmado por
+# detecciones `tradier_last` en el mismo período) rondaba $58-63 y $3,2
+# respectivamente. El bid pasa el chequeo de antigüedad
+# (`BID_ONLY_MAX_AGE_SECONDS`) -- por timestamp es "fresco" -- pero es
+# económicamente stale, nunca un movimiento real. Confirmado como la causa
+# raíz de los outliers de `max_return_after_detection_pct` de hasta
+# 28.224.900% encontrados en `candidate_outcome` el 2026-09-11 (ya conocidos
+# y ya excluidos del aprendizaje por `confiable_para_aprendizaje`, pero sin
+# esto la detección/Cabina seguían mostrando el movimiento falso).
+#
+# Umbral elegido con evidencia real de AMBOS lados, sin inventar un número
+# nuevo sin anclaje: el mayor movimiento real de un solo día ya documentado
+# y calibrado en este mismo sistema (MRNA, `total_day_change_pct=49.91%`,
+# ancla ya usada en `atlas/data/price_integrity.py::EXTREME_CHANGE_PCT_THRESHOLD`)
+# queda muy por debajo; el menor de los casos degenerados reales
+# encontrados acá (AIN/IONR, 59.87%) queda muy por encima. El punto medio
+# entre ambos (~54.9%) se redondea a 55.0 -- deja margen real de los dos
+# lados, sin pegarse a ninguno de los dos límites conocidos. Solo se aplica
+# cuando hay `prevclose` disponible para comparar -- sin referencia no hay
+# forma de probar que el bid es implausible, así que el comportamiento
+# previo (usar el bid, `change_percent=None`) queda intacto en ese caso.
+BID_ONLY_MAX_PLAUSIBLE_CHANGE_PCT = _env_float("ATLAS_BID_ONLY_MAX_PLAUSIBLE_CHANGE_PCT", 55.0)
+
+
+@dataclass
+class ChunkDiagnostics:
+    """Diagnóstico de UNA llamada a `TradierProvider.get_quotes_by_chunk()`
+    -- 2026-09-14, auditoría read-only + fix autorizado explícitamente.
+    Objeto en memoria puro (nunca persistido, nunca una tabla de base de
+    datos) -- mismo espíritu que `atlas_live/data_fusion/universe_quotes.py::
+    UniverseQuotesDiagnostics`, que ya lo reutiliza para exponer estas
+    métricas al orquestador sin ocultar ningún chunk roto."""
+
+    total_chunks: int = 0
+    chunks_ok: int = 0
+    chunks_error: int = 0
+    chunk_errors: List[str] = field(default_factory=list)
+
 
 def _epoch_ms_to_dt(epoch_ms: Optional[float]) -> Optional[datetime]:
     return datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc) if epoch_ms else None
@@ -215,6 +266,19 @@ def _resolve_current_price(data: Dict[str, Any], now: datetime) -> Dict[str, Any
     `"cruzado"` excluidos, esos casos caen al Caso C (conservador, sin
     inventar un precio nuevo) -- NUNCA se intenta adivinar cuál lado
     confiar cuando la evidencia es ambigua.
+
+    Blindaje 2 (2026-09-14, auditoría read-only + fix autorizado
+    explícitamente, ver `BID_ONLY_MAX_PLAUSIBLE_CHANGE_PCT` arriba): el
+    blindaje de 2026-09-11 (párrafo anterior) no alcanzaba para AIN/IONR
+    -- ahí el ask SÍ estaba limpiamente descartado (`vencido`/`ausente`,
+    evidencia independiente, nunca `"roto"`/`"cruzado"`), así que pasaban
+    igual, con un bid económicamente stale pero "fresco" por timestamp
+    (congelado en el mismo valor exacto entre fechas distintas). Ahora,
+    con `prevclose` disponible, un cambio implícito del bid contra
+    `prevclose` que supere `BID_ONLY_MAX_PLAUSIBLE_CHANGE_PCT` (55%,
+    evidencia real de ambos lados) NUNCA se acepta como bid-only -- cae al
+    Caso C. Sin `prevclose` no hay forma de probar que es implausible, el
+    comportamiento previo (usar el bid) queda intacto.
 
     Caso C (`STALE_REGULAR_CLOSE`, `price_is_stale=True` -- 2026-08-24,
     Fase 1, caso real NSSC: $38.09/0% congelado ~46 minutos seguidos
@@ -305,21 +369,35 @@ def _resolve_current_price(data: Dict[str, Any], now: datetime) -> Dict[str, Any
     bid_fresh = bid is not None and bid > 0 and bid_age is not None and bid_age <= BID_ONLY_MAX_AGE_SECONDS
     if bid_fresh and ask_status in ("ausente", "invalido", "vencido"):
         change_pct = ((bid - prevclose) / prevclose * 100) if prevclose else None
-        resolved.update({
-            "last_price": bid, "change_percent": change_pct, "timestamp": bid_ts,
-            "price_basis": "tradier_bid_only", "price_is_stale": False,
-            "bid_only_reason": f"ask_{ask_status}",
-            # Fase 1D (2026-08-24, auditoría de seguridad): el bid es un
-            # precio de mercado válido para SEÑAL (por eso `last_price`/
-            # `change_percent` SÍ se completan arriba, alimentan detección/
-            # gates/momentum sin cambios) -- pero NUNCA es lo que un usuario
-            # podría pagar para comprar (eso lo daría el ask, que acá está
-            # roto/vencido/ausente por definición de este mismo Caso B2).
-            # `executable_price=None` explícito: no hay contraparte de
-            # compra verificable a NINGÚN precio confirmado ahora mismo.
-            "executable_price": None,
-        })
-        return resolved
+        # Plausibilidad (2026-09-14, ver constante `BID_ONLY_MAX_PLAUSIBLE_CHANGE_PCT`
+        # arriba -- casos reales AIN/IONR): un bid "fresco" por timestamp
+        # puede seguir siendo económicamente stale. Sin `prevclose` no hay
+        # forma de probar que es implausible -- se mantiene el
+        # comportamiento previo (usar el bid, `change_percent=None`) sin
+        # cambios. Con `prevclose` disponible, un cambio implícito
+        # manifiestamente extremo NUNCA se acepta como bid-only -- cae al
+        # Caso C de abajo (ya existente, ya seguro, nunca inventa un precio
+        # nuevo) en vez de mostrar un movimiento falso.
+        bid_plausible = change_pct is None or abs(change_pct) <= BID_ONLY_MAX_PLAUSIBLE_CHANGE_PCT
+        if bid_plausible:
+            resolved.update({
+                "last_price": bid, "change_percent": change_pct, "timestamp": bid_ts,
+                "price_basis": "tradier_bid_only", "price_is_stale": False,
+                "bid_only_reason": f"ask_{ask_status}",
+                # Fase 1D (2026-08-24, auditoría de seguridad): el bid es un
+                # precio de mercado válido para SEÑAL (por eso `last_price`/
+                # `change_percent` SÍ se completan arriba, alimentan detección/
+                # gates/momentum sin cambios) -- pero NUNCA es lo que un usuario
+                # podría pagar para comprar (eso lo daría el ask, que acá está
+                # roto/vencido/ausente por definición de este mismo Caso B2).
+                # `executable_price=None` explícito: no hay contraparte de
+                # compra verificable a NINGÚN precio confirmado ahora mismo.
+                "executable_price": None,
+            })
+            return resolved
+        # Bid manifiestamente implausible contra `prevclose` -- nunca se
+        # usa, nunca se marca `bid_only_reason` (no se llegó a usar este
+        # caso) -- cae al Caso C de abajo tal cual.
 
     # Caso C: ninguno confiable -- `last_price` se conserva tal cual (nunca
     # se inventa un precio nuevo), pero `change_percent` se descarta
@@ -422,13 +500,57 @@ class TradierProvider(DataProvider):
         silencio (mismo criterio que `FinnhubProvider.get_quotes()`) --
         detectar cuáles faltan es responsabilidad del orquestador
         (`atlas_live/data_fusion/universe_quotes.py`), comparando el
-        resultado contra la lista pedida."""
+        resultado contra la lista pedida.
+
+        2026-09-14 (auditoría read-only + fix autorizado explícitamente):
+        delega en `get_quotes_by_chunk()`, que AÍSLA errores por chunk --
+        ver su docstring para el detalle completo. Firma y comportamiento
+        de esta función quedan intactos para cualquier llamador existente
+        (`market_view.py`, `hot_quote.py` vía `MultiProvider`, etc.):
+        sigue devolviendo `List[Quote]`, sigue lanzando `ProviderError`
+        cuando TODOS los chunks fallan -- la única diferencia observable
+        es que un fallo PARCIAL (algunos chunks OK, otros no) ya no
+        descarta los chunks que sí funcionaron."""
+        quotes, _diag = self.get_quotes_by_chunk(symbols)
+        return quotes
+
+    def get_quotes_by_chunk(self, symbols: List[str]) -> Tuple[List[Quote], "ChunkDiagnostics"]:
+        """Mismo trabajo que `get_quotes()`, pero exponiendo diagnóstico
+        por chunk -- usado por `atlas_live/data_fusion/universe_quotes.py`
+        para métricas claras de chunks exitosos/fallidos, nunca ocultas.
+
+        2026-09-14 (auditoría read-only + fix autorizado explícitamente):
+        hallazgo real -- antes, un solo chunk de ~250 símbolos que fallaba
+        (timeout de red, HTTP != 200) hacía que la excepción se propagara
+        de inmediato, perdiendo TAMBIÉN los chunks anteriores ya resueltos
+        con éxito en la MISMA llamada -- con ~22-31 chunks por barrido
+        (universo ampliado), un solo fallo transitorio podía dejar a Atlas
+        sin ninguna detección ese ciclo. Ahora cada chunk se intenta de
+        forma INDEPENDIENTE: un chunk roto queda registrado en
+        `ChunkDiagnostics.chunk_errors` (nunca oculto) y NO afecta a los
+        demás. Solo si TODOS los chunks intentados fallan se lanza
+        `ProviderError` (agregando los mensajes) -- mismo comportamiento
+        de "fallo total" que `get_quotes()` ya tenía antes de este fix,
+        preservado para no romper a ningún llamador que dependa de él
+        (ej. `market_view.py::_fetch_chunk()`, que siempre pasa <=250
+        símbolos -- un único chunk interno, mismo resultado exacto que
+        antes: si ese chunk falla, sigue lanzando `ProviderError` igual
+        que siempre)."""
         quotes: List[Quote] = []
+        diag = ChunkDiagnostics()
+        errors: List[str] = []
         for i in range(0, len(symbols), TRADIER_CHUNK_SIZE):
             chunk = [s for s in symbols[i:i + TRADIER_CHUNK_SIZE] if s]
             if not chunk:
                 continue
-            data = self._get(QUOTES_PATH, {"symbols": ",".join(chunk), "greeks": "false"})
+            diag.total_chunks += 1
+            try:
+                data = self._get(QUOTES_PATH, {"symbols": ",".join(chunk), "greeks": "false"})
+            except ProviderError as exc:
+                diag.chunks_error += 1
+                errors.append(str(exc))
+                continue  # el chunk roto NO descarta los demás -- se sigue con el próximo
+            diag.chunks_ok += 1
             quote_field = data.get("quotes", {}).get("quote")
             if isinstance(quote_field, list):
                 for item in quote_field:
@@ -436,7 +558,18 @@ class TradierProvider(DataProvider):
                         quotes.append(_to_quote(item, item["symbol"]))
             elif isinstance(quote_field, dict) and quote_field.get("symbol") and quote_field.get("last") is not None:
                 quotes.append(_to_quote(quote_field, quote_field["symbol"]))
-        return quotes
+        diag.chunk_errors = errors
+        if diag.total_chunks > 0 and diag.chunks_ok == 0:
+            # TODOS los chunks intentados fallaron -- comportamiento de
+            # "fallo total" ya existente antes de este fix (antes, CUALQUIER
+            # chunk roto propagaba de inmediato; ahora, con un único chunk
+            # -- el caso real de `market_view.py` -- el resultado es
+            # idéntico: se lanza `ProviderError`). Nunca se devuelve una
+            # lista vacía en silencio cuando hubo errores reales.
+            raise ProviderError(
+                f"Tradier: los {diag.total_chunks} chunk(s) fallaron -- " + "; ".join(errors)
+            )
+        return quotes, diag
 
     def get_raw_quotes(self, symbols: List[str]) -> List[Dict[str, Any]]:
         """Devuelve el JSON crudo de Tradier para cada símbolo, SIN pasar

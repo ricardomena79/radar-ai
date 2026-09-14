@@ -72,6 +72,15 @@ class UniverseQuotesDiagnostics:
     tradier_disponible: bool = False
     tradier_error: Optional[str] = None
     fallback_error: Optional[str] = None
+    # 2026-09-14 (auditoría read-only + fix autorizado explícitamente):
+    # métricas reales por chunk, nunca ocultas -- `tradier_error` (arriba)
+    # sigue significando EXCLUSIVAMENTE "fallo total" (TODOS los chunks
+    # fallaron), sin cambios de semántica. Estos 3 campos nuevos cubren el
+    # caso antes imposible de distinguir: fallo PARCIAL (algunos chunks
+    # OK, otros no) -- ver `tradier_provider.get_quotes_by_chunk()`.
+    tradier_chunks_ok: int = 0
+    tradier_chunks_error: int = 0
+    tradier_chunk_errors: List[str] = field(default_factory=list)
     tiempo_tradier_segundos: float = 0.0
     tiempo_fallback_segundos: float = 0.0
     tiempo_total_segundos: float = 0.0
@@ -88,6 +97,9 @@ class UniverseQuotesDiagnostics:
             "tradier_chunks": self.tradier_chunks,
             "tradier_disponible": self.tradier_disponible,
             "tradier_error": self.tradier_error,
+            "tradier_chunks_ok": self.tradier_chunks_ok,
+            "tradier_chunks_error": self.tradier_chunks_error,
+            "tradier_chunk_errors": list(self.tradier_chunk_errors),
             "fallback_error": self.fallback_error,
             "tiempo_tradier_segundos": self.tiempo_tradier_segundos,
             "tiempo_fallback_segundos": self.tiempo_fallback_segundos,
@@ -196,7 +208,18 @@ def fetch_universe_quotes(
         for sym in symbols:
             traces[sym].tradier_intentado = True
         try:
-            tradier_quotes = tradier_provider.get_quotes(query_symbols)
+            # 2026-09-14 (auditoría read-only + fix autorizado
+            # explícitamente): `get_quotes_by_chunk()` en vez de
+            # `get_quotes()` -- mismo dato (`List[Quote]`), más el
+            # diagnóstico real por chunk (nunca oculto, ver
+            # `tradier_chunks_ok`/`tradier_chunks_error`/`tradier_chunk_errors`
+            # arriba). Sigue lanzando `ProviderError` únicamente cuando
+            # TODOS los chunks fallan -- mismo comportamiento de "fallo
+            # total" que ya manejaba el `except` de abajo, sin cambios.
+            tradier_quotes, chunk_diag = tradier_provider.get_quotes_by_chunk(query_symbols)
+            diag.tradier_chunks_ok = chunk_diag.chunks_ok
+            diag.tradier_chunks_error = chunk_diag.chunks_error
+            diag.tradier_chunk_errors = chunk_diag.chunk_errors
             resolved_query_symbols = {q.symbol for q in tradier_quotes}
             for q in tradier_quotes:
                 for original in query_to_originals.get(q.symbol, []):
@@ -207,10 +230,23 @@ def fetch_universe_quotes(
                         diag.resueltos_por_normalizacion += 1
             for sym in symbols:
                 if sym not in quotes_by_original:
-                    traces[sym].motivo_fallo = (
-                        f"Tradier no devolvió cotización para '{traces[sym].query_symbol}' "
-                        f"(símbolo ausente de la respuesta -- no matcheado, no error)."
-                    )
+                    if chunk_diag.chunks_error > 0:
+                        # Fallo PARCIAL: este símbolo específicamente
+                        # podría estar en uno de los chunks rotos, no
+                        # necesariamente "no reconocido por Tradier" --
+                        # se distingue del motivo genérico de abajo para
+                        # nunca ocultar que hubo chunks con error.
+                        traces[sym].motivo_fallo = (
+                            f"Tradier no devolvió cotización para '{traces[sym].query_symbol}' "
+                            f"({chunk_diag.chunks_error} de {chunk_diag.total_chunks} chunk(s) "
+                            f"fallaron este ciclo -- puede ser uno de esos, o simplemente no "
+                            f"matcheado)."
+                        )
+                    else:
+                        traces[sym].motivo_fallo = (
+                            f"Tradier no devolvió cotización para '{traces[sym].query_symbol}' "
+                            f"(símbolo ausente de la respuesta -- no matcheado, no error)."
+                        )
         except ProviderError as exc:
             diag.tradier_error = str(exc)
             for sym in symbols:

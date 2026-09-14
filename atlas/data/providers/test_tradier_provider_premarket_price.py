@@ -28,6 +28,7 @@ from datetime import datetime, timedelta, timezone
 from atlas.data.providers.tradier_provider import (
     BID_ASK_MAX_AGE_SECONDS,
     BID_ONLY_MAX_AGE_SECONDS,
+    BID_ONLY_MAX_PLAUSIBLE_CHANGE_PCT,
     MAX_MIDPOINT_SPREAD_PCT,
     _to_quote,
 )
@@ -717,6 +718,160 @@ def test_fase1d_quote_generico_sin_tradier_executable_price_espeja_last_price():
         executable_price=None,
     )
     assert q_explicit_none.executable_price is None  # explícito se respeta, no se pisa
+
+
+# ---------------------------------------------------------------------------
+# Plausibilidad de BID_ONLY (2026-09-14, auditoría read-only + fix
+# autorizado explícitamente) -- casos reales AIN/IONR: un bid "fresco" por
+# timestamp puede seguir siendo económicamente stale (congelado en el mismo
+# valor exacto entre fechas distintas), generando una caída falsa de
+# 59.87%-77.68% contra `prevclose`. Umbral `BID_ONLY_MAX_PLAUSIBLE_CHANGE_PCT`
+# (55.0), con evidencia real de ambos lados: MRNA (49.91%, mayor movimiento
+# real de un solo día ya documentado en este sistema) queda por debajo;
+# AIN/IONR (mínimo real encontrado, 59.87%) queda por encima.
+# ---------------------------------------------------------------------------
+
+def _bidonly_base(**overrides):
+    """Mismo patrón que `_base()`, pero ya configurado para calificar para
+    BID_ONLY (ask ausente, evidencia independiente del bid) -- solo hace
+    falta variar `bid`/`prevclose` para probar la plausibilidad."""
+    data = _base(ask=None, ask_date=None)
+    data.update(overrides)
+    return data
+
+
+def test_bidonly_plausibilidad_1_nssc_real_sigue_funcionando():
+    """Caso real NSSC (2026-08-24, el caso que originó BID_ONLY): +2.39%
+    -- muy por debajo del umbral (55%) -- debe seguir rescatándose sin
+    ningún cambio de comportamiento. Mismo caso que
+    `test_bidonly_1_nssc_real_bid_fresco_ask_vencido_y_roto`, repetido acá
+    para dejar explícito que el fix no lo afecta."""
+    data = {
+        "last": 38.09, "prevclose": 38.09, "change_percentage": 0.0,
+        "trade_date": _ms(NOW - timedelta(hours=61, minutes=30)),
+        "bid": 39.00, "ask": 61.76,
+        "bid_date": _ms(NOW - timedelta(seconds=679)),
+        "ask_date": _ms(NOW - timedelta(seconds=3864)),
+        "volume": 458, "average_volume": 372451,
+    }
+    q = _to_quote(data, "NSSC", now=NOW)
+    assert q.price_basis == "tradier_bid_only"
+    assert q.last_price == 39.00
+    assert round(q.change_percent, 2) == 2.39
+
+
+def test_bidonly_plausibilidad_2_ain_real_bid_degenerado_se_rechaza():
+    """Reconstrucción real de AIN (2026-08-25 a 2026-09-11, producción):
+    bid congelado en $15.50 contra un `prevclose` real de ~$58.34 --
+    implica ~-73.4%, muy por encima del umbral. Antes del fix, esto
+    generaba `price_basis="tradier_bid_only"` con un -73% falso -- con el
+    fix, cae al Caso C (conservador), nunca produce el movimiento falso."""
+    data = _bidonly_base(bid=15.50, prevclose=58.34)
+    q = _to_quote(data, "AIN", now=NOW)
+    assert q.price_basis == "tradier_regular_close_stale"
+    assert q.price_is_stale is True
+    assert q.bid_only_reason is None
+    assert q.change_percent is None  # nunca el -73.4% falso
+    assert q.last_price == data["last"]  # el `last` vencido conservado tal cual, nunca el bid degenerado
+
+
+def test_bidonly_plausibilidad_3_ionr_real_bid_degenerado_se_rechaza():
+    """Reconstrucción real de IONR (2026-08-26 a 2026-09-11, producción):
+    bid congelado en $0.73 contra un `prevclose` real de ~$2.91 --
+    implica ~-74.9%. Mismo criterio que AIN -- este es el caso concreto
+    que produjo los outliers de `max_return_after_detection_pct` de hasta
+    28.224.900% en `candidate_outcome` el 2026-09-11."""
+    data = _bidonly_base(bid=0.73, prevclose=2.91)
+    q = _to_quote(data, "IONR", now=NOW)
+    assert q.price_basis == "tradier_regular_close_stale"
+    assert q.price_is_stale is True
+    assert q.bid_only_reason is None
+    assert q.change_percent is None
+    assert q.last_price != 0.73  # nunca el bid degenerado como precio
+
+
+def test_bidonly_plausibilidad_4_justo_debajo_del_umbral_sigue_bidonly():
+    """Frontera inferior: un cambio implícito apenas por debajo del umbral
+    (55%) debe seguir aceptándose -- confirma que el corte es el esperado,
+    no accidentalmente más estricto."""
+    prevclose = 100.0
+    bid = prevclose * (1 - (BID_ONLY_MAX_PLAUSIBLE_CHANGE_PCT - 1) / 100)  # ~54% de caída
+    data = _bidonly_base(bid=bid, prevclose=prevclose)
+    q = _to_quote(data, "TEST", now=NOW)
+    assert q.price_basis == "tradier_bid_only"
+    assert q.last_price == bid
+    assert q.change_percent is not None
+
+
+def test_bidonly_plausibilidad_5_justo_encima_del_umbral_se_rechaza():
+    """Frontera superior: un cambio implícito apenas por encima del umbral
+    (55%) debe rechazarse -- confirma que el corte es el esperado, no
+    accidentalmente más laxo."""
+    prevclose = 100.0
+    bid = prevclose * (1 - (BID_ONLY_MAX_PLAUSIBLE_CHANGE_PCT + 1) / 100)  # ~56% de caída
+    data = _bidonly_base(bid=bid, prevclose=prevclose)
+    q = _to_quote(data, "TEST", now=NOW)
+    assert q.price_basis == "tradier_regular_close_stale"
+    assert q.price_is_stale is True
+    assert q.change_percent is None
+
+
+def test_bidonly_plausibilidad_6_movimiento_grande_pero_real_sigue_aceptado():
+    """Un movimiento grande pero por debajo del umbral (ej. +40%, dentro
+    del rango de movimientos reales ya documentados en este sistema, ver
+    `price_integrity.EXTREME_CHANGE_PCT_THRESHOLD`) debe seguir
+    aceptándose -- el fix NUNCA debe convertir volatilidad legítima en
+    dato inválido, solo rechazar lo manifiestamente implausible."""
+    data = _bidonly_base(bid=140.0, prevclose=100.0)  # +40%, real y plausible
+    q = _to_quote(data, "TEST", now=NOW)
+    assert q.price_basis == "tradier_bid_only"
+    assert q.last_price == 140.0
+    assert round(q.change_percent, 2) == 40.0
+
+
+def test_bidonly_plausibilidad_7_sin_prevclose_mantiene_comportamiento_previo():
+    """Sin `prevclose` no hay forma de probar que el bid es implausible --
+    el comportamiento previo (usar el bid, `change_percent=None`) queda
+    intacto, sin nuevo rechazo por falta de referencia."""
+    data = _bidonly_base(bid=15.50, prevclose=None)
+    q = _to_quote(data, "TEST", now=NOW)
+    assert q.price_basis == "tradier_bid_only"
+    assert q.last_price == 15.50
+    assert q.change_percent is None
+
+
+def test_bidonly_plausibilidad_8_otros_price_basis_no_cambian():
+    """Casos A (LIVE_TRADE) y B (BID_ASK_MID) deben producir exactamente
+    el mismo resultado que antes del fix -- el chequeo de plausibilidad
+    vive EXCLUSIVAMENTE dentro de la rama BID_ONLY."""
+    # Caso A -- last fresco.
+    data_a = _base(trade_date=_ms(NOW - timedelta(seconds=10)))
+    q_a = _to_quote(data_a, "TEST", now=NOW)
+    assert q_a.price_basis == "tradier_last"
+    assert q_a.last_price == 100.0
+    assert q_a.change_percent == 1.01
+
+    # Caso B -- bid/ask ambos frescos y confiables, spread angosto.
+    data_b = _base()
+    q_b = _to_quote(data_b, "TEST", now=NOW)
+    assert q_b.price_basis == "tradier_bid_ask_mid"
+    assert q_b.last_price == (98.0 + 98.1) / 2
+
+    # Caso C -- ninguno confiable (sin bid/ask en absoluto).
+    data_c = _base(bid=None, ask=None)
+    q_c = _to_quote(data_c, "TEST", now=NOW)
+    assert q_c.price_basis == "tradier_regular_close_stale"
+    assert q_c.price_is_stale is True
+
+
+def test_bidonly_plausibilidad_9_bid_rechazado_nunca_inventa_precio_alternativo():
+    """Cuando el bid es rechazado por implausible, el precio resultante
+    debe ser EXACTAMENTE el `last` vencido ya existente (Caso C) -- nunca
+    un precio interpolado, promediado, ni ningún valor nuevo inventado."""
+    data = _bidonly_base(bid=15.50, prevclose=58.34, last=58.0)
+    q = _to_quote(data, "AIN", now=NOW)
+    assert q.last_price == 58.0  # el `last` vencido tal cual, no el bid ni ningún otro valor
+    assert q.price_basis == "tradier_regular_close_stale"
 
 
 if __name__ == "__main__":
