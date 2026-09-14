@@ -366,3 +366,93 @@ def premarket_volume_acceleration(
 
     ratio = round(vol_reciente / vol_previo, 4)
     return PremarketVolumeSignal(ratio, "VALID")
+
+
+# =============================================================================
+# Hito 4 (2026-09-14, PLAN Radar/Finnhub) -- señal compuesta de volumen
+# premarket temprano. Combina "el movimiento de PRECIO sigue siendo
+# temprano" + "actividad premarket anormal (PM-percentil)" + "dirección
+# consistente" + "liquidez mínima" -- NUNCA un gate, NUNCA participa de
+# `ALL_GATES` ni de `estado_final`: es un campo de diagnóstico, congelado
+# en `candidate_detection`, expuesto en ranking SOLO si
+# `ATLAS_PREMARKET_VOLUME_SIGNAL_ENABLED=true` (default False).
+#
+# Calibración real (2026-09-14, `scripts/diagnostico_pm_volumen_calibracion.py`,
+# solo lectura contra producción, ~5.555 detecciones con PM-percentil
+# válido, filtradas is_final=1 AND confiable_para_aprendizaje=1): dentro
+# del subconjunto TEMPRANO (|change_pct_at_detection|<8%, n=4.945),
+# PM-percentil>=90 (n=3.889) NO mostró una tasa de +20% distinta de
+# PM-percentil<90 (n=1.056) -- 0.98% vs 0.95%, prácticamente idéntico.
+# Confirma con evidencia real que la señal, aislada, NO discrimina en este
+# dataset -- consistente con la baja precisión general ya documentada
+# (Precisión de Magnitud, criterio de máximo intradía, ~6.5%). Se declara
+# explícitamente: el mecanismo queda construido, calibrado y disponible,
+# PERO sin evidencia suficiente para auto-activarlo -- por eso el flag
+# nace en False, nunca silenciosamente en True.
+# =============================================================================
+
+# "Temprano" -- mismas 3 categorías de `phase_classifier._classify_timing()`
+# que ya usa el resto del proyecto para "el movimiento recién empieza o
+# todavía no empezó" (nunca inventadas acá). `EARLY_SIGNAL_MAX_CHANGE_PCT`
+# es el fallback cuando `timing_deteccion` no está disponible -- 8.0%
+# corresponde al punto de corte real usado en la calibración de arriba.
+EARLY_SIGNAL_TIMING_FAVORABLE = ("antes_del_movimiento", "al_comienzo", "expansion_temprana")
+EARLY_SIGNAL_MAX_CHANGE_PCT = _env_float("ATLAS_PM_EARLY_SIGNAL_MAX_CHANGE_PCT", 8.0)
+# Piso de PM-percentil para considerar "actividad premarket anormal" --
+# mismo umbral usado en la calibración real de arriba (sección 80-95/95-99/
+# 99-100 de la tabla de buckets).
+EARLY_SIGNAL_PM_PERCENTILE_MIN = _env_float("ATLAS_PM_EARLY_SIGNAL_PERCENTILE_MIN", 90.0)
+# Mismo piso de liquidez ya oficial en el proyecto
+# (`candidate_registry.LEARNING_MIN_DOLLAR_VOLUME`) -- no se inventa uno
+# nuevo, se reutiliza el valor (duplicado como constante local para no
+# crear un import circular `candidate_gates.py` -> `candidate_registry.py`,
+# que hoy no existe en ningún sentido).
+EARLY_SIGNAL_MIN_DOLLAR_VOLUME = _env_float("ATLAS_PM_EARLY_SIGNAL_MIN_DOLLAR_VOLUME", 50_000.0)
+
+EARLY_SIGNAL_VALIDATION_STATES = (
+    "VALID",
+    "INSUFFICIENT_PM_DATA",
+    "NOT_EARLY",
+    "NO_DIRECTION",
+    "ILLIQUID",
+    "STALE_PRICE",
+)
+
+
+def pm_early_signal(
+    timing_deteccion: Optional[str],
+    change_pct: Optional[float],
+    pm_percentile: Optional[float],
+    pm_percentile_validation_state: Optional[str],
+    direction: Optional[str],
+    change_pct_confiable: Optional[bool],
+    pm_dollar_volume: Optional[float],
+    price_basis: Optional[str] = None,
+) -> "PremarketVolumeSignal":
+    """Score 0-100 (escala directa del PM-percentil cuando todas las
+    condiciones se cumplen, 0.0 cuando son evaluables pero débiles) o
+    `None` con `validation_state` explícito cuando no es evaluable --
+    NUNCA un número inventado. Caso de control real (RUM, timing tardío
+    con change_pct_at_detection=26.85%): `NOT_EARLY`, nunca un score alto
+    pese a volumen/RVOL altos -- una detección que YA explotó no debe
+    "premiarse" con esta señal."""
+    if pm_percentile_validation_state != "VALID" or pm_percentile is None:
+        return PremarketVolumeSignal(None, "INSUFFICIENT_PM_DATA")
+    if price_basis == "tradier_regular_close_stale":
+        return PremarketVolumeSignal(None, "STALE_PRICE")
+    if change_pct_confiable is False or direction in (None, "INDEFINIDA"):
+        return PremarketVolumeSignal(None, "NO_DIRECTION")
+
+    es_temprano = timing_deteccion in EARLY_SIGNAL_TIMING_FAVORABLE
+    if not es_temprano and change_pct is not None:
+        es_temprano = abs(change_pct) < EARLY_SIGNAL_MAX_CHANGE_PCT
+    if not es_temprano:
+        return PremarketVolumeSignal(None, "NOT_EARLY")
+
+    if pm_dollar_volume is None or pm_dollar_volume < EARLY_SIGNAL_MIN_DOLLAR_VOLUME:
+        return PremarketVolumeSignal(None, "ILLIQUID")
+
+    if pm_percentile < EARLY_SIGNAL_PM_PERCENTILE_MIN:
+        return PremarketVolumeSignal(0.0, "VALID")
+
+    return PremarketVolumeSignal(round(min(100.0, pm_percentile), 2), "VALID")

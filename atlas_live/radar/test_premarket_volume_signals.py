@@ -224,3 +224,91 @@ def test_pm_signals_nunca_estan_en_all_gates():
     assert len(gates.ALL_GATES) == 7
     assert gates.premarket_volume_percentile not in gates.ALL_GATES
     assert gates.premarket_volume_acceleration not in gates.ALL_GATES
+
+
+# ---------------------------------------------------------------------------
+# Hito 4 (2026-09-14, PLAN Radar/Finnhub) -- pm_early_signal(), señal
+# compuesta de diagnóstico, calibrada contra datos reales (ver docstring
+# del módulo). Nunca en ALL_GATES, nunca toca estado_final.
+# ---------------------------------------------------------------------------
+
+def _caso_base(**overrides):
+    base = dict(
+        timing_deteccion="al_comienzo", change_pct=2.0, pm_percentile=95.0,
+        pm_percentile_validation_state="VALID", direction="ALCISTA",
+        change_pct_confiable=True, pm_dollar_volume=200_000.0, price_basis="tradier_last",
+    )
+    base.update(overrides)
+    return base
+
+
+def test_temprano_pm_alto_direccion_clara_liquido_da_score_alto():
+    r = gates.pm_early_signal(**_caso_base())
+    assert r.validation_state == "VALID"
+    assert r.value == 95.0
+
+
+def test_pm_percentile_no_valido_da_insufficient_pm_data():
+    r = gates.pm_early_signal(**_caso_base(pm_percentile=None, pm_percentile_validation_state="INSUFFICIENT_UNIVERSE"))
+    assert r.value is None
+    assert r.validation_state == "INSUFFICIENT_PM_DATA"
+
+
+def test_caso_real_rum_ya_explotado_da_not_early_nunca_score_alto():
+    """RUM real (2026-08-19-ish, ya documentado en sesiones previas):
+    detectado con change_pct_at_detection=26.85%, timing_deteccion
+    'demasiado_tarde' -- ya explotó, NUNCA debe premiarse con esta señal
+    aunque tenga volumen/PM-percentil altos."""
+    r = gates.pm_early_signal(**_caso_base(
+        timing_deteccion="demasiado_tarde", change_pct=26.85, pm_percentile=99.9,
+    ))
+    assert r.value is None
+    assert r.validation_state == "NOT_EARLY"
+
+
+def test_direccion_indefinida_da_no_direction():
+    r = gates.pm_early_signal(**_caso_base(direction="INDEFINIDA"))
+    assert r.value is None
+    assert r.validation_state == "NO_DIRECTION"
+
+
+def test_change_pct_no_confiable_da_no_direction():
+    r = gates.pm_early_signal(**_caso_base(change_pct_confiable=False))
+    assert r.value is None
+    assert r.validation_state == "NO_DIRECTION"
+
+
+def test_precio_stale_da_stale_price():
+    r = gates.pm_early_signal(**_caso_base(price_basis="tradier_regular_close_stale"))
+    assert r.value is None
+    assert r.validation_state == "STALE_PRICE"
+
+
+def test_caso_real_alar_iliquido_da_score_bajo_no_alto():
+    """Caso tipo ALAR (2026-09-14, ya documentado en la MEDICIÓN E de esta
+    sesión: percentil 66.95 con solo 17 acciones/$36 de dollar_volume) --
+    liquidez insuficiente debe bloquear el score, sin importar el
+    percentil."""
+    r = gates.pm_early_signal(**_caso_base(pm_percentile=66.95, pm_dollar_volume=36.0))
+    assert r.value is None
+    assert r.validation_state == "ILLIQUID"
+
+
+def test_temprano_pero_pm_percentile_bajo_da_score_evaluable_cero():
+    r = gates.pm_early_signal(**_caso_base(pm_percentile=40.0))
+    assert r.validation_state == "VALID"
+    assert r.value == 0.0
+
+
+def test_temprano_por_change_pct_bajo_sin_timing_favorable():
+    """`timing_deteccion` puede ser algo distinto de las 3 categorías
+    favorables (ej. `indeterminado`) pero igual calificar como temprano si
+    `|change_pct|` está bajo el piso."""
+    r = gates.pm_early_signal(**_caso_base(timing_deteccion="indeterminado", change_pct=1.0))
+    assert r.validation_state == "VALID"
+    assert r.value == 95.0
+
+
+def test_pm_early_signal_nunca_en_all_gates():
+    assert gates.pm_early_signal not in gates.ALL_GATES
+    assert len(gates.ALL_GATES) == 7

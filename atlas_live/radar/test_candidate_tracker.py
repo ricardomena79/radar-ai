@@ -635,6 +635,53 @@ def test_hist_caso_real_rum_reduce_escrituras_reales_a_alert_stage_log():
         _restore()
 
 
+def test_pm_early_signal_se_congela_en_la_primera_deteccion():
+    """Hito 4 (2026-09-14) -- `pm_early_signal_at_detection` se congela en
+    `candidate_detection` en la MISMA detección, usando el `pm_percentile`
+    ya calculado por `process_sweep()` (sin recalcularlo) y el `tag` ya
+    calculado por `_tag_phase_at_detection()` (sin duplicar
+    `pc.from_live_detection()`)."""
+    _fresh()
+    try:
+        h = SweepHistory()
+        quotes = dict(_padding_universe(n=150, volume=100))
+        # ATEC-like: cambio chico (temprano por change_pct<8%), volumen alto
+        # -> percentil alto dentro del universo padding (volume=100 c/u).
+        quotes["EARLY1"] = _quote("EARLY1", 10.0, 2.0, volume=50_000, avg_volume=500, rvol=2.0)
+        tracker.process_sweep(quotes, h, "2026-09-14", "premarket", _now())
+
+        det = reg.get_detection("EARLY1", "2026-09-14")
+        assert det is not None
+        assert det["pm_early_signal_state_at_detection"] in gates.EARLY_SIGNAL_VALIDATION_STATES
+        # Con volumen muy por encima del padding (100 c/u) y precio
+        # temprano, debe caer en VALID (percentil alto) o al menos ser
+        # evaluable -- nunca None sin estado explícito.
+        if det["pm_early_signal_state_at_detection"] == "VALID":
+            assert det["pm_early_signal_at_detection"] is not None
+    finally:
+        _restore()
+
+
+def test_pm_early_signal_caso_real_rum_no_recibe_score_alto_end_to_end():
+    """Reconstrucción del caso real RUM (change_pct_at_detection extremo
+    -- ya explotado) vía `process_sweep()` real: `pm_early_signal_at_detection`
+    debe quedar `NULL` con `NOT_EARLY`, nunca un score alto pese a RVOL/PM
+    altos."""
+    _fresh()
+    try:
+        h = SweepHistory()
+        quotes = dict(_padding_universe(n=150, volume=100))
+        quotes["RUM"] = _quote("RUM", 20.0, 26.85, volume=80_000, avg_volume=500, rvol=0.0136)
+        tracker.process_sweep(quotes, h, "2026-09-14", "premarket", _now())
+
+        det = reg.get_detection("RUM", "2026-09-14")
+        assert det is not None
+        assert det["pm_early_signal_state_at_detection"] == "NOT_EARLY"
+        assert det["pm_early_signal_at_detection"] is None
+    finally:
+        _restore()
+
+
 def test_tag_alert_stage_conecta_pm_rvol_via_process_sweep_caso_tipo_atec():
     """Integración de extremo a extremo (2026-09-11, corrección PM-RVOL
     autorizada explícitamente) -- NO solo `classify_alert_stage()` aislado:

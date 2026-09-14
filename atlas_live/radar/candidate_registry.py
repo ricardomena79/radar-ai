@@ -391,6 +391,13 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         # gate ni `candidate_gates.py` lee estas columnas.
         _ensure_column(conn, "candidate_detection", "possible_split_flag_at_detection", "TEXT")
         _ensure_column(conn, "candidate_detection", "possible_split_ratio_at_detection", "REAL")
+        # Hito 4 (2026-09-14, PLAN Radar/Finnhub) -- señal compuesta de
+        # volumen premarket temprano (`candidate_gates.pm_early_signal()`),
+        # congelada tal como estaba en el momento exacto de la detección.
+        # Puramente diagnóstico -- ningún gate/scoring/DecisionEngine la lee.
+        # `NULL` cuando no fue evaluable (ver `pm_early_signal_state_at_detection`).
+        _ensure_column(conn, "candidate_detection", "pm_early_signal_at_detection", "REAL")
+        _ensure_column(conn, "candidate_detection", "pm_early_signal_state_at_detection", "TEXT")
         # Fuente de predicted_pct (2026-09-13, autorizado explícitamente tras
         # validación fuera de muestra tres-cortes): "external" (Base
         # Histórica, `historical_scoring.py`, comportamiento de siempre) o
@@ -716,6 +723,25 @@ def set_experimental_signals(
     params += [ticker, market_date]
     with _connect() as conn:
         conn.execute(f"UPDATE candidate_detection SET {', '.join(sets)} WHERE ticker=? AND market_date=?", params)
+        conn.commit()
+
+
+def set_pm_early_signal(
+    ticker: str, market_date: str, value: Optional[float], validation_state: str,
+) -> None:
+    """Hito 4 (2026-09-14) -- congela `pm_early_signal_at_detection` +
+    `pm_early_signal_state_at_detection` en el momento exacto de la
+    detección. Mismo patrón que `set_phase_tag`/`set_experimental_signals`:
+    UPDATE puntual, nunca toca gates_fired/candidate_gates/priority. A
+    diferencia de esas dos, SIEMPRE escribe (incluido `value=None`) --
+    `validation_state` es obligatoria y documenta siempre por qué, nunca
+    debe quedar sin escribir."""
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE candidate_detection SET pm_early_signal_at_detection=?, "
+            "pm_early_signal_state_at_detection=? WHERE ticker=? AND market_date=?",
+            (value, validation_state, ticker, market_date),
+        )
         conn.commit()
 
 

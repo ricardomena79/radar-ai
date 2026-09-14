@@ -139,7 +139,7 @@ def _quote_to_snapshot(sweep_id: str, observed_at: str, quote: Optional[Quote], 
 def _tag_phase_at_detection(
     symbol: str, market_date: str, change_pct, gates_fired_payload: list, session: str,
     relative_volume: Optional[float] = None, price_basis: Optional[str] = None,
-) -> None:
+) -> "pc.PhaseTag":
     """Calcula y guarda `phase_tag`/`direction_at_detection` (Reinicio
     2026-08-15) en el momento de la primera detección. Import perezoso de
     `reference_registry` (paquete distinto) para no imponer un orden de
@@ -163,6 +163,27 @@ def _tag_phase_at_detection(
     tag = pc.from_live_detection(change_pct, gate_names, percentile_90, session,
                                   relative_volume=relative_volume, price_basis=price_basis)
     reg.set_phase_tag(symbol, market_date, tag.timing_deteccion, direction_at_detection=tag.direction)
+    return tag
+
+
+def _tag_pm_early_signal_at_detection(
+    symbol: str, market_date: str, tag: "pc.PhaseTag", change_pct: Optional[float],
+    pm_percentile: "gates.PremarketVolumeSignal", pm_dollar_volume: Optional[float],
+    price_basis: Optional[str],
+) -> None:
+    """Hito 4 (2026-09-14) -- congela `pm_early_signal_at_detection` en el
+    momento exacto de la detección, reutilizando el MISMO `pm_percentile`
+    ya calculado en `process_sweep()` para `pm_percentile_at_detection` (sin
+    recalcular nada) y el `tag` ya calculado por `_tag_phase_at_detection`
+    (mismo llamado, sin duplicar `pc.from_live_detection()`). Puramente
+    aditivo -- nunca toca `gates_fired`/`estado_final`."""
+    signal = gates.pm_early_signal(
+        timing_deteccion=tag.timing_deteccion, change_pct=change_pct,
+        pm_percentile=pm_percentile.value, pm_percentile_validation_state=pm_percentile.validation_state,
+        direction=tag.direction, change_pct_confiable=tag.change_pct_confiable,
+        pm_dollar_volume=pm_dollar_volume, price_basis=price_basis,
+    )
+    reg.set_pm_early_signal(symbol, market_date, signal.value, signal.validation_state)
 
 
 def _tag_experimental_signals_at_detection(symbol: str, market_date: str, quote: Optional[Quote]) -> None:
@@ -513,10 +534,14 @@ def process_sweep(
             )
             if es_nueva:
                 nuevas.append(symbol)
-                _tag_phase_at_detection(symbol, market_date, current.change_pct, gates_fired_payload, session,
-                                         relative_volume=current.relative_volume,
-                                         price_basis=getattr(quote, "price_basis", None))
+                tag = _tag_phase_at_detection(symbol, market_date, current.change_pct, gates_fired_payload, session,
+                                               relative_volume=current.relative_volume,
+                                               price_basis=getattr(quote, "price_basis", None))
                 _tag_experimental_signals_at_detection(symbol, market_date, quote)
+                _tag_pm_early_signal_at_detection(
+                    symbol, market_date, tag, current.change_pct, pm_percentile, pm_dollar_volume,
+                    getattr(quote, "price_basis", None),
+                )
             else:
                 # No es la primera vez que se ve -- pasa a "señal" (Reinicio
                 # 2026-08-15, decisión explícita: candidata = 1+ puerta en
