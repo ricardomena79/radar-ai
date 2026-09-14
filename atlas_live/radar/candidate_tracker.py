@@ -5,6 +5,7 @@ Punto de unión entre Hilo A (`radar_worker.py`, que produce un
 No hace red, no decide cadencia -- solo procesa UN barrido ya obtenido.
 """
 
+import os
 import uuid
 from dataclasses import dataclass
 from typing import Dict, List, Optional
@@ -15,9 +16,18 @@ from atlas_live.learning import historical_scoring as hsc
 from atlas_live.radar import alert_stage as als
 from atlas_live.radar import candidate_gates as gates
 from atlas_live.radar import candidate_registry as reg
+from atlas_live.radar import magnitud_prediction_source as mps
 from atlas_live.radar import phase_classifier as pc
 from atlas_live.radar import priority_classifier as prio
 from atlas_live.radar.sweep_history import SweepHistory, SweepSnapshot
+
+# Flag de rollback (2026-09-13, autorizado explícitamente): default
+# "external" -- comportamiento IDÉNTICO al de siempre, cero cambio de
+# producción hasta que se setee explícitamente en Railway. Nunca se lee
+# más de una vez por llamada (evita que un cambio de env a mitad de
+# ejecución produzca un estado inconsistente dentro de una sola
+# predicción).
+ATLAS_MAGNITUD_PREDICTION_SOURCE_ENV = "ATLAS_MAGNITUD_PREDICTION_SOURCE"
 
 
 @dataclass
@@ -271,6 +281,29 @@ def _tag_magnitud_prediction(
     if not timing_deteccion or direction not in ("ALCISTA", "BAJISTA", "NEUTRAL"):
         return
 
+    # Fuente v2 (2026-09-13, autorizado explícitamente tras validación
+    # fuera de muestra): SOLO se intenta si el flag está encendido -- con
+    # el flag apagado (default), este bloque no ejecuta ninguna consulta
+    # nueva y el comportamiento es idéntico al de siempre. Con el flag
+    # encendido pero sin evidencia v2 madura para esta condición
+    # específica (`resolve_predicted_pct_v2` -> `None`), cae al fallback
+    # externo de abajo sin ninguna diferencia respecto al camino actual --
+    # fallback seguro por diseño, nunca deja a la candidata sin predicción
+    # solo porque v2 todavía no tiene muestra suficiente.
+    if os.environ.get(ATLAS_MAGNITUD_PREDICTION_SOURCE_ENV) == mps.FUENTE_V2:
+        try:
+            resultado_v2 = mps.resolve_predicted_pct_v2(direction, stage, market_date)
+        except Exception:
+            resultado_v2 = None
+        if resultado_v2 is not None:
+            reg.record_magnitud_prediction(
+                symbol, market_date, observed_at, resultado_v2["predicted_pct"],
+                estado_final_al_congelar=estado_final, direction=direction,
+                timing_deteccion=timing_deteccion, bucket=resultado_v2["bucket"],
+                muestra_n=resultado_v2["muestra_n"], fuente=resultado_v2["fuente"],
+            )
+            return
+
     daily_range_pct = None
     if quote is not None and quote.high is not None and quote.low is not None and quote.last_price:
         daily_range_pct = round(100 * (quote.high - quote.low) / quote.last_price, 3)
@@ -292,7 +325,7 @@ def _tag_magnitud_prediction(
         symbol, market_date, observed_at, predicted_pct,
         estado_final_al_congelar=estado_final, direction=direction,
         timing_deteccion=timing_deteccion, bucket=evidencia.get("bucket"),
-        muestra_n=evidencia.get("n"),
+        muestra_n=evidencia.get("n"), fuente=mps.FUENTE_EXTERNA,
     )
 
 

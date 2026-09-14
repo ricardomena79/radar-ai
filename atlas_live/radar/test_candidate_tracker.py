@@ -1,26 +1,32 @@
 """Tests del orquestador de barrido (2026-08-14). DB temporal, Quotes falsas, sin red."""
 
+import os
 import tempfile
 import uuid as _uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
 from atlas.data.models.quote import Quote
+from atlas_live.learning import live_experience_knowledge as lek
 from atlas_live.radar import candidate_gates as gates
 from atlas_live.radar import candidate_registry as reg
 from atlas_live.radar import candidate_tracker as tracker
 from atlas_live.radar.sweep_history import SweepHistory
 
 _ORIG = reg.DB_PATH
+_ORIG_LEK_DB_PATH = lek.DB_PATH
 
 
 def _fresh():
     reg.DB_PATH = Path(tempfile.gettempdir()) / f"atlas_test_tracker_{_uuid.uuid4().hex}.db"
     reg._schema_ready_for = None
+    lek.DB_PATH = Path(tempfile.gettempdir()) / f"atlas_test_tracker_lek_{_uuid.uuid4().hex}.db"
 
 
 def _restore():
     reg.DB_PATH = _ORIG
+    lek.DB_PATH = _ORIG_LEK_DB_PATH
+    os.environ.pop("ATLAS_MAGNITUD_PREDICTION_SOURCE", None)
 
 
 def _quote(symbol, price, change_pct, volume=500, avg_volume=500, rvol=1.0):
@@ -938,6 +944,154 @@ def test_candidata_llega_a_inicio_congela_prediccion_de_magnitud_real():
             tracker.process_sweep({"MRNA": _quote("MRNA", 90.0, 45.0, rvol=20.0)}, h, "2026-08-19", "regular", _now())
             pred2 = reg.get_magnitud_prediction("MRNA", "2026-08-19")
             assert pred2["predicted_pct"] == 30.0
+        finally:
+            tracker.pc.from_live_detection = orig_from_live
+            ref_reg.latest_volatility_14d_pct = orig_vol
+            ref_reg.recent_daily_features = orig_recent
+            ref_reg.percentile_change_pct = orig_pct
+            tracker.hsc.get_cached_reference_table = orig_table
+    finally:
+        _restore()
+
+
+# --- Fuente v2 de predicted_pct (2026-09-13, autorizado explícitamente
+# tras validación fuera de muestra: n>=500 -> usar v2; n<500 -> fallback a
+# la metodología externa de siempre, sin cambios) ---
+
+def _fila_lek(direction, alert_stage, n, mediana, computed_as_of="2026-08-18"):
+    return {
+        "direction": direction, "timing_deteccion": alert_stage, "bucket": "poblacion_total",
+        "n_evaluables": n, "n_aciertos_20": 0, "pct_20": 0.0,
+        "wilson_lower_bound_20_pct": 0.0, "wilson_upper_bound_20_pct": 1.0,
+        "baseline_pct_20": 3.0, "lift_20": 0.0, "mediana_max_advance_pct": mediana,
+        "n_aciertos_50": 0, "pct_50": 0.0, "n_aciertos_100": 0, "pct_100": 0.0,
+        "validation_state": "VALIDACION_ROBUSTA" if n >= 500 else "EN_VALIDACION",
+        "computed_as_of": computed_as_of, "computed_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def test_flag_apagado_default_usa_metodologia_externa_sin_cambios():
+    # Sin ATLAS_MAGNITUD_PREDICTION_SOURCE seteado -- comportamiento
+    # IDÉNTICO al de antes de este cambio, incluso con evidencia v2
+    # robusta disponible (nunca se consulta si el flag está apagado).
+    _fresh()
+    try:
+        from atlas_live.radar import phase_classifier as pc_module
+        from atlas_live.reference import reference_registry as ref_reg
+
+        lek.record_experience_knowledge(
+            [_fila_lek("ALCISTA", "INICIO", 900, 99.0)], methodology_version=lek.METHODOLOGY_VERSION_V2,
+        )
+        orig_from_live = tracker.pc.from_live_detection
+        orig_vol = ref_reg.latest_volatility_14d_pct
+        orig_recent = ref_reg.recent_daily_features
+        orig_pct = ref_reg.percentile_change_pct
+        orig_table = tracker.hsc.get_cached_reference_table
+
+        tracker.pc.from_live_detection = lambda *a, **k: pc_module.PhaseTag(
+            timing_deteccion="al_comienzo", direction="ALCISTA",
+            comportamiento_post_apertura="desconocido", reason="test", change_pct_confiable=True,
+        )
+        ref_reg.latest_volatility_14d_pct = lambda symbol: None
+        ref_reg.recent_daily_features = lambda symbol, n=5: []
+        ref_reg.percentile_change_pct = lambda symbol, p: None
+        tracker.hsc.get_cached_reference_table = lambda: _mock_evidencia_real(mediana=30.0)
+        try:
+            h = SweepHistory()
+            tracker.process_sweep({"MRNA": _quote("MRNA", 65.0, 5.0, rvol=8.0)}, h, "2026-08-19", "regular", _now())
+            pred = reg.get_magnitud_prediction("MRNA", "2026-08-19")
+            assert pred["predicted_pct"] == 30.0  # externa, no la mediana v2 (99.0)
+            assert pred["fuente"] == "external"
+        finally:
+            tracker.pc.from_live_detection = orig_from_live
+            ref_reg.latest_volatility_14d_pct = orig_vol
+            ref_reg.recent_daily_features = orig_recent
+            ref_reg.percentile_change_pct = orig_pct
+            tracker.hsc.get_cached_reference_table = orig_table
+    finally:
+        _restore()
+
+
+def test_flag_encendido_con_evidencia_v2_robusta_usa_v2():
+    _fresh()
+    try:
+        from atlas_live.radar import phase_classifier as pc_module
+        from atlas_live.reference import reference_registry as ref_reg
+
+        os.environ["ATLAS_MAGNITUD_PREDICTION_SOURCE"] = "v2_own_experience"
+        # market_date="2026-08-19" -> snapshot debe tener computed_as_of < esa fecha.
+        lek.record_experience_knowledge(
+            [_fila_lek("ALCISTA", "INICIO", 900, 6.5, computed_as_of="2026-08-18")],
+            methodology_version=lek.METHODOLOGY_VERSION_V2,
+        )
+        orig_from_live = tracker.pc.from_live_detection
+        orig_vol = ref_reg.latest_volatility_14d_pct
+        orig_recent = ref_reg.recent_daily_features
+        orig_pct = ref_reg.percentile_change_pct
+        orig_table = tracker.hsc.get_cached_reference_table
+
+        tracker.pc.from_live_detection = lambda *a, **k: pc_module.PhaseTag(
+            timing_deteccion="al_comienzo", direction="ALCISTA",
+            comportamiento_post_apertura="desconocido", reason="test", change_pct_confiable=True,
+        )
+        ref_reg.latest_volatility_14d_pct = lambda symbol: None
+        ref_reg.recent_daily_features = lambda symbol, n=5: []
+        ref_reg.percentile_change_pct = lambda symbol, p: None
+        # Tabla externa con OTRA mediana -- si el test pasa con 6.5, confirma
+        # que efectivamente se usó v2, no un fallback silencioso.
+        tracker.hsc.get_cached_reference_table = lambda: _mock_evidencia_real(mediana=30.0)
+        try:
+            h = SweepHistory()
+            tracker.process_sweep({"MRNA": _quote("MRNA", 65.0, 5.0, rvol=8.0)}, h, "2026-08-19", "regular", _now())
+            assert reg.latest_alert_stage("MRNA", "2026-08-19") == "INICIO"
+            pred = reg.get_magnitud_prediction("MRNA", "2026-08-19")
+            assert pred["predicted_pct"] == 6.5
+            assert pred["fuente"] == "v2_own_experience"
+            assert pred["muestra_n"] == 900
+        finally:
+            tracker.pc.from_live_detection = orig_from_live
+            ref_reg.latest_volatility_14d_pct = orig_vol
+            ref_reg.recent_daily_features = orig_recent
+            ref_reg.percentile_change_pct = orig_pct
+            tracker.hsc.get_cached_reference_table = orig_table
+    finally:
+        _restore()
+
+
+def test_flag_encendido_sin_evidencia_v2_suficiente_cae_a_fallback_externo():
+    # Fallback seguro: flag prendido pero v2 con n<500 para esta condición
+    # específica -- nunca deja a la candidata sin predicción, usa la
+    # metodología externa exactamente igual que si el flag estuviera apagado.
+    _fresh()
+    try:
+        from atlas_live.radar import phase_classifier as pc_module
+        from atlas_live.reference import reference_registry as ref_reg
+
+        os.environ["ATLAS_MAGNITUD_PREDICTION_SOURCE"] = "v2_own_experience"
+        lek.record_experience_knowledge(
+            [_fila_lek("ALCISTA", "INICIO", 200, 6.5, computed_as_of="2026-08-18")],  # n=200 < 500
+            methodology_version=lek.METHODOLOGY_VERSION_V2,
+        )
+        orig_from_live = tracker.pc.from_live_detection
+        orig_vol = ref_reg.latest_volatility_14d_pct
+        orig_recent = ref_reg.recent_daily_features
+        orig_pct = ref_reg.percentile_change_pct
+        orig_table = tracker.hsc.get_cached_reference_table
+
+        tracker.pc.from_live_detection = lambda *a, **k: pc_module.PhaseTag(
+            timing_deteccion="al_comienzo", direction="ALCISTA",
+            comportamiento_post_apertura="desconocido", reason="test", change_pct_confiable=True,
+        )
+        ref_reg.latest_volatility_14d_pct = lambda symbol: None
+        ref_reg.recent_daily_features = lambda symbol, n=5: []
+        ref_reg.percentile_change_pct = lambda symbol, p: None
+        tracker.hsc.get_cached_reference_table = lambda: _mock_evidencia_real(mediana=30.0)
+        try:
+            h = SweepHistory()
+            tracker.process_sweep({"MRNA": _quote("MRNA", 65.0, 5.0, rvol=8.0)}, h, "2026-08-19", "regular", _now())
+            pred = reg.get_magnitud_prediction("MRNA", "2026-08-19")
+            assert pred["predicted_pct"] == 30.0  # cae a la externa
+            assert pred["fuente"] == "external"
         finally:
             tracker.pc.from_live_detection = orig_from_live
             ref_reg.latest_volatility_14d_pct = orig_vol

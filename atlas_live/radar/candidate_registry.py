@@ -391,6 +391,14 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         # gate ni `candidate_gates.py` lee estas columnas.
         _ensure_column(conn, "candidate_detection", "possible_split_flag_at_detection", "TEXT")
         _ensure_column(conn, "candidate_detection", "possible_split_ratio_at_detection", "REAL")
+        # Fuente de predicted_pct (2026-09-13, autorizado explícitamente tras
+        # validación fuera de muestra tres-cortes): "external" (Base
+        # Histórica, `historical_scoring.py`, comportamiento de siempre) o
+        # "v2_own_experience" (historial propio de Atlas por alert_stage,
+        # `live_experience_knowledge`, solo cuando n>=500). `NULL` para toda
+        # fila ya congelada antes de este cambio -- nunca se reescribe una
+        # predicción existente, write-once se mantiene intacto.
+        _ensure_column(conn, "magnitud_prediction", "fuente", "TEXT")
         _schema_ready_for = str(DB_PATH)
 
 
@@ -1429,21 +1437,25 @@ def record_magnitud_prediction(
     ticker: str, market_date: str, frozen_at: str, predicted_pct: float,
     estado_final_al_congelar: Optional[str] = None, direction: Optional[str] = None,
     timing_deteccion: Optional[str] = None, bucket: Optional[str] = None,
-    muestra_n: Optional[int] = None,
+    muestra_n: Optional[int] = None, fuente: Optional[str] = None,
 ) -> bool:
     """Congela la predicción de magnitud UNA sola vez por (ticker,
     market_date) -- INSERT OR IGNORE, devuelve False si ya existía (nunca se
     pisa, para que calificarla después contra el resultado real tenga
     sentido: la predicción tiene que quedar fija en el momento en que se
-    hizo)."""
+    hizo).
+
+    `fuente` (2026-09-13, aditivo): "external" | "v2_own_experience" |
+    `None` (compatibilidad con callers previos a este cambio) -- puramente
+    informativo, nunca afecta qué se congela ni el criterio de acierto."""
     with _connect() as conn:
         cur = conn.execute(
             """INSERT OR IGNORE INTO magnitud_prediction
                (ticker, market_date, frozen_at, estado_final_al_congelar, direction,
-                timing_deteccion, bucket, muestra_n, predicted_pct, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                timing_deteccion, bucket, muestra_n, predicted_pct, created_at, fuente)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
             (ticker, market_date, frozen_at, estado_final_al_congelar, direction,
-             timing_deteccion, bucket, muestra_n, predicted_pct, _now()),
+             timing_deteccion, bucket, muestra_n, predicted_pct, _now(), fuente),
         )
         conn.commit()
         return cur.rowcount > 0
@@ -1616,6 +1628,94 @@ def magnitud_precision_report_racional(market_date: Optional[str] = None) -> Dic
     """Versión Racional de `magnitud_precision_report()` -- mismo criterio
     de acierto, filtrado a `atlas.data.universe.is_available(ticker)`."""
     return magnitud_precision_report(market_date, solo_racional=True)
+
+
+def magnitud_precision_report_max(market_date: Optional[str] = None, solo_racional: bool = False) -> Dict[str, Any]:
+    """HERMANA de `magnitud_precision_report()` -- mismo join, mismos
+    filtros de calidad (`is_final=1`, `confiable_para_aprendizaje=1`),
+    misma fórmula/Wilson/`validation_state` -- la ÚNICA diferencia es el
+    criterio de "resultado real": acá se usa `max_return_after_detection_pct`
+    (el máximo real intradía, sin importar la hora -- `minutes_to_max` se
+    expone en el detalle de cada caso) en vez de
+    `close_return_after_detection_pct` (el cierre).
+
+    2026-09-13, autorizado explícitamente por el usuario -- reabre a
+    propósito la decisión tomada el 2026-08-23 (caso MRNX: tocó +44,3%
+    intradía, cerró en +17,8%, "eso no es acierto" en ese momento). Esta
+    vez el pedido es el opuesto ("da lo mismo la hora... aunque al final
+    baje toda alza") -- `magnitud_precision_report()` (cierre) NO se
+    modifica, ambas métricas conviven, ninguna reemplaza a la otra.
+
+    `max_return_after_detection_pct` está poblado desde el inicio del
+    proyecto (a diferencia de `close_return_after_detection_pct`, que
+    tiene un hueco anterior al 2026-08-23) -- este reporte cubre MÁS
+    historia, no menos."""
+    is_available = None
+    if solo_racional:
+        try:
+            from atlas.data.universe import is_available
+        except Exception:
+            is_available = None
+
+    with _connect() as conn:
+        if market_date:
+            preds = conn.execute(
+                "SELECT * FROM magnitud_prediction WHERE market_date=? ORDER BY frozen_at",
+                (market_date,),
+            ).fetchall()
+        else:
+            preds = conn.execute(
+                "SELECT * FROM magnitud_prediction ORDER BY market_date, frozen_at"
+            ).fetchall()
+        preds = [_row(r) for r in preds]
+        if solo_racional:
+            preds = [p for p in preds if is_available is not None and is_available(p["ticker"])]
+
+        candidatas: List[Dict[str, Any]] = []
+        n_evaluables = 0
+        n_aciertos = 0
+        for p in preds:
+            outcome = conn.execute(
+                "SELECT * FROM candidate_outcome WHERE ticker=? AND market_date=? AND is_final=1",
+                (p["ticker"], p["market_date"]),
+            ).fetchone()
+            if outcome is None:
+                continue  # todavía no cerró -- no se evalúa como pendiente, no se inventa un resultado
+            if not outcome["confiable_para_aprendizaje"]:
+                continue
+            resultado_real_pct = outcome["max_return_after_detection_pct"]
+            if resultado_real_pct is None:
+                continue
+            n_evaluables += 1
+            acierto = resultado_real_pct >= p["predicted_pct"]
+            if acierto:
+                n_aciertos += 1
+            candidatas.append({
+                "ticker": p["ticker"], "market_date": p["market_date"], "frozen_at": p["frozen_at"],
+                "predicted_pct": p["predicted_pct"], "muestra_n": p["muestra_n"],
+                "resultado_real_pct": resultado_real_pct, "acierto": acierto,
+                "minutes_to_max": outcome["minutes_to_max"],
+            })
+
+    precision_pct = round(100 * n_aciertos / n_evaluables, 1) if n_evaluables else None
+    return {
+        "market_date": market_date,
+        "criterio": "maximo_intradia",
+        "n_predicciones": len(preds),
+        "n_evaluables": n_evaluables,
+        "n_aciertos": n_aciertos,
+        "precision_pct": precision_pct,
+        "muestra_suficiente": n_evaluables >= MUESTRA_MINIMA_CONFIABLE_MAGNITUD,
+        "validation_state": precision_validation_state(n_evaluables),
+        "wilson_ci": wilson_confidence_interval(n_aciertos, n_evaluables),
+        "meta_confirmada": meta_confirmada(n_evaluables, precision_pct),
+        "candidatas": candidatas,
+    }
+
+
+def magnitud_precision_report_max_racional(market_date: Optional[str] = None) -> Dict[str, Any]:
+    """Versión Racional de `magnitud_precision_report_max()`."""
+    return magnitud_precision_report_max(market_date, solo_racional=True)
 
 
 def magnitud_precision_rolling(n_ventana: int, solo_racional: bool = False) -> Dict[str, Any]:

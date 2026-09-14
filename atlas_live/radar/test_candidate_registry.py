@@ -946,6 +946,27 @@ def test_record_magnitud_prediction_es_write_once_por_ticker_y_dia():
         _restore()
 
 
+def test_record_magnitud_prediction_persiste_fuente():
+    # 2026-09-13, autorizado explícitamente: `fuente` es aditivo -- un
+    # caller que no la pasa (compatibilidad con todo el código previo a
+    # este cambio) sigue funcionando, con `fuente=None` persistido.
+    _fresh()
+    try:
+        reg.record_magnitud_prediction(
+            "MRNA", "2026-08-19", "2026-08-19T10:47:00Z", 6.5,
+            direction="ALCISTA", timing_deteccion="CONFIRMACION",
+            bucket="poblacion_total", muestra_n=787, fuente="v2_own_experience",
+        )
+        reg.record_magnitud_prediction("SIN_FUENTE", "2026-08-19", "2026-08-19T10:00:00Z", 10.0)
+
+        con_fuente = reg.get_magnitud_prediction("MRNA", "2026-08-19")
+        sin_fuente = reg.get_magnitud_prediction("SIN_FUENTE", "2026-08-19")
+        assert con_fuente["fuente"] == "v2_own_experience"
+        assert sin_fuente["fuente"] is None
+    finally:
+        _restore()
+
+
 def test_magnitud_predictions_for_date_lista_por_fecha():
     _fresh()
     try:
@@ -1263,6 +1284,98 @@ def test_magnitud_precision_report_racional_filtra_al_universo_operable(monkeypa
         assert racional["n_evaluables"] == 1
         assert racional["n_aciertos"] == 1
         assert racional["precision_pct"] == 100.0
+        assert [c["ticker"] for c in racional["candidatas"]] == ["MRNA"]
+    finally:
+        _restore()
+
+
+def test_magnitud_precision_report_max_usa_maximo_no_cierre():
+    """2026-09-13, autorizado explícitamente por el usuario -- reabre a
+    propósito el caso MRNX del 2026-08-23: acá SÍ debe contar como
+    acierto, porque el criterio es el máximo intradía (44,29%), no el
+    cierre (17,9%). `magnitud_precision_report()` (cierre) debe seguir
+    dando exactamente lo mismo que antes -- las dos métricas conviven."""
+    _fresh()
+    try:
+        reg.record_magnitud_prediction("MRNX", "2026-08-21", "2026-08-21T10:00:00Z", 20.5)
+        reg.record_outcome(
+            "MRNX", "2026-08-21", run_up_before_detection_pct=-3.1,
+            max_price_after_detection=103.86, max_return_after_detection_pct=44.29,
+            minutes_to_max=387.0, reached_20=True, reached_50=False, reached_100=False,
+            category="buena_oportunidad", is_final=True, confiable_para_aprendizaje=True,
+            close_price_after_detection=84.85, close_return_after_detection_pct=17.9,
+        )
+
+        reporte_max = reg.magnitud_precision_report_max("2026-08-21")
+        assert reporte_max["criterio"] == "maximo_intradia"
+        assert reporte_max["n_evaluables"] == 1
+        mrnx_max = reporte_max["candidatas"][0]
+        assert mrnx_max["resultado_real_pct"] == 44.29
+        assert mrnx_max["acierto"] is True  # 44.29 >= 20.5 -- con máximo intradía SÍ es acierto
+        assert mrnx_max["minutes_to_max"] == 387.0
+
+        # El reporte de cierre (existente, sin tocar) sigue dando el mismo
+        # resultado que antes de esta misión -- ninguna de las dos métricas
+        # afecta a la otra.
+        reporte_cierre = reg.magnitud_precision_report("2026-08-21")
+        assert reporte_cierre["n_evaluables"] == 1
+        assert reporte_cierre["candidatas"][0]["resultado_real_pct"] == 17.9
+        assert reporte_cierre["candidatas"][0]["acierto"] is False
+    finally:
+        _restore()
+
+
+def test_magnitud_precision_report_max_excluye_no_confiables_y_sin_max():
+    """Mismos filtros de calidad que la versión de cierre -- outcome no
+    confiable, o sin `max_return_after_detection_pct`, no cuenta."""
+    _fresh()
+    try:
+        reg.record_magnitud_prediction("XCH", "2026-08-21", "2026-08-21T13:01:00Z", 10.0)
+        reg.record_outcome(
+            "XCH", "2026-08-21", run_up_before_detection_pct=0.0,
+            max_price_after_detection=5.0, max_return_after_detection_pct=2064.5,
+            minutes_to_max=29.0, reached_20=True, reached_50=True, reached_100=True,
+            category="mejor_oportunidad", is_final=True, confiable_para_aprendizaje=False,
+            motivos_sospecha=["dinero_insuficiente", "rvol_anomalo"],
+            close_price_after_detection=5.0, close_return_after_detection_pct=2064.5,
+        )
+        reg.record_magnitud_prediction("OLD", "2026-08-21", "2026-08-21T10:00:00Z", 10.0)
+        reg.record_outcome(
+            "OLD", "2026-08-21", run_up_before_detection_pct=None,
+            max_price_after_detection=None, max_return_after_detection_pct=None,
+            minutes_to_max=None, reached_20=True, reached_50=True, reached_100=False,
+            category="mejor_oportunidad", is_final=True, confiable_para_aprendizaje=True,
+        )
+
+        reporte = reg.magnitud_precision_report_max("2026-08-21")
+        assert reporte["n_evaluables"] == 0
+        assert reporte["candidatas"] == []
+    finally:
+        _restore()
+
+
+def test_magnitud_precision_report_max_racional_filtra_al_universo_operable(monkeypatch):
+    _fresh()
+    try:
+        reg.record_magnitud_prediction("MRNA", "2026-08-21", "2026-08-21T10:47:00Z", 14.3)
+        reg.record_outcome(
+            "MRNA", "2026-08-21", run_up_before_detection_pct=None,
+            max_price_after_detection=None, max_return_after_detection_pct=16.4,
+            minutes_to_max=10.0, reached_20=False, reached_50=False, reached_100=False,
+            category="mejor_oportunidad", is_final=True, confiable_para_aprendizaje=True,
+        )
+        reg.record_magnitud_prediction("XYZQ", "2026-08-21", "2026-08-21T10:00:00Z", 20.0)
+        reg.record_outcome(
+            "XYZQ", "2026-08-21", run_up_before_detection_pct=None,
+            max_price_after_detection=None, max_return_after_detection_pct=55.0,
+            minutes_to_max=10.0, reached_20=False, reached_50=False, reached_100=False,
+            category="mejor_oportunidad", is_final=True, confiable_para_aprendizaje=True,
+        )
+
+        monkeypatch.setattr("atlas.data.universe.is_available", lambda t: t == "MRNA")
+
+        racional = reg.magnitud_precision_report_max_racional("2026-08-21")
+        assert racional["n_evaluables"] == 1
         assert [c["ticker"] for c in racional["candidatas"]] == ["MRNA"]
     finally:
         _restore()
