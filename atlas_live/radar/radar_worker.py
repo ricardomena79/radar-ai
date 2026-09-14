@@ -81,6 +81,11 @@ _stop = threading.Event()
 _thread: Optional[threading.Thread] = None
 _history = SweepHistory()
 _last_quotes: Dict[str, object] = {}
+# Hito 2 (2026-09-14, PLAN Radar/Finnhub -- observabilidad): mismo patrón
+# EXACTO que `_last_quotes` -- se pisa cada sweep, nunca persistido, solo
+# para que un endpoint de solo lectura pueda mostrar los chunks
+# OK/error/diagnósticos REALES del último barrido, sin inventarlos.
+_last_diagnostics: Optional[object] = None
 
 # Estado propio del watchdog -- deliberadamente separado del `_lock`/`_stop`
 # del hilo del radar (responsabilidades distintas: uno corre barridos, el
@@ -206,8 +211,9 @@ def run_sweep_once() -> Optional[float]:
 
         proc = tracker.process_sweep(result.quotes, _history, market_date, session, observed_at)
 
-        global _last_quotes
+        global _last_quotes, _last_diagnostics
         _last_quotes = dict(result.quotes)
+        _last_diagnostics = result.diagnostics
 
         duration = round(time.time() - t0, 2)
         meta = reg.get_meta()
@@ -562,6 +568,15 @@ def request_stop() -> None:
 
 def get_last_quotes() -> Dict[str, object]:
     return dict(_last_quotes)
+
+
+def get_last_diagnostics() -> Optional[object]:
+    """`UniverseQuotesDiagnostics` del último sweep REAL (chunks OK/error,
+    detalle por chunk), o `None` si el radar todavía no corrió ningún
+    barrido en este proceso. Mismo patrón de solo-lectura que
+    `get_last_quotes()` -- nunca reconstruye ni infiere, solo expone lo
+    que el último `run_sweep_once()` ya calculó."""
+    return _last_diagnostics
 
 
 def get_symbol_sweep_history(symbol: str):

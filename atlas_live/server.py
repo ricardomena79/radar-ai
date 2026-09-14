@@ -1618,6 +1618,21 @@ def api_aprendizaje_seguridad_resumen():
     return jsonify(lss.build_safety_summary())
 
 
+@app.route("/api/finnhub-radar-resumen")
+def api_finnhub_radar_resumen():
+    """Hito 2 (2026-09-14, PLAN Radar/Finnhub, autorizado explícitamente):
+    observabilidad real del presupuesto compartido de Finnhub (por
+    consumidor, pisos protegidos, límite total seguro) + diagnóstico del
+    ÚLTIMO barrido REAL del radar (universo, chunks OK/error, detalle de
+    error por chunk) -- estrictamente de solo lectura, sin token, mismo
+    patrón que `/api/aprendizaje-seguridad-resumen`. Los datos de chunk
+    provienen del último sweep real (`radar_worker.get_last_diagnostics()`),
+    nunca reconstruidos desde otra tabla. Nunca lanza."""
+    from atlas_live.core import finnhub_radar_summary as frs
+
+    return jsonify(frs.build_finnhub_radar_summary())
+
+
 @app.route("/api/admin/capacity")
 def api_admin_capacity():
     """Capacity Monitor de Atlas (2026-09-07, autorizado explícitamente):

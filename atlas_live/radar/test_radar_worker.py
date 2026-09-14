@@ -93,6 +93,28 @@ def test_sweep_procesa_y_detecta_candidatas():
         _restore()
 
 
+def test_get_last_diagnostics_none_antes_del_primer_sweep():
+    _fresh()
+    w._last_diagnostics = None
+    assert w.get_last_diagnostics() is None
+
+
+def test_get_last_diagnostics_refleja_el_diagnostico_real_del_ultimo_sweep():
+    # Hito 2 (2026-09-14, PLAN Radar/Finnhub) -- mismo patrón que
+    # `_last_quotes`, se pisa cada sweep, nunca reconstruido.
+    _fresh()
+    quotes = {"AAPL": _fake_quote("AAPL", 6.0)}
+    saved = _install_fakes(session="regular", quotes=quotes)
+    try:
+        w.run_sweep_once()
+        diag = w.get_last_diagnostics()
+        assert diag is not None
+        assert diag.tradier_error is None
+    finally:
+        _uninstall_fakes(saved)
+        _restore()
+
+
 def test_no_reentrante_bajo_llamadas_simultaneas():
     _fresh()
     quotes = {"AAPL": _fake_quote("AAPL", 6.0)}
