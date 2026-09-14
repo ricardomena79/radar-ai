@@ -30,6 +30,7 @@ Símbolo inexistente: Finnhub responde HTTP 200 con todos los campos en 0
 `QuoteNotFoundError`, nunca como una cotización real de $0.
 """
 
+import os
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -39,8 +40,27 @@ import requests
 from atlas.data.models.quote import Quote
 from atlas.data.providers.base import DataProvider, ProviderError, QuoteNotFoundError, RateLimitError
 
+
+def _env_bool(name: str, default: bool) -> bool:
+    v = os.environ.get(name)
+    if v is None:
+        return default
+    return v.strip().lower() in ("1", "true", "yes", "on", "si", "sí")
+
+
 QUOTE_URL = "https://finnhub.io/api/v1/quote"
 CANDLE_URL = "https://finnhub.io/api/v1/stock/candle"
+# Hito 1 (2026-09-14, PLAN Radar/Finnhub -- decisión B, verificada en
+# vivo, no por intuición): `GET /stock/candle` con la key real de
+# producción devolvió HTTP 403 "You don't have access to this resource"
+# incluso para AAPL (símbolo control) -- mientras `/quote`, con la MISMA
+# key, respondió 200. Es una restricción de PLAN, universal y
+# determinística -- nunca un rate-limit ni un error transitorio, así que
+# reintentar (con o sin presupuesto) nunca puede tener éxito. Por eso
+# get_history() falla rápido sin tocar la red, salvo que se reactive
+# explícitamente (ej. si el plan de Finnhub cambia algún día) con
+# ATLAS_FINNHUB_HISTORY_ENABLED=true -- default False, no silencioso.
+FINNHUB_HISTORY_ENABLED = _env_bool("ATLAS_FINNHUB_HISTORY_ENABLED", False)
 # Motor de Catalizadores (2026-08-23, plan aprobado -- ver
 # ethereal-mixing-anchor.md, sección "Motor de Catalizadores/Noticias"):
 # la MISMA API key de arriba (FINNHUB_API_KEY) ya desbloquea estos 2
@@ -131,7 +151,23 @@ class FinnhubProvider(DataProvider):
         """Barras diarias vía /stock/candle. `period`/`interval` se
         traducen de forma aproximada (mismos nombres que usa
         YahooFinanceProvider, para cumplir el mismo contrato) -- Finnhub
-        usa resolución + rango de fechas unix, no strings de yfinance."""
+        usa resolución + rango de fechas unix, no strings de yfinance.
+
+        Hito 1 (2026-09-14): este endpoint devuelve HTTP 403 de forma
+        universal y determinística con el plan actual de Finnhub
+        (verificado en vivo, ver constante `FINNHUB_HISTORY_ENABLED`
+        arriba) -- se falla de inmediato, sin tocar la red, salvo que se
+        reactive explícitamente vía `ATLAS_FINNHUB_HISTORY_ENABLED=true`.
+        `MultiProvider`/`TradierFirstProvider`/`MoneyFlowEngine` ya
+        manejan con gracia un `ProviderError` del último proveedor de la
+        lista (camino ya ejercitado en producción) -- cero cambios
+        necesarios ahí."""
+        if not FINNHUB_HISTORY_ENABLED:
+            raise ProviderError(
+                f"Finnhub /stock/candle no disponible para '{symbol}': restricción de plan "
+                "(HTTP 403 universal, verificado en vivo 2026-09-14) -- deshabilitado por "
+                "defecto (ATLAS_FINNHUB_HISTORY_ENABLED=false). Ver docstring de get_history()."
+            )
         days_by_period = {"1mo": 30, "3mo": 90, "6mo": 180, "1y": 365, "2y": 730, "5y": 1825}
         days = days_by_period.get(period, 180)
         resolution = "D" if interval in ("1d", "D") else interval
