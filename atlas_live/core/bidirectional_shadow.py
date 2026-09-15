@@ -111,6 +111,7 @@ def resolve_controlled_decision(
     eligibility_state: Optional[str],
     learned_evidence: Optional[Dict[str, Any]],
     activation_state: str,
+    upgrade_liquidez_confiable: bool = True,
 ) -> Dict[str, Any]:
     """Punto único que decide qué `decision_controlada` aplica bajo
     activación real (Hito 3.5 + bidireccional) -- reemplaza, en el único
@@ -130,7 +131,26 @@ def resolve_controlled_decision(
     Cuando `activation_state == "ACTIVADO"`, delega en
     `compute_bidirectional_decision()` (sin reimplementar ninguna regla) --
     cubre tanto el downgrade ya existente (heredado vía
-    `decision_shadow_downgrade`) como el upgrade nuevo."""
+    `decision_shadow_downgrade`) como el upgrade nuevo.
+
+    FIX (2026-09-15, autorizado explícitamente -- "arreglalo"): un upgrade
+    (`NO_TOCAR`->`VIGILAR`) se basa en la evidencia AGREGADA de la
+    condición (robusta, ya validada por Hito 3.3) -- pero nada garantiza
+    que ESTA candidata puntual, la que está siendo evaluada ahora mismo,
+    tenga datos propios confiables. Caso real confirmado en producción
+    (2026-09-15): de 95 upgrades reales aplicados el mismo día, 74 (78%)
+    tenían la propia detección marcada `dinero_insuficiente`/`rvol_anomalo`
+    por `candidate_registry.classify_learning_quality()` -- la evidencia
+    agregada seguía siendo válida, pero aplicarla a una instancia con
+    datos de liquidez sospechosos no tiene sentido. `upgrade_liquidez_confiable`
+    (calculado por el llamador con esa MISMA función ya existente, nunca
+    un umbral nuevo) debe ser `True` para que un upgrade se aplique de
+    verdad -- si es `False`, el upgrade candidato queda BLOQUEADO
+    (`decision_controlada` vuelve a `decision_base`, `cambio_aplicado=False`)
+    aunque la condición agregada siga siendo elegible y favorable. Un
+    DOWNGRADE (heredado del shadow ya existente) NUNCA se ve afectado por
+    este parámetro -- el fix se pidió específicamente para upgrades, y el
+    downgrade-only ya tenía su propio criterio desde antes, sin cambios."""
     if activation_state != "ACTIVADO":
         return {
             "decision_controlada": None,
@@ -143,9 +163,22 @@ def resolve_controlled_decision(
         decision_base, decision_shadow_downgrade, eligibility_state, learned_evidence,
     )
     decision_controlada = resultado["decision_informada"]
+    upgrade_aplicado = resultado["upgrade_aplicado"]
+    motivo = resultado["motivo"]
+
+    if upgrade_aplicado and not upgrade_liquidez_confiable:
+        decision_controlada = decision_base
+        upgrade_aplicado = False
+        motivo = (
+            "UPGRADE_BLOQUEADO_LIQUIDEZ_INSUFICIENTE: la evidencia agregada de la "
+            "condición seguía siendo favorable, pero esta candidata puntual tiene "
+            "datos propios marcados no confiables (dinero_insuficiente/rvol_anomalo) "
+            f"-- upgrade candidato original: {resultado['motivo']}"
+        )
+
     return {
         "decision_controlada": decision_controlada,
         "cambio_aplicado": decision_controlada != decision_base,
-        "motivo": resultado["motivo"],
-        "upgrade_aplicado": resultado["upgrade_aplicado"],
+        "motivo": motivo,
+        "upgrade_aplicado": upgrade_aplicado,
     }

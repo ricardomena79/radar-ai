@@ -108,7 +108,7 @@ def test_8b_resolve_controlled_decision_no_importa_activation_registry():
     sig = inspect.signature(bidi.resolve_controlled_decision)
     assert list(sig.parameters) == [
         "decision_base", "decision_shadow_downgrade", "eligibility_state",
-        "learned_evidence", "activation_state",
+        "learned_evidence", "activation_state", "upgrade_liquidez_confiable",
     ]
 
 
@@ -264,3 +264,83 @@ def test_r6_determinismo():
         activation_state="ACTIVADO",
     )
     assert bidi.resolve_controlled_decision(**kwargs) == bidi.resolve_controlled_decision(**kwargs)
+
+
+# ---------------------------------------------------------------------------
+# FIX 2026-09-15 (autorizado explícitamente -- "arreglalo") -- un upgrade
+# real requiere ADEMÁS que la candidata puntual tenga datos propios
+# confiables (`upgrade_liquidez_confiable`, calculado por el llamador con
+# `candidate_registry.classify_learning_quality()`, reutilizada tal cual).
+# Caso real que motivó el fix: 74/95 upgrades reales de producción
+# (2026-09-15) tenían la propia detección marcada dinero_insuficiente/
+# rvol_anomalo -- la evidencia agregada seguía siendo válida, pero no
+# debía aplicarse a esa instancia puntual.
+# ---------------------------------------------------------------------------
+
+def test_r7_upgrade_bloqueado_por_liquidez_insuficiente_vuelve_a_decision_base():
+    r = bidi.resolve_controlled_decision(
+        decision_base="NO_TOCAR", decision_shadow_downgrade="NO_TOCAR",
+        eligibility_state="ELEGIBLE", learned_evidence=_le(5.0, 0.94),
+        activation_state="ACTIVADO", upgrade_liquidez_confiable=False,
+    )
+    assert r["decision_controlada"] == "NO_TOCAR"
+    assert r["cambio_aplicado"] is False
+    assert r["upgrade_aplicado"] is False
+    assert "LIQUIDEZ_INSUFICIENTE" in r["motivo"]
+
+
+def test_r8_upgrade_liquidez_confiable_default_true_preserva_comportamiento_previo():
+    # Sin pasar el parámetro nuevo -- mismo resultado que antes del fix
+    # (test_r2), compatibilidad hacia atrás para cualquier otro caller.
+    r = bidi.resolve_controlled_decision(
+        decision_base="NO_TOCAR", decision_shadow_downgrade="NO_TOCAR",
+        eligibility_state="ELEGIBLE", learned_evidence=_le(5.0, 0.94),
+        activation_state="ACTIVADO",
+    )
+    assert r["decision_controlada"] == "VIGILAR"
+    assert r["cambio_aplicado"] is True
+    assert r["upgrade_aplicado"] is True
+
+
+def test_r9_downgrade_nunca_se_ve_afectado_por_el_parametro_de_liquidez():
+    # El fix se pidió específicamente para upgrades -- un downgrade
+    # heredado del shadow existente debe aplicarse exactamente igual,
+    # con upgrade_liquidez_confiable en False.
+    for decision_base, decision_shadow_downgrade in [
+        ("OPORTUNIDAD_PRIORITARIA", "VIGILAR"), ("VIGILAR", "PREPARACION"),
+    ]:
+        r = bidi.resolve_controlled_decision(
+            decision_base=decision_base, decision_shadow_downgrade=decision_shadow_downgrade,
+            eligibility_state="ELEGIBLE", learned_evidence=_le(0.1, 0.94),
+            activation_state="ACTIVADO", upgrade_liquidez_confiable=False,
+        )
+        assert r["decision_controlada"] == decision_shadow_downgrade
+        assert r["cambio_aplicado"] is True
+
+
+def test_r10_liquidez_insuficiente_sin_upgrade_candidato_no_cambia_nada_igual():
+    # Si de todos modos no había upgrade (evidencia desfavorable), el
+    # parámetro de liquidez no debe alterar el resultado -- solo actúa
+    # cuando SÍ había un upgrade real que bloquear.
+    r_confiable = bidi.resolve_controlled_decision(
+        decision_base="NO_TOCAR", decision_shadow_downgrade="NO_TOCAR",
+        eligibility_state="ELEGIBLE", learned_evidence=_le(0.1, 0.94),
+        activation_state="ACTIVADO", upgrade_liquidez_confiable=True,
+    )
+    r_no_confiable = bidi.resolve_controlled_decision(
+        decision_base="NO_TOCAR", decision_shadow_downgrade="NO_TOCAR",
+        eligibility_state="ELEGIBLE", learned_evidence=_le(0.1, 0.94),
+        activation_state="ACTIVADO", upgrade_liquidez_confiable=False,
+    )
+    assert r_confiable == r_no_confiable
+    assert r_confiable["cambio_aplicado"] is False
+
+
+def test_r11_gate_no_activado_ignora_el_parametro_de_liquidez():
+    r = bidi.resolve_controlled_decision(
+        decision_base="NO_TOCAR", decision_shadow_downgrade="NO_TOCAR",
+        eligibility_state="ELEGIBLE", learned_evidence=_le(5.0, 0.94),
+        activation_state="BLOQUEADO", upgrade_liquidez_confiable=False,
+    )
+    assert r["decision_controlada"] is None
+    assert r["cambio_aplicado"] is False

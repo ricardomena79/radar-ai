@@ -1486,12 +1486,23 @@ def _api_radar_oportunidades_impl():
                     computed_as_of=(o["learned_evidence"] or {}).get("computed_as_of"),
                     market_date=market_date,
                 )
+                # FIX 2026-09-15 (autorizado explícitamente -- "arreglalo"):
+                # un upgrade solo debe aplicarse si ESTA candidata puntual
+                # tiene datos propios confiables -- reutiliza
+                # `classify_learning_quality()` tal cual (mismo criterio ya
+                # usado para las estadísticas agregadas EOD, ningún umbral
+                # nuevo). Ver docstring de `resolve_controlled_decision()`.
+                upgrade_liquidez_confiable, _motivos_liquidez = radar_registry.classify_learning_quality({
+                    "dollar_volume_at_detection": o.get("dollar_volume_at_detection"),
+                    "relative_volume_at_detection": o.get("relative_volume_at_detection"),
+                })
                 resolucion = bidi.resolve_controlled_decision(
                     decision_base=atlas_decision.decision,
                     decision_shadow_downgrade=shadow_decision.decision_shadow,
                     eligibility_state=eligibility_state_35,
                     learned_evidence=o["learned_evidence"],
                     activation_state=gate["activation_state"],
+                    upgrade_liquidez_confiable=upgrade_liquidez_confiable,
                 )
                 decision_controlada = resolucion["decision_controlada"]
                 if resolucion["cambio_aplicado"]:

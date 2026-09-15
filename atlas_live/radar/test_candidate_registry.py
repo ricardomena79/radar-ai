@@ -524,6 +524,21 @@ def test_live_opportunities_expone_deteccion_temprana_sin_alerta(monkeypatch):
         _restore()
 
 
+def test_live_opportunities_expone_dollar_volume_at_detection(monkeypatch):
+    # 2026-09-15, fix del filtro de liquidez pre-upgrade bidireccional
+    # (server.py, bidirectional_shadow.resolve_controlled_decision) --
+    # ya se guardaba en candidate_detection, solo faltaba exponerlo acá.
+    _fresh()
+    try:
+        monkeypatch.setattr("atlas.data.universe.is_available", lambda symbol: True)
+        reg.record_detection("BRBS", "2026-08-17", "premarket", "2026-08-17T12:55:21Z", "s1",
+                              3.69, 0.0, 1000, 500, 1.0, 3690, gates_fired=[])
+        ops = reg.live_opportunities("2026-08-17")
+        assert ops[0]["dollar_volume_at_detection"] == 3690
+    finally:
+        _restore()
+
+
 def test_live_opportunities_incluye_no_perseguir_nunca_filtra(monkeypatch):
     """Prioridad 1: una candidata en NO_PERSEGUIR sigue apareciendo -- la
     etapa es información, nunca un filtro de qué se muestra."""

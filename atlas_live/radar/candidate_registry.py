@@ -1062,6 +1062,11 @@ def live_opportunities(market_date: str) -> List[Dict[str, Any]]:
             # la usa como criterio de ranking (Hito 7), no si se muestra acá.
             "pm_early_signal_at_detection": d.get("pm_early_signal_at_detection"),
             "pm_early_signal_state_at_detection": d.get("pm_early_signal_state_at_detection"),
+            # 2026-09-15, fix del filtro de liquidez pre-upgrade bidireccional
+            # (ver `classify_learning_quality()` más abajo, reutilizado tal
+            # cual desde `server.py` -- este campo ya se guardaba en
+            # `candidate_detection`, solo faltaba exponerlo acá).
+            "dollar_volume_at_detection": d.get("dollar_volume_at_detection"),
         })
     return out
 
