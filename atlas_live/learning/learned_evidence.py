@@ -57,6 +57,41 @@ get_knowledge_for()`/`latest_knowledge_as_of()` (Fase 2, que usan `<=`
 por diseño, para sus propios tests de verificación) -- este módulo no
 modifica esas funciones, define su propia consulta más conservadora.
 
+Preferencia por evidencia ROBUSTA sobre evidencia FRAGMENTADA (FIX
+2026-09-15, autorizado explícitamente -- "hazlo, sin tocar los
+parámetros de medición"): el fix de 2026-09-12 de arriba resolvía el
+código muerto (el bucket real nunca se consultaba), pero introdujo un
+costo real que solo se hizo visible con más datos de producción:
+dividir por tercil de volatilidad FRAGMENTA la muestra de una condición
+en 3 pedazos más chicos -- y un pedazo puede tardar mucho más en llegar
+a `META_MUESTRA_MINIMA` (500) que el TOTAL sin dividir, aunque el total
+YA demuestre una ventaja real y robusta. Caso real confirmado en
+producción (2026-09-14): `ALCISTA/CONFIRMACION` tiene 787 casos en
+`poblacion_total` (`VALIDACION_ROBUSTA`, `wilson_lower=6.3% > baseline
+=3.17%`, ventaja real de 2.5x) -- pero su bucket `alto` (el que le
+tocaba a la mayoría de sus candidatas reales) solo tenía 261 casos
+(`EN_VALIDACION`, `INSUFICIENTE` para 3.3) -- la ventaja YA demostrada
+en el agregado quedaba invisible para la elegibilidad real. Mismo caso
+para `ALCISTA/NO_PERSEGUIR` (1.579 en total, `VALIDACION_ROBUSTA`, lift
+1.58x, vs. 384 en su bucket).
+
+Regla nueva, mínima, que NO toca ningún parámetro de medición (ni
+`META_MUESTRA_MINIMA`, ni el cálculo de Wilson, ni el baseline, ni
+`precision_validation_state()` -- los 3 siguen exactamente igual,
+importados sin modificar): el bucket específico (`alto`/`medio`/`bajo`)
+solo se usa cuando ESE bucket, por sí solo, ya alcanzó
+`validation_state == "VALIDACION_ROBUSTA"` (el mismo estado, ya
+calculado, reutilizado tal cual). Si el bucket específico todavía no es
+robusto (`EN_VALIDACION`/`MUESTRA_INSUFICIENTE`) o no existe, se usa
+`poblacion_total` en su lugar -- que sigue siendo el fallback universal
+de siempre, ahora también cuando lo específico existe pero es débil,
+no solo cuando falta. Es shrinkage hacia el agregado cuando el
+segmento no tiene evidencia propia suficiente -- práctica estadística
+estándar, no una relajación de ningún umbral: `poblacion_total` para
+`ALCISTA/CONFIRMACION`/`ALCISTA/NO_PERSEGUIR` YA era `VALIDACION_ROBUSTA`
+antes de este fix, con exactamente los mismos números -- solo dejó de
+ignorarse en favor de un pedazo más chico y menos informativo.
+
 Consulta genérica v1/v2 (FIX 2026-09-12, misión "RESOLVER LA DESCONEXIÓN
 ENTRE APRENDIZAJE Y DECISIÓN"): esta función NUNCA cambió de firma --
 `timing_deteccion` y `methodology_version` ya eran parámetros genéricos.
@@ -109,10 +144,13 @@ def get_learned_evidence(
     los cortes de tercil de ESE cálculo). Si `volatility_14d_pct` está
     disponible y esa fila trae cortes reales, se re-consulta el bucket
     específico (`alto`/`medio`/`bajo`) DENTRO DEL MISMO `computed_at`
-    (mismo cálculo, nunca mezcla snapshots de días distintos) -- si esa
-    fila específica no existe (no debería pasar, las 4 filas de un grupo
-    se insertan juntas, pero se verifica en vez de asumir), se devuelve la
-    fila agregada ya obtenida, igual que el comportamiento previo."""
+    (mismo cálculo, nunca mezcla snapshots de días distintos) -- ESE
+    bucket específico solo reemplaza al agregado si por sí solo ya es
+    `VALIDACION_ROBUSTA` (FIX 2026-09-15, ver docstring del módulo). Si
+    no existe, o existe pero todavía no es robusto, se devuelve la fila
+    agregada (`poblacion_total`) -- igual que el comportamiento previo
+    cuando el bucket específico faltaba, ahora también cuando existe
+    pero es más débil que el agregado."""
     if direction not in DIRECTIONS_VALIDAS or not timing_deteccion:
         return {"available": False, "reason": "CONDICION_NO_DISPONIBLE"}
 
@@ -135,7 +173,12 @@ def get_learned_evidence(
                                  AND methodology_version = ? AND computed_at = ?""",
                         (direction, timing_deteccion, bucket_real, methodology_version, row["computed_at"]),
                     ).fetchone()
-                    if fila_bucket is not None:
+                    # FIX 2026-09-15: el bucket específico solo reemplaza al
+                    # agregado si, por sí solo, ya alcanzó VALIDACION_ROBUSTA
+                    # -- reutiliza ese mismo validation_state ya calculado,
+                    # nunca un umbral nuevo. Si es más débil que el agregado
+                    # (o no existe), se mantiene `row` (poblacion_total).
+                    if fila_bucket is not None and fila_bucket["validation_state"] == "VALIDACION_ROBUSTA":
                         row = fila_bucket
     except Exception as exc:  # la capa de conocimiento nunca puede tumbar al llamador
         return {"available": False, "reason": f"ERROR_CONSULTA: {type(exc).__name__}"}

@@ -191,24 +191,36 @@ def test_J_sin_cortes_de_tercil_no_inventa_bucket():
 
 
 # --- J2-J5: FIX 2026-09-12 -- matching real por bucket de volatilidad ------
+# FIX 2026-09-15: el bucket específico solo se usa si es VALIDACION_ROBUSTA
+# por sí solo -- ver docstring del módulo. Estos tests marcan explícitamente
+# el bucket bajo prueba como robusto, para seguir probando "se usa el bucket
+# real" -- la prueba de "NO se usa si es débil" vive en J9-J11, más abajo.
 
-def _grupo_con_cortes(computed_at="2026-08-24T20:00:00+00:00"):
+def _grupo_con_cortes(computed_at="2026-08-24T20:00:00+00:00", bucket_robusto=None):
     """4 filas del MISMO grupo/cálculo (mismo `computed_at`), con cortes
     reales `feature_cut_low=5.0, feature_cut_high=10.0` -- cada bucket con
-    una tasa de éxito DISTINTA para poder confirmar cuál se consultó."""
+    una tasa de éxito DISTINTA para poder confirmar cuál se consultó.
+    `bucket_robusto`: nombre del bucket ("bajo"/"medio"/"alto") que debe
+    quedar `VALIDACION_ROBUSTA` -- el resto (incluido poblacion_total)
+    queda `EN_VALIDACION` (default de `_knowledge_row`), a propósito, para
+    poder distinguir cuál se usó."""
     cortes = {"feature_cut_low": 5.0, "feature_cut_high": 10.0}
+
+    def _vs(nombre):
+        return {"validation_state": "VALIDACION_ROBUSTA"} if nombre == bucket_robusto else {}
+
     return [
-        {**_knowledge_row(bucket="poblacion_total", pct_20=20.0, computed_at=computed_at), **cortes},
-        {**_knowledge_row(bucket="bajo", pct_20=1.0, computed_at=computed_at), **cortes},
-        {**_knowledge_row(bucket="medio", pct_20=20.0, computed_at=computed_at), **cortes},
-        {**_knowledge_row(bucket="alto", pct_20=90.0, computed_at=computed_at), **cortes},
+        {**_knowledge_row(bucket="poblacion_total", pct_20=20.0, computed_at=computed_at), **cortes, **_vs("poblacion_total")},
+        {**_knowledge_row(bucket="bajo", pct_20=1.0, computed_at=computed_at), **cortes, **_vs("bajo")},
+        {**_knowledge_row(bucket="medio", pct_20=20.0, computed_at=computed_at), **cortes, **_vs("medio")},
+        {**_knowledge_row(bucket="alto", pct_20=90.0, computed_at=computed_at), **cortes, **_vs("alto")},
     ]
 
 
-def test_J2_volatilidad_baja_consulta_el_bucket_bajo_real():
+def test_J2_volatilidad_baja_consulta_el_bucket_bajo_real_si_es_robusto():
     _fresh()
     try:
-        lek.record_experience_knowledge(_grupo_con_cortes())
+        lek.record_experience_knowledge(_grupo_con_cortes(bucket_robusto="bajo"))
         r = le.get_learned_evidence("ALCISTA", "al_comienzo", "2026-08-25", volatility_14d_pct=3.0)  # <= 5.0 -> bajo
         assert r["bucket"] == "bajo"
         assert r["historical_success_pct_20"] == 1.0
@@ -216,10 +228,10 @@ def test_J2_volatilidad_baja_consulta_el_bucket_bajo_real():
         _restore()
 
 
-def test_J3_volatilidad_alta_consulta_el_bucket_alto_real():
+def test_J3_volatilidad_alta_consulta_el_bucket_alto_real_si_es_robusto():
     _fresh()
     try:
-        lek.record_experience_knowledge(_grupo_con_cortes())
+        lek.record_experience_knowledge(_grupo_con_cortes(bucket_robusto="alto"))
         r = le.get_learned_evidence("ALCISTA", "al_comienzo", "2026-08-25", volatility_14d_pct=15.0)  # > 10.0 -> alto
         assert r["bucket"] == "alto"
         assert r["historical_success_pct_20"] == 90.0
@@ -227,10 +239,10 @@ def test_J3_volatilidad_alta_consulta_el_bucket_alto_real():
         _restore()
 
 
-def test_J4_volatilidad_media_consulta_el_bucket_medio_real():
+def test_J4_volatilidad_media_consulta_el_bucket_medio_real_si_es_robusto():
     _fresh()
     try:
-        lek.record_experience_knowledge(_grupo_con_cortes())
+        lek.record_experience_knowledge(_grupo_con_cortes(bucket_robusto="medio"))
         r = le.get_learned_evidence("ALCISTA", "al_comienzo", "2026-08-25", volatility_14d_pct=7.0)  # entre 5 y 10 -> medio
         assert r["bucket"] == "medio"
         assert r["historical_success_pct_20"] == 20.0
@@ -241,7 +253,7 @@ def test_J4_volatilidad_media_consulta_el_bucket_medio_real():
 def test_J5_sin_volatilidad_pero_con_cortes_disponibles_usa_poblacion_total():
     _fresh()
     try:
-        lek.record_experience_knowledge(_grupo_con_cortes())
+        lek.record_experience_knowledge(_grupo_con_cortes(bucket_robusto="alto"))
         r = le.get_learned_evidence("ALCISTA", "al_comienzo", "2026-08-25", volatility_14d_pct=None)
         assert r["bucket"] == "poblacion_total"
         assert r["historical_success_pct_20"] == 20.0
@@ -262,6 +274,65 @@ def test_J6_bucket_especifico_ausente_degrada_a_poblacion_total():
         assert r["historical_success_pct_20"] == 20.0
     finally:
         _restore()
+
+
+# --- J9-J11: FIX 2026-09-15 -- bucket débil no oculta evidencia robusta ya agregada --
+
+def test_J9_bucket_especifico_debil_no_oculta_poblacion_total_robusta():
+    """El caso real que motivó el fix (2026-09-14, ALCISTA/CONFIRMACION):
+    el bucket que le toca a la candidata (`alto`) todavía es
+    EN_VALIDACION (n chico), pero `poblacion_total` YA es
+    VALIDACION_ROBUSTA -- debe usarse el agregado, nunca el fragmento
+    más débil que esconde la ventaja ya demostrada."""
+    _fresh()
+    try:
+        lek.record_experience_knowledge(_grupo_con_cortes(bucket_robusto="poblacion_total"))
+        r = le.get_learned_evidence("ALCISTA", "al_comienzo", "2026-08-25", volatility_14d_pct=15.0)  # -> alto, pero débil
+        assert r["bucket"] == "poblacion_total"
+        assert r["historical_success_pct_20"] == 20.0
+        assert r["validation_state"] == "VALIDACION_ROBUSTA"
+    finally:
+        _restore()
+
+
+def test_J10_ningun_bucket_robusto_usa_poblacion_total_igual_que_antes():
+    # Ni el bucket específico ni el agregado son robustos todavía --
+    # comportamiento sin cambios: se usa poblacion_total (mismo fallback
+    # de siempre), nunca un bucket más débil e igual de no-robusto.
+    _fresh()
+    try:
+        lek.record_experience_knowledge(_grupo_con_cortes(bucket_robusto=None))
+        r = le.get_learned_evidence("ALCISTA", "al_comienzo", "2026-08-25", volatility_14d_pct=15.0)
+        assert r["bucket"] == "poblacion_total"
+        assert r["validation_state"] == "EN_VALIDACION"
+    finally:
+        _restore()
+
+
+def test_J11_bucket_especifico_robusto_y_mas_robusto_que_el_agregado_se_usa_igual():
+    # Cuando el bucket específico SÍ alcanzó VALIDACION_ROBUSTA por sí
+    # solo, se sigue prefiriendo (más específico, ya suficientemente
+    # sólido) -- el fix no invierte la preferencia, solo la condiciona.
+    _fresh()
+    try:
+        lek.record_experience_knowledge(_grupo_con_cortes(bucket_robusto="alto"))
+        r = le.get_learned_evidence("ALCISTA", "al_comienzo", "2026-08-25", volatility_14d_pct=15.0)
+        assert r["bucket"] == "alto"
+        assert r["historical_success_pct_20"] == 90.0
+    finally:
+        _restore()
+
+
+def test_J12_no_toca_ningun_parametro_de_medicion():
+    # Escaneo estático: el fix no redefine META_MUESTRA_MINIMA, no
+    # reimplementa Wilson, no reimplementa precision_validation_state --
+    # solo reutiliza el validation_state ya calculado y persistido.
+    import inspect
+
+    src = inspect.getsource(le)
+    assert "META_MUESTRA_MINIMA =" not in src  # nunca redefinida acá, solo importada donde corresponda
+    assert "def precision_validation_state" not in src
+    assert "def wilson_confidence_interval" not in src
 
 
 # --- FIX 2026-09-12: consulta v2 (alert_stage), mismo módulo, sin cambios de firma --
