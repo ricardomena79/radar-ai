@@ -154,6 +154,131 @@ def test_no_existe_mecanismo_de_des_revocar():
     assert "DELETE FROM activation_revocation_log" not in fuente
 
 
+# --- corrección acotada de revocaciones causadas por un bug ya corregido ----
+# (2026-09-14, autorizada explícitamente -- "corrige"). NUNCA es un
+# "des-revocar" genérico: sigue exigiendo el id real de la revocación +
+# una referencia al bug + una razón, uno por uno. La fila original de
+# activation_revocation_log nunca se toca.
+
+def test_correction_requiere_revocation_id_existente():
+    _fresh()
+    try:
+        with pytest.raises(ValueError):
+            areg.record_revocation_correction(revocation_id=999, bug_reference="commit x", reason="y")
+    finally:
+        _restore()
+
+
+def test_correction_requiere_bug_reference_y_reason_no_vacios():
+    _fresh()
+    try:
+        areg.revoke(scope="CONDICION", reason="degradado (bug)", direction="ALCISTA",
+                    timing_deteccion="al_comienzo", methodology_version="v1")
+        rev_id = areg.list_revocations()[0]["id"]
+        with pytest.raises(ValueError):
+            areg.record_revocation_correction(revocation_id=rev_id, bug_reference="", reason="y")
+        with pytest.raises(ValueError):
+            areg.record_revocation_correction(revocation_id=rev_id, bug_reference="x", reason="")
+    finally:
+        _restore()
+
+
+def test_correction_real_hace_que_is_revoked_pase_a_false():
+    _fresh()
+    try:
+        areg.revoke(scope="CONDICION", reason="DEGRADACION_DETECTADA: wilson_upper=1.4 >= baseline=0.4",
+                    direction="ALCISTA", timing_deteccion="al_comienzo", methodology_version="v1")
+        assert areg.is_revoked("ALCISTA", "al_comienzo", "v1") is True
+
+        rev_id = areg.list_revocations()[0]["id"]
+        aplicado = areg.record_revocation_correction(
+            revocation_id=rev_id, bug_reference="commit 89f3921",
+            reason="direccion de comparacion invertida en continuous_evaluation.py",
+        )
+        assert aplicado is True
+        assert areg.is_revoked("ALCISTA", "al_comienzo", "v1") is False
+    finally:
+        _restore()
+
+
+def test_correction_nunca_borra_ni_modifica_la_fila_original():
+    _fresh()
+    try:
+        areg.revoke(scope="CONDICION", reason="motivo original", direction="ALCISTA",
+                    timing_deteccion="al_comienzo", methodology_version="v1")
+        rev_id = areg.list_revocations()[0]["id"]
+        areg.record_revocation_correction(revocation_id=rev_id, bug_reference="commit x", reason="y")
+
+        revocaciones = areg.list_revocations()
+        assert len(revocaciones) == 1  # la fila original sigue existiendo, tal cual
+        assert revocaciones[0]["reason"] == "motivo original"
+    finally:
+        _restore()
+
+
+def test_correction_es_idempotente_no_duplica():
+    _fresh()
+    try:
+        areg.revoke(scope="CONDICION", reason="x", direction="ALCISTA",
+                    timing_deteccion="al_comienzo", methodology_version="v1")
+        rev_id = areg.list_revocations()[0]["id"]
+        primera = areg.record_revocation_correction(revocation_id=rev_id, bug_reference="commit x", reason="y")
+        segunda = areg.record_revocation_correction(revocation_id=rev_id, bug_reference="commit x", reason="y")
+        assert primera is True
+        assert segunda is False
+        assert len(areg.list_revocation_corrections()) == 1
+    finally:
+        _restore()
+
+
+def test_correction_solo_afecta_la_condicion_corregida_otras_siguen_revocadas():
+    _fresh()
+    try:
+        areg.revoke(scope="CONDICION", reason="x", direction="ALCISTA",
+                    timing_deteccion="al_comienzo", methodology_version="v1")
+        areg.revoke(scope="CONDICION", reason="y", direction="BAJISTA",
+                    timing_deteccion="demasiado_tarde", methodology_version="v1")
+        id_alcista = [r["id"] for r in areg.list_revocations() if r["direction"] == "ALCISTA"][0]
+        areg.record_revocation_correction(revocation_id=id_alcista, bug_reference="commit x", reason="y")
+
+        assert areg.is_revoked("ALCISTA", "al_comienzo", "v1") is False
+        assert areg.is_revoked("BAJISTA", "demasiado_tarde", "v1") is True  # sin corrección, sigue ganando
+    finally:
+        _restore()
+
+
+def test_correction_global_no_afecta_condicion_sin_su_propia_correccion():
+    _fresh()
+    try:
+        areg.revoke(scope="GLOBAL", reason="incidente real")
+        id_global = areg.list_revocations()[0]["id"]
+        # Una corrección de OTRA revocación (inexistente todavía) no puede
+        # aplicarse -- confirmamos que corregir el id real del GLOBAL sí libera todo.
+        areg.record_revocation_correction(revocation_id=id_global, bug_reference="commit x", reason="y")
+        assert areg.is_revoked("ALCISTA", "al_comienzo", "v1") is False
+        assert areg.is_revoked("CUALQUIERA", "cualquiera", "v9") is False
+    finally:
+        _restore()
+
+
+def test_list_revocation_corrections_vacio_sin_db():
+    _fresh()
+    try:
+        assert areg.list_revocation_corrections() == []
+    finally:
+        _restore()
+
+
+def test_correction_nunca_es_generica_exige_id_real_no_condicion():
+    # Defensa estructural: la firma no acepta direction/timing_deteccion/
+    # methodology_version -- solo puede operar sobre un id real ya
+    # persistido, nunca "revoca la condición X" en abstracto.
+    firma = str(inspect.signature(areg.record_revocation_correction))
+    assert "direction" not in firma
+    assert "timing_deteccion" not in firma
+    assert "scope" not in firma
+
+
 def test_is_revoked_false_sin_db():
     _fresh()
     try:

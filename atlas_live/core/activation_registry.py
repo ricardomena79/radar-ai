@@ -13,10 +13,34 @@ patrón `_connect()`/`_ro_connect()`/`_db_exists()` de 3.0/3.3/3.4:
    devolver algo distinto de exactamente `"OFF"`/`"ON_CONTROLADO"`.
 
 2. **Revocación** (`activation_revocation_log`): append-only, SIN mecanismo
-   de "des-revocar" (no pedido -- mantiene la garantía "la revocación gana
-   siempre" sin el riesgo de una reactivación silenciosa). Scope `"GLOBAL"`
-   (revoca cualquier condición) o `"CONDICION"` (una `(direction,
-   timing_deteccion, methodology_version)` puntual).
+   GENÉRICO de "des-revocar" (no pedido -- mantiene la garantía "la
+   revocación gana siempre" sin el riesgo de una reactivación silenciosa).
+   Scope `"GLOBAL"` (revoca cualquier condición) o `"CONDICION"` (una
+   `(direction, timing_deteccion, methodology_version)` puntual).
+
+   EXCEPCIÓN acotada y explícita (2026-09-14, autorizada explícitamente,
+   "corrige"): `record_revocation_correction()` -- NO es un "unrevoke"
+   genérico (nunca acepta una condición directamente, nunca revierte "la
+   revocación más reciente", nunca opera en lote sin especificar cada
+   `revocation_id` real uno por uno). Exige el `id` real de una fila YA
+   EXISTENTE en `activation_revocation_log` + una referencia a un bug de
+   código YA CORREGIDO (`bug_reference`, ej. un hash de commit) + una
+   razón explícita. Motivo: 12 revocaciones reales de producción
+   (2026-09-13/14) resultaron ser 100% producto del bug de dirección
+   invertida de `continuous_evaluation.py` (corregido en el commit
+   `89f3921`) -- confirmado leyendo el `reason` de cada una (contenía
+   literalmente `wilson_upper >= baseline`, el disparador del bug, nunca
+   `< baseline`, el criterio correcto) y cruzando cada condición contra
+   TODA su historia real en `continuous_evaluation_log` (ninguna tuvo,
+   jamás, `wilson_upper < baseline`). Sin este bug, esas 12 revocaciones
+   nunca hubieran ocurrido. La corrección NUNCA borra ni modifica la fila
+   original (`activation_revocation_log` sigue append-only, sin `UPDATE`
+   ni `DELETE`, mismo criterio de auditoría inmutable) -- agrega un
+   registro NUEVO, en una tabla NUEVA y separada, que documenta
+   explícitamente por qué esa revocación puntual dejó de aplicar.
+   `is_revoked()` excluye una revocación SOLO si tiene una corrección
+   real asociada -- cualquier revocación sin corrección sigue ganando
+   siempre, exactamente igual que antes.
 
 3. **Auditoría por evento** (`activation_state_log`): append-only,
    TRANSITION-ONLY por `(ticker, market_date)` -- mismo mecanismo exacto
@@ -55,6 +79,17 @@ CREATE TABLE IF NOT EXISTS activation_revocation_log (
     reason TEXT NOT NULL,
     revoked_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS activation_revocation_correction_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    revocation_id INTEGER NOT NULL,
+    direction TEXT,
+    timing_deteccion TEXT,
+    methodology_version TEXT,
+    bug_reference TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    corrected_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_arcl_revocation_id ON activation_revocation_correction_log(revocation_id);
 CREATE TABLE IF NOT EXISTS activation_state_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ticker TEXT NOT NULL,
@@ -196,19 +231,28 @@ def revoke(
 
 def is_revoked(direction: Optional[str], timing_deteccion: Optional[str], methodology_version: Optional[str]) -> bool:
     """Solo lectura REAL. `False` si la DB no existe (nada revocado
-    todavía). `True` si existe una revocación GLOBAL, o una revocación de
-    CONDICION que matchea exactamente estos 3 valores."""
+    todavía). `True` si existe una revocación GLOBAL SIN corrección, o una
+    revocación de CONDICION SIN corrección que matchea exactamente estos
+    3 valores. Una revocación con una corrección real asociada (ver
+    `record_revocation_correction()`, sección "EXCEPCIÓN acotada" del
+    docstring del módulo) deja de contar -- es la ÚNICA forma en que una
+    revocación puede dejar de aplicar, y exige una fila explícita en
+    `activation_revocation_correction_log`, nunca una condición implícita."""
     if not _db_exists():
         return False
     with _ro_connect() as conn:
         global_row = conn.execute(
-            "SELECT 1 FROM activation_revocation_log WHERE scope='GLOBAL' LIMIT 1"
+            """SELECT 1 FROM activation_revocation_log r
+               WHERE r.scope='GLOBAL'
+                 AND NOT EXISTS (SELECT 1 FROM activation_revocation_correction_log c WHERE c.revocation_id = r.id)
+               LIMIT 1"""
         ).fetchone()
         if global_row is not None:
             return True
         condicion_row = conn.execute(
-            """SELECT 1 FROM activation_revocation_log
-               WHERE scope='CONDICION' AND direction=? AND timing_deteccion=? AND methodology_version=?
+            """SELECT 1 FROM activation_revocation_log r
+               WHERE r.scope='CONDICION' AND r.direction=? AND r.timing_deteccion=? AND r.methodology_version=?
+                 AND NOT EXISTS (SELECT 1 FROM activation_revocation_correction_log c WHERE c.revocation_id = r.id)
                LIMIT 1""",
             (direction, timing_deteccion, methodology_version),
         ).fetchone()
@@ -216,13 +260,67 @@ def is_revoked(direction: Optional[str], timing_deteccion: Optional[str], method
 
 
 def list_revocations(limit: int = 100) -> List[Dict[str, Any]]:
-    """Solo lectura -- todas las revocaciones registradas. `[]` si la DB
+    """Solo lectura -- todas las revocaciones registradas, tal cual
+    quedaron guardadas (histórico crudo, nunca filtrado por corrección --
+    para ver el estado REAL vigente, cruzar contra
+    `list_revocation_corrections()` o usar `is_revoked()`). `[]` si la DB
     no existe."""
     if not _db_exists():
         return []
     with _ro_connect() as conn:
         rows = conn.execute(
             "SELECT * FROM activation_revocation_log ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+    return [_row(r) for r in rows]
+
+
+def record_revocation_correction(revocation_id: int, bug_reference: str, reason: str) -> bool:
+    """Corrección ACOTADA y explícita de una revocación puntual causada
+    por un bug de código YA corregido -- ver "EXCEPCIÓN acotada" en el
+    docstring del módulo. NUNCA es un "des-revocar" genérico: exige el
+    `id` real de una fila EXISTENTE en `activation_revocation_log`
+    (lanza `ValueError` si no existe), una `bug_reference` no vacía
+    (ej. un hash de commit) y una `reason` no vacía. Idempotente -- si
+    `revocation_id` ya tiene una corrección, no duplica (índice único
+    sobre `revocation_id`), devuelve `False` en ese caso. La fila
+    original de `activation_revocation_log` NUNCA se modifica ni se
+    borra -- esto agrega una fila nueva a una tabla separada."""
+    if not bug_reference or not bug_reference.strip():
+        raise ValueError("bug_reference no puede estar vacío")
+    if not reason or not reason.strip():
+        raise ValueError("reason no puede estar vacío")
+    with _connect() as conn:
+        original = conn.execute(
+            "SELECT * FROM activation_revocation_log WHERE id=?", (revocation_id,)
+        ).fetchone()
+        if original is None:
+            raise ValueError(f"revocation_id={revocation_id!r} no existe en activation_revocation_log")
+        ya_corregida = conn.execute(
+            "SELECT 1 FROM activation_revocation_correction_log WHERE revocation_id=?", (revocation_id,)
+        ).fetchone()
+        if ya_corregida is not None:
+            return False
+        conn.execute(
+            """INSERT INTO activation_revocation_correction_log
+               (revocation_id, direction, timing_deteccion, methodology_version, bug_reference, reason, corrected_at)
+               VALUES (?,?,?,?,?,?,?)""",
+            (
+                revocation_id, original["direction"], original["timing_deteccion"], original["methodology_version"],
+                bug_reference, reason, _now(),
+            ),
+        )
+        conn.commit()
+    return True
+
+
+def list_revocation_corrections(limit: int = 100) -> List[Dict[str, Any]]:
+    """Solo lectura -- todas las correcciones registradas, más reciente
+    primero. `[]` si la DB no existe."""
+    if not _db_exists():
+        return []
+    with _ro_connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM activation_revocation_correction_log ORDER BY id DESC LIMIT ?", (limit,)
         ).fetchall()
     return [_row(r) for r in rows]
 
