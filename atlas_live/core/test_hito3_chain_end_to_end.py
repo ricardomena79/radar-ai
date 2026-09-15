@@ -288,12 +288,18 @@ def test_3_degradacion_revoca_y_el_gate_real_de_3_5_queda_bloqueado():
         # 3.6 -- ventana reciente DEGRADADA (n>=500, wilson_upper>=baseline),
         # inyectada vía mock (mismo patrón que test_continuous_evaluation_registry.py
         # -- no hace falta sembrar 600 filas reales en candidate_registry).
-        fila_degradada = _fila_ventana(n=600, wilson_upper=40.0, baseline=35.0)
+        fila_degradada = _fila_ventana(n=600, wilson_upper=25.0, baseline=35.0)
         with mock.patch.object(cer, "_recent_condition_rows", return_value=[{"market_date": "2026-08-19"}]), \
              mock.patch("atlas_live.learning.live_experience_scoring.compute_own_experience_table", return_value=[fila_degradada]):
             snap = cer.evaluate_condition(
                 direction=_DIRECTION, timing_deteccion=_TIMING, methodology_version=_METHOD,
                 as_of_date=_MARKET_DATE, auto_revoke=True,
+                # FIX 2026-09-14: fila_degradada["baseline_pct_20"] ya NO
+                # determina el resultado (ese era el bug real, ver
+                # test_continuous_evaluation_registry.py) -- se pasa
+                # explícito, igual que hace `evaluate_conditions_from_experience_table()`
+                # en el camino real.
+                market_baseline_pct_20=fila_degradada["baseline_pct_20"],
             )
         assert snap["evaluation_state"] == "DEGRADADO"
         assert snap["revocation_result"] == "OK"
@@ -469,12 +475,18 @@ def test_6_cadena_completa_en_una_sola_ejecucion_continua():
         # se inyecta (I/O real de candidate_registry.db, no relevante para
         # esta prueba de integración) -- la clasificación y la revocación
         # son las funciones reales, sin mockear.
-        fila_degradada = _fila_ventana(n=600, wilson_upper=40.0, baseline=35.0)
+        fila_degradada = _fila_ventana(n=600, wilson_upper=25.0, baseline=35.0)
         with mock.patch.object(cer, "_recent_condition_rows", return_value=[{"market_date": "2026-08-19"}]), \
              mock.patch("atlas_live.learning.live_experience_scoring.compute_own_experience_table", return_value=[fila_degradada]):
             snap = cer.evaluate_condition(
                 direction=_DIRECTION, timing_deteccion=_TIMING, methodology_version=_METHOD,
                 as_of_date=_MARKET_DATE, auto_revoke=True,
+                # FIX 2026-09-14: fila_degradada["baseline_pct_20"] ya NO
+                # determina el resultado (ese era el bug real, ver
+                # test_continuous_evaluation_registry.py) -- se pasa
+                # explícito, igual que hace `evaluate_conditions_from_experience_table()`
+                # en el camino real.
+                market_baseline_pct_20=fila_degradada["baseline_pct_20"],
             )
         assert snap["evaluation_state"] == "DEGRADADO"
 

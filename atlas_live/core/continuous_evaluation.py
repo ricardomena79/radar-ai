@@ -60,11 +60,31 @@ Cuatro estados, el primero que aplica gana (árbol determinista):
   `recent_sample_size < META_MUESTRA_MINIMA` -- nunca dispara
   revocación, sin importar qué tan "mal" luzcan las métricas parciales.
 - `DEGRADADO`: `recent_sample_size >= META_MUESTRA_MINIMA` Y
-  `recent_wilson_upper_bound_20_pct >= recent_baseline_pct_20` --
-  evidencia estadística suficiente Y negativa. Único estado que marca
-  `revocation_requested=True`.
-- `VALIDO`: pasa todos los chequeos, la ventana reciente sigue superando
-  su propio baseline.
+  `recent_wilson_upper_bound_20_pct < recent_baseline_pct_20` --
+  evidencia estadística suficiente Y negativa (confidentemente POR
+  DEBAJO del baseline -- la MISMA comparación, en el MISMO sentido, que
+  ya usa `atlas_decision_core._compute_shadow_decision()` para el
+  downgrade). Único estado que marca `revocation_requested=True`.
+
+  FIX (2026-09-14, autorizado explícitamente -- "haz lo que tengas que
+  hacer para que atlas aprenda... sé sincero"): la comparación estaba
+  invertida desde la implementación original de este archivo. El código
+  anterior disparaba `DEGRADADO` con `recent_wilson_upper_bound_20_pct
+  >= recent_baseline_pct_20` -- la NEGACIÓN de la comparación que el
+  propio docstring de este módulo (arriba) siempre dijo que reutilizaba
+  ("esa MISMA comparación"). Eso hacía que `DEGRADADO` disparara para
+  CUALQUIER condición que NO estuviera confidentemente por debajo del
+  baseline -- incluidas las condiciones GENUINAMENTE BUENAS (con
+  `wilson_lower_bound_20_pct` también por encima del baseline). Caso
+  real de producción usado para confirmar el bug antes de corregirlo:
+  `ALCISTA/CONFIRMACION` (2026-09-14) con `wilson_lower=13.8`,
+  `wilson_upper=23.1`, `baseline=3.17` -- evidencia excelente (hasta el
+  límite inferior le gana ampliamente al baseline) que el código viejo
+  hubiera marcado `DEGRADADO` (`23.1 >= 3.17`) pese a ser de las
+  mejores condiciones del sistema.
+- `VALIDO`: pasa todos los chequeos -- la ventana reciente NO está
+  confidentemente por debajo de su propio baseline (`wilson_upper >=
+  baseline`, incluye tanto el caso ambiguo como el genuinamente bueno).
 
 `REVOCADO` NO es un 5to estado de este módulo -- es el estado operacional
 de `activation_registry` (Fase 3.5, sin tocar), causado (entre otras
@@ -133,12 +153,19 @@ def classify_continuous_evaluation(
             "revocation_requested": False,
         }
 
-    if recent_wilson_upper_bound_20_pct >= recent_baseline_pct_20:
+    # FIX (2026-09-14, autorizado explícitamente): la comparación estaba
+    # invertida -- ver docstring de EVALUATION_STATES arriba para la
+    # evidencia real (ALCISTA/CONFIRMACION) que confirmó el bug. La
+    # comparación correcta es la MISMA que ya usa
+    # `atlas_decision_core._compute_shadow_decision()` para el downgrade:
+    # `wilson_upper < baseline` -- confidentemente por debajo, nunca la
+    # negación de esa comparación.
+    if recent_wilson_upper_bound_20_pct < recent_baseline_pct_20:
         return {
             "evaluation_state": "DEGRADADO",
             "reason": (
                 f"DEGRADACION_DETECTADA: recent_wilson_upper_bound_20_pct={recent_wilson_upper_bound_20_pct} "
-                f">= recent_baseline_pct_20={recent_baseline_pct_20}, recent_sample_size={recent_sample_size}"
+                f"< recent_baseline_pct_20={recent_baseline_pct_20}, recent_sample_size={recent_sample_size}"
             ),
             "walk_forward_ok": True,
             "revocation_requested": True,
@@ -148,7 +175,7 @@ def classify_continuous_evaluation(
         "evaluation_state": "VALIDO",
         "reason": (
             f"VENTANA_RECIENTE_VALIDA: recent_wilson_upper_bound_20_pct={recent_wilson_upper_bound_20_pct} "
-            f"< recent_baseline_pct_20={recent_baseline_pct_20}, recent_sample_size={recent_sample_size}"
+            f">= recent_baseline_pct_20={recent_baseline_pct_20}, recent_sample_size={recent_sample_size}"
         ),
         "walk_forward_ok": True,
         "revocation_requested": False,

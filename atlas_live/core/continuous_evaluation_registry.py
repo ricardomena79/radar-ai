@@ -220,6 +220,63 @@ def _recent_condition_rows_by_stage(
     return [dict(r) for r in rows]
 
 
+def _market_wide_baseline_pct_20(as_of_date: str, methodology_version: str) -> Optional[float]:
+    """FIX (2026-09-14, autorizado explícitamente -- bug real confirmado
+    con datos de producción, ver informe): baseline REAL de TODO el
+    mercado, walk-forward-seguro, leído del último snapshot ya persistido
+    por `live_experience_scoring.compute_own_experience_table()`/
+    `_by_stage()` (Fase 2, vía `run_experience_learning_cycle()`/
+    `_by_stage()`, SIN modificar ese código -- se lee su resultado ya
+    escrito en `live_experience_knowledge.db`, mismo criterio de
+    solo-lectura ya usado por `_recent_condition_rows()` contra
+    `candidate_registry.DB_PATH`).
+
+    Por qué hace falta esto: `evaluate_condition()` (abajo) recalculaba su
+    propio "baseline" llamando a `compute_own_experience_table(as_of_date,
+    rows=ventana)` -- pero `ventana` YA viene filtrada a una sola
+    condición (`_recent_condition_rows()`/`_recent_condition_rows_by_stage()`,
+    filtro `direction`+`timing_deteccion`/`stage`). Esa función calcula su
+    "baseline" a partir de TODAS las filas que recibe, asumiendo que
+    recibe el mercado completo (así es como la usa Fase 2 en producción,
+    `rows=None`) -- con `rows=ventana` (una sola condición), el "baseline"
+    terminaba siendo esa misma condición comparada contra sí misma.
+    Confirmado con datos reales: `recent_pct_20 == recent_baseline_pct_20`
+    en el 100% de los eventos DEGRADADO revisados, mientras el baseline
+    real de mercado (este mismo día, mismo `methodology_version`) era un
+    número completamente distinto.
+
+    Cada fila de `live_experience_knowledge` para un mismo
+    `(computed_as_of, methodology_version)` comparte IDÉNTICAMENTE este
+    valor (confirmado en `live_experience_scoring.compute_own_experience_table()`:
+    `baseline_pct_20` se calcula UNA sola vez por `as_of_date`, ANTES de
+    segmentar por condición/bucket, y se asigna igual a cada fila de
+    salida) -- alcanza con leer cualquiera, se toma la más reciente que
+    sea walk-forward-segura (`computed_as_of < as_of_date`, mismo
+    criterio estricto ya usado en todo el proyecto). `None` si no hay
+    ningún snapshot todavía -- NUNCA se inventa un número (mismo criterio
+    fail-safe de todo Hito 3: sin baseline real, `classify_continuous_evaluation()`
+    ya sabe devolver `NO_EVALUABLE` por `DATOS_FALTANTES`, nunca `DEGRADADO`
+    ni `VALIDO`)."""
+    from atlas_live.learning.live_experience_knowledge import DB_PATH as LEK_DB_PATH
+
+    if not Path(LEK_DB_PATH).exists():
+        return None
+    uri = Path(LEK_DB_PATH).resolve().as_uri() + "?mode=ro"
+    conn = sqlite3.connect(uri, uri=True, timeout=15)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA query_only=ON")
+    try:
+        row = conn.execute(
+            """SELECT baseline_pct_20 FROM live_experience_knowledge
+               WHERE methodology_version = ? AND computed_as_of < ? AND baseline_pct_20 IS NOT NULL
+               ORDER BY computed_as_of DESC LIMIT 1""",
+            (methodology_version, as_of_date),
+        ).fetchone()
+    finally:
+        conn.close()
+    return row["baseline_pct_20"] if row else None
+
+
 # --- persistencia (transition-only) ------------------------------------
 
 def _last_evaluation(
@@ -323,6 +380,7 @@ def evaluate_condition(
     n_ventana: int = DEFAULT_N_VENTANA,
     auto_revoke: bool = False,
     fuente: str = "timing_deteccion",
+    market_baseline_pct_20: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Evalúa UNA condición de punta a punta: lee su ventana reciente
     (solo lectura), recalcula Wilson/baseline con
@@ -342,7 +400,23 @@ def evaluate_condition(
     reciente se lee de `alert_stage_log` vía
     `_recent_condition_rows_by_stage()` en vez de `_recent_condition_rows()`;
     `timing_deteccion` en este caso es, en realidad, un valor de
-    `alert_stage` -- mismo genérico ya usado en el resto del proyecto)."""
+    `alert_stage` -- mismo genérico ya usado en el resto del proyecto).
+
+    `market_baseline_pct_20` (FIX 2026-09-14, autorizado explícitamente --
+    bug real confirmado con datos de producción): el baseline REAL de
+    mercado contra el que se compara la ventana reciente de ESTA
+    condición. Si se pasa explícito (el camino event-driven lo hace,
+    reutilizando el valor que `tabla` ya trae calculado correctamente --
+    ver `evaluate_conditions_from_experience_table()`), se usa tal cual,
+    sin ninguna consulta nueva. Si es `None` (el camino manual/on-demand,
+    que no tiene un `tabla` a mano), se busca vía
+    `_market_wide_baseline_pct_20()`. ANTES de este fix, se usaba por
+    error `fila["baseline_pct_20"]` -- el "baseline" que
+    `compute_own_experience_table(as_of_date, rows=ventana)` calculaba
+    sobre `ventana`, que YA viene filtrada a esta misma condición --
+    comparándola contra sí misma, nunca contra el mercado real. Ver
+    docstring de `_market_wide_baseline_pct_20()` para la evidencia
+    completa."""
     from atlas_live.core import activation_registry as areg
     from atlas_live.learning import live_experience_scoring as les
 
@@ -404,12 +478,25 @@ def evaluate_condition(
                 }
                 metricas = dict(campos_vacios)
             else:
+                # FIX (2026-09-14, autorizado explícitamente): NUNCA usar
+                # fila["baseline_pct_20"] acá -- ese valor sale de
+                # compute_own_experience_table(as_of_date, rows=ventana),
+                # y `ventana` ya está filtrada a ESTA MISMA condición, así
+                # que ese "baseline" es la condición comparada contra sí
+                # misma (confirmado con datos reales de producción, ver
+                # docstring de _market_wide_baseline_pct_20()). El
+                # baseline real de mercado se resuelve por separado.
+                baseline_real = (
+                    market_baseline_pct_20
+                    if market_baseline_pct_20 is not None
+                    else _market_wide_baseline_pct_20(as_of_date, methodology_version)
+                )
                 metricas = {
                     "recent_sample_size": fila["n_evaluables"],
                     "recent_pct_20": fila["pct_20"],
                     "recent_wilson_lower_bound_20_pct": fila["wilson_lower_bound_20_pct"],
                     "recent_wilson_upper_bound_20_pct": fila["wilson_upper_bound_20_pct"],
-                    "recent_baseline_pct_20": fila["baseline_pct_20"],
+                    "recent_baseline_pct_20": baseline_real,
                     "computed_as_of": fila["computed_as_of"],
                 }
                 clasificacion = ce.classify_continuous_evaluation(
@@ -483,7 +570,17 @@ def evaluate_conditions_from_experience_table(
     o `"stage"` (v2) -- determina tanto de dónde se relee la ventana
     reciente (ver `evaluate_condition()`) como el `methodology_version`
     con el que se persiste (`lek.METHODOLOGY_VERSION` vs
-    `lek.METHODOLOGY_VERSION_V2`)."""
+    `lek.METHODOLOGY_VERSION_V2`).
+
+    FIX (2026-09-14, autorizado explícitamente): `tabla` -- calculada
+    correctamente por `compute_own_experience_table()`/`_by_stage()`
+    sobre el mercado COMPLETO (`rows=None`), nunca sobre una condición
+    aislada -- ya trae el baseline real de mercado en cada una de sus
+    filas (idéntico en todas, ver `_market_wide_baseline_pct_20()`). Se
+    extrae UNA vez acá y se pasa explícito a cada `evaluate_condition()`
+    -- evita que cada una de las ~40 condiciones evaluadas por ciclo
+    dispare su propia consulta redundante a `live_experience_knowledge.db`
+    para leer el mismo número."""
     from atlas_live.learning import live_experience_knowledge as lek
 
     methodology_version = lek.METHODOLOGY_VERSION_V2 if fuente == "stage" else lek.METHODOLOGY_VERSION
@@ -493,13 +590,16 @@ def evaluate_conditions_from_experience_table(
             (f["direction"], f["timing_deteccion"]) for f in tabla if f.get("bucket") == "poblacion_total"
         }
         resultado["n_condiciones"] = len(condiciones)
+        market_baseline_pct_20 = next(
+            (f["baseline_pct_20"] for f in tabla if f.get("baseline_pct_20") is not None), None
+        )
         for direction, timing_deteccion in condiciones:
             try:
                 snapshot = evaluate_condition(
                     direction=direction, timing_deteccion=timing_deteccion,
                     methodology_version=methodology_version,
                     as_of_date=as_of_date, n_ventana=DEFAULT_N_VENTANA, auto_revoke=True,
-                    fuente=fuente,
+                    fuente=fuente, market_baseline_pct_20=market_baseline_pct_20,
                 )
                 resultado["evaluaciones"].append(snapshot)
             except Exception as exc:  # defensa adicional -- evaluate_condition ya no debería lanzar

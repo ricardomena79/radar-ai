@@ -20,15 +20,19 @@ def _clasificar(recent_sample_size=600, recent_wilson_upper_bound_20_pct=25.0,
 
 
 # --- A) robusta, no degradada -> VALIDO ------------------------------------
+# FIX (2026-09-14): la dirección de la comparación estaba invertida --
+# "no degradada" (VALIDO) exige wilson_upper >= baseline (nunca por
+# debajo), no lo contrario. Ver docstring del módulo para la evidencia
+# real que confirmó el bug.
 
 def test_a_robusta_no_degradada_es_valido():
-    r = _clasificar(recent_sample_size=600, recent_wilson_upper_bound_20_pct=25.0, recent_baseline_pct_20=35.0)
+    r = _clasificar(recent_sample_size=600, recent_wilson_upper_bound_20_pct=45.0, recent_baseline_pct_20=35.0)
     assert r["evaluation_state"] == "VALIDO"
     assert r["revocation_requested"] is False
 
 
-def test_a_frontera_exacta_n_igual_al_piso_y_wilson_por_debajo_es_valido():
-    r = _clasificar(recent_sample_size=META_MUESTRA_MINIMA, recent_wilson_upper_bound_20_pct=34.9, recent_baseline_pct_20=35.0)
+def test_a_frontera_exacta_n_igual_al_piso_y_wilson_por_encima_es_valido():
+    r = _clasificar(recent_sample_size=META_MUESTRA_MINIMA, recent_wilson_upper_bound_20_pct=35.1, recent_baseline_pct_20=35.0)
     assert r["evaluation_state"] == "VALIDO"
     assert r["revocation_requested"] is False
 
@@ -93,35 +97,52 @@ def test_c_walk_forward_seguro_no_es_no_evaluable():
     assert r["evaluation_state"] != "NO_EVALUABLE"
 
 
-# --- D) n >= piso y wilson_upper >= baseline -> DEGRADADO ------------------
+# --- D) n >= piso y wilson_upper < baseline -> DEGRADADO -------------------
+# FIX (2026-09-14): "degradado" exige wilson_upper confidentemente POR
+# DEBAJO del baseline -- la misma comparación que ya usa
+# `atlas_decision_core._compute_shadow_decision()` para el downgrade.
 
 def test_d_degradado_dispara_solicitud_de_revocacion():
-    r = _clasificar(recent_sample_size=600, recent_wilson_upper_bound_20_pct=40.0, recent_baseline_pct_20=35.0)
+    r = _clasificar(recent_sample_size=600, recent_wilson_upper_bound_20_pct=25.0, recent_baseline_pct_20=35.0)
     assert r["evaluation_state"] == "DEGRADADO"
     assert r["revocation_requested"] is True
     assert "DEGRADACION_DETECTADA" in r["reason"]
 
 
-def test_d_frontera_exacta_wilson_upper_igual_a_baseline_es_degradado():
-    # ">=" estricto -- empate cuenta como "ya no le gana a la base".
+def test_d_frontera_exacta_wilson_upper_igual_a_baseline_es_valido():
+    # "<" estricto -- mismo criterio exacto que atlas_decision_core (no
+    # se inventa un umbral nuevo): un empate NO es "confidentemente por
+    # debajo", así que no cuenta como degradado.
     r = _clasificar(recent_sample_size=600, recent_wilson_upper_bound_20_pct=35.0, recent_baseline_pct_20=35.0)
-    assert r["evaluation_state"] == "DEGRADADO"
-    assert r["revocation_requested"] is True
+    assert r["evaluation_state"] == "VALIDO"
+    assert r["revocation_requested"] is False
 
 
 def test_d_frontera_exacta_n_justo_en_el_piso_permite_degradado():
-    r = _clasificar(recent_sample_size=META_MUESTRA_MINIMA, recent_wilson_upper_bound_20_pct=40.0, recent_baseline_pct_20=35.0)
+    r = _clasificar(recent_sample_size=META_MUESTRA_MINIMA, recent_wilson_upper_bound_20_pct=25.0, recent_baseline_pct_20=35.0)
     assert r["evaluation_state"] == "DEGRADADO"
+
+
+def test_d_caso_real_alcista_confirmacion_evidencia_excelente_nunca_degradado():
+    # Ancla de regresión con el caso real de producción (2026-09-14, ver
+    # docstring del módulo) que confirmó el bug: ALCISTA/CONFIRMACION
+    # tenía wilson_lower=13.8, wilson_upper=23.1, baseline=3.17 -- el
+    # código viejo (>=) lo marcaba DEGRADADO pese a ser evidencia
+    # excelente (hasta el límite inferior le gana al baseline). Con el
+    # fix, esta misma evidencia da VALIDO.
+    r = _clasificar(recent_sample_size=600, recent_wilson_upper_bound_20_pct=23.1, recent_baseline_pct_20=3.17)
+    assert r["evaluation_state"] == "VALIDO"
+    assert r["revocation_requested"] is False
 
 
 # --- 5) diferencia clara entre los 4 estados -------------------------------
 
 def test_solo_degradado_marca_revocation_requested_true():
     for estado_esperado, kwargs in [
-        ("VALIDO", dict(recent_sample_size=600, recent_wilson_upper_bound_20_pct=25.0, recent_baseline_pct_20=35.0)),
-        ("INSUFICIENTE", dict(recent_sample_size=50, recent_wilson_upper_bound_20_pct=25.0, recent_baseline_pct_20=35.0)),
-        ("NO_EVALUABLE", dict(recent_sample_size=None, recent_wilson_upper_bound_20_pct=25.0, recent_baseline_pct_20=35.0)),
-        ("DEGRADADO", dict(recent_sample_size=600, recent_wilson_upper_bound_20_pct=40.0, recent_baseline_pct_20=35.0)),
+        ("VALIDO", dict(recent_sample_size=600, recent_wilson_upper_bound_20_pct=45.0, recent_baseline_pct_20=35.0)),
+        ("INSUFICIENTE", dict(recent_sample_size=50, recent_wilson_upper_bound_20_pct=45.0, recent_baseline_pct_20=35.0)),
+        ("NO_EVALUABLE", dict(recent_sample_size=None, recent_wilson_upper_bound_20_pct=45.0, recent_baseline_pct_20=35.0)),
+        ("DEGRADADO", dict(recent_sample_size=600, recent_wilson_upper_bound_20_pct=25.0, recent_baseline_pct_20=35.0)),
     ]:
         r = _clasificar(**kwargs)
         assert r["evaluation_state"] == estado_esperado
