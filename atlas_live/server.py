@@ -831,6 +831,22 @@ def api_radar_alert_stages():
     })
 
 
+@app.route("/api/radar-patron-horario-maximos")
+def api_radar_patron_horario_maximos():
+    """Patrón horario real (2026-09-17, pedido explícito del usuario: "a
+    que hora es el precio mas alto de las acciones") -- distribución de la
+    hora del día (ET, zona horaria real del mercado) en que ocurrió el
+    precio máximo, sobre todo el histórico de casos confiables ya
+    cerrados. Público, sin token (mismo patrón que `/api/radar-alert-stages`),
+    cacheado internamente (`peak_hour_distribution()`, TTL 6h) -- nunca
+    recalcula el histograma completo en cada poll. Endpoint separado y
+    liviano, no agregado a `/api/radar-oportunidades`, para no sumarle
+    costo a ese endpoint ya pesado."""
+    from atlas_live.radar import candidate_registry as radar_registry
+
+    return jsonify(radar_registry.peak_hour_distribution())
+
+
 # Guard de reentrancia (2026-09-03, fix operativo post-deploy de Hito 3.5,
 # autorizado explícitamente): el incidente real de este mismo día mostró
 # que dos ejecuciones concurrentes de este endpoint -- cada una recorriendo

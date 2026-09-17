@@ -933,3 +933,43 @@ def test_prioridad_score_flag_apagado_por_defecto_ignora_pm_early_signal():
     finally:
         reg.live_opportunities = orig_live_opps
         _rw.get_last_quotes = orig_last_quotes
+
+
+# ---------------------------------------------------------------------------
+# 2026-09-17 -- GET /api/radar-patron-horario-maximos (pedido explicito del
+# usuario: "a que hora es el precio mas alto de las acciones"). Endpoint
+# publico, separado de /api/radar-oportunidades, solo delega en
+# candidate_registry.peak_hour_distribution() (ya testeado con datos
+# sinteticos en test_candidate_registry.py) -- acá solo se confirma el
+# cableado del endpoint.
+# ---------------------------------------------------------------------------
+
+def test_patron_horario_maximos_endpoint_devuelve_lo_que_calcula_el_registro():
+    orig = reg.peak_hour_distribution
+    reg.peak_hour_distribution = lambda: {
+        "ok": True, "n_casos": 1234, "distribucion_por_hora_et": {"9": 36.9, "10": 16.4},
+        "hora_pico_et": 9, "pct_pico_et": 36.9, "computed_at": "2026-09-17T00:00:00+00:00",
+    }
+    try:
+        r = _client().get("/api/radar-patron-horario-maximos")
+        assert r.status_code == 200
+        body = r.get_json()
+        assert body["n_casos"] == 1234
+        assert body["hora_pico_et"] == 9
+        assert body["pct_pico_et"] == 36.9
+    finally:
+        reg.peak_hour_distribution = orig
+
+
+def test_patron_horario_maximos_endpoint_sin_datos_no_rompe():
+    orig = reg.peak_hour_distribution
+    reg.peak_hour_distribution = lambda: {
+        "ok": True, "n_casos": 0, "distribucion_por_hora_et": {},
+        "hora_pico_et": None, "pct_pico_et": None, "computed_at": "2026-09-17T00:00:00+00:00",
+    }
+    try:
+        r = _client().get("/api/radar-patron-horario-maximos")
+        assert r.status_code == 200
+        assert r.get_json()["hora_pico_et"] is None
+    finally:
+        reg.peak_hour_distribution = orig

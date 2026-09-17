@@ -27,9 +27,11 @@ import json
 import os as _os
 import sqlite3
 import threading
-from datetime import datetime, timezone
+import time as _time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 from atlas.config.config import db_path
 
@@ -2380,3 +2382,88 @@ def shadow_validation_report(market_date: Optional[str] = None) -> Dict[str, Any
                 "'funciona' hasta que la muestra sea suficiente."
             ),
         }
+
+
+# --------------------------- patrón horario del máximo real ---------------------------
+# (2026-09-17, autorizado explícitamente -- "implementalo"). Responde una
+# pregunta directa del usuario: "¿a qué hora del día ocurre el precio más
+# alto?" -- con datos reales, nunca inventados. Reutiliza exactamente los
+# mismos filtros de calidad que Precisión de Magnitud
+# (`is_final=1 AND confiable_para_aprendizaje=1`) y el mismo campo ya
+# persistido `minutes_to_max` (nunca un cálculo nuevo de "cuándo fue el
+# máximo" -- ya existe, solo faltaba agregarlo por hora del día). La hora
+# se calcula en ET (America/New_York, zona horaria REAL del mercado, con
+# EST/EDT resueltos automáticamente por `zoneinfo` -- nunca un offset fijo
+# hardcodeado) sumando `detected_at + minutes_to_max` y convirtiendo el
+# resultado a esa zona -- así se agrupa por HORA DEL DÍA real (ej. "cerca
+# de la apertura"), no por "minutos desde la detección" (que depende de a
+# qué hora se detectó cada candidata y no es comparable entre sí).
+
+_PEAK_HOUR_CACHE_TTL_SECONDS = 6 * 3600  # 6 horas -- el patrón no cambia rápido, evita recalcular en cada poll
+_peak_hour_cache: Optional[Tuple[float, Dict[str, Any]]] = None
+
+
+def peak_hour_distribution(ttl_seconds: float = _PEAK_HOUR_CACHE_TTL_SECONDS) -> Dict[str, Any]:
+    """Distribución real de la hora del día (ET) en que ocurrió el precio
+    máximo, sobre TODO el histórico de casos confiables ya cerrados (mismo
+    filtro de calidad que `magnitud_precision_report()`). Cacheada -- se
+    recalcula como mucho cada `ttl_seconds` para no reconstruir el
+    histograma completo en cada request. Nunca inventa un patrón sin
+    datos: con `n_casos=0`, `hora_pico_et`/`pct_pico_et` quedan `None`
+    explícitos."""
+    global _peak_hour_cache
+    now_mono = _time.monotonic()
+    if _peak_hour_cache is not None:
+        cached_at, resultado = _peak_hour_cache
+        if now_mono - cached_at < ttl_seconds:
+            return resultado
+
+    with _connect() as conn:
+        rows = conn.execute(
+            """SELECT d.detected_at, o.minutes_to_max
+               FROM candidate_outcome o
+               JOIN candidate_detection d ON o.ticker = d.ticker AND o.market_date = d.market_date
+               WHERE o.is_final = 1 AND o.confiable_para_aprendizaje = 1 AND o.minutes_to_max IS NOT NULL"""
+        ).fetchall()
+
+    eastern = ZoneInfo("America/New_York")
+    conteos: Dict[int, int] = {h: 0 for h in range(24)}
+    n_casos = 0
+    for detected_at, minutos in rows:
+        try:
+            dt = datetime.fromisoformat(str(detected_at).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            pico_utc = dt + timedelta(minutes=float(minutos))
+        except (TypeError, ValueError):
+            continue
+        pico_et = pico_utc.astimezone(eastern)
+        conteos[pico_et.hour] += 1
+        n_casos += 1
+
+    if n_casos == 0:
+        resultado = {
+            "ok": True, "n_casos": 0, "distribucion_por_hora_et": {},
+            "hora_pico_et": None, "pct_pico_et": None, "computed_at": _now(),
+        }
+    else:
+        distribucion = {str(h): round(100.0 * c / n_casos, 1) for h, c in conteos.items() if c > 0}
+        hora_pico = max(conteos, key=lambda h: conteos[h])
+        resultado = {
+            "ok": True,
+            "n_casos": n_casos,
+            "distribucion_por_hora_et": distribucion,
+            "hora_pico_et": hora_pico,
+            "pct_pico_et": round(100.0 * conteos[hora_pico] / n_casos, 1),
+            "computed_at": _now(),
+        }
+
+    _peak_hour_cache = (now_mono, resultado)
+    return resultado
+
+
+def _reset_peak_hour_cache_for_tests() -> None:
+    """Solo para tests -- fuerza que la próxima llamada a
+    `peak_hour_distribution()` recalcule, sin depender del TTL real."""
+    global _peak_hour_cache
+    _peak_hour_cache = None

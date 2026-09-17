@@ -1172,11 +1172,75 @@ function renderCapacidad(data) {
     </div>`;
 }
 
+/* ============================================================
+ * PATRÓN HORARIO DEL MÁXIMO REAL (2026-09-17, pedido explícito --
+ * "a que hora es el precio mas alto de las acciones"). Fuente:
+ * GET /api/radar-patron-horario-maximos -- histograma real, cacheado en
+ * el backend (TTL 6h), sobre todo el histórico de casos confiables ya
+ * cerrados. La hora que devuelve el backend es SIEMPRE ET (hora del
+ * mercado, America/New_York) -- acá se convierte a la hora LOCAL del
+ * navegador de quien mira la pantalla (nunca hardcodeada a un país
+ * puntual), usando Intl para resolver el offset real de HOY (EDT/EST se
+ * resuelven solos, sin asumir un desfasaje fijo).
+ * ============================================================ */
+
+function _offsetHorasEasternHoy() {
+  // Offset real (en horas) entre UTC y America/New_York para HOY --
+  // resuelto vía Intl, nunca hardcodeado (así EDT/EST se ajustan solos).
+  const ahora = new Date();
+  const refUTC = new Date(Date.UTC(ahora.getUTCFullYear(), ahora.getUTCMonth(), ahora.getUTCDate(), 12, 0, 0));
+  const partes = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York", hour12: false, hour: "2-digit",
+  }).formatToParts(refUTC);
+  const horaEnNY = parseInt(partes.find((p) => p.type === "hour").value, 10);
+  return 12 - horaEnNY; // ET = UTC - offset
+}
+
+function _rangoHoraLocalDesdeET(horaEt) {
+  const ahora = new Date();
+  const offset = _offsetHorasEasternHoy();
+  const inicioUTC = new Date(Date.UTC(
+    ahora.getUTCFullYear(), ahora.getUTCMonth(), ahora.getUTCDate(), horaEt + offset, 0, 0,
+  ));
+  const finUTC = new Date(inicioUTC.getTime() + 60 * 60 * 1000);
+  const fmt = { hour: "2-digit", minute: "2-digit" };
+  return `${inicioUTC.toLocaleTimeString([], fmt)}–${finUTC.toLocaleTimeString([], fmt)}`;
+}
+
+async function fetchPatronHorario() {
+  try {
+    const res = await fetch("/api/radar-patron-horario-maximos");
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
+    renderPatronHorario(data);
+  } catch (err) {
+    console.error("fetchPatronHorario:", err);
+  }
+}
+
+function renderPatronHorario(data) {
+  const el = document.getElementById("patron-horario-banner");
+  if (!el) return;
+  if (!data || data.hora_pico_et == null || !data.n_casos) {
+    el.innerHTML = "";
+    return;
+  }
+  const rangoLocal = _rangoHoraLocalDesdeET(data.hora_pico_et);
+  el.innerHTML = `
+    <div class="patron-horario-banner">
+      <span class="icon">📊</span>
+      <span>Los máximos reales tienden a concentrarse cerca de la apertura --
+        <strong>${data.pct_pico_et}%</strong> ocurrieron entre <strong>${rangoLocal}</strong> (tu hora local),
+        sobre ${data.n_casos.toLocaleString()} casos históricos confiables.</span>
+    </div>`;
+}
+
 /* ---------------- arranque ---------------- */
 
 const OPORTUNIDADES_POLL_MS = 30000;
 const UNIVERSO_POLL_MS = 60000;
 const CAPACITY_POLL_MS = 600000; // 10 min -- la capacidad cambia despacio
+const PATRON_HORARIO_POLL_MS = 600000; // 10 min -- cambia muy despacio (TTL backend 6h)
 
 function init() {
   setupSidebar();
@@ -1189,11 +1253,13 @@ function init() {
   startMercadoPolling();
   initUniversoYahoo();
   fetchCapacidad();
+  fetchPatronHorario();
 
   setInterval(fetchOportunidades, OPORTUNIDADES_POLL_MS);
   setInterval(fetchAprendizaje, OPORTUNIDADES_POLL_MS);
   setInterval(fetchUniverso, UNIVERSO_POLL_MS);
   setInterval(fetchCapacidad, CAPACITY_POLL_MS);
+  setInterval(fetchPatronHorario, PATRON_HORARIO_POLL_MS);
 }
 
 document.addEventListener("DOMContentLoaded", init);

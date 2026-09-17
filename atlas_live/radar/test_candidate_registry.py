@@ -1443,3 +1443,89 @@ def test_magnitud_precision_by_day_evolucion_real_dia_a_dia(monkeypatch):
         assert dia1_rac["precision_pct"] == 100.0
     finally:
         _restore()
+
+
+# --------------------------- patrón horario del máximo real (2026-09-17) ---------------------------
+# Pedido explícito del usuario: "a que hora es el precio mas alto de las
+# acciones". `peak_hour_distribution()` agrupa detected_at + minutes_to_max
+# (ya persistidos, ningún cálculo nuevo de "cuándo fue el máximo") por
+# HORA DEL DÍA en ET -- nunca por minutos desde la detección.
+
+def _detectada_y_cerrada(ticker, detected_at, minutes_to_max, confiable=True, is_final=True):
+    reg.record_detection(ticker, "2026-09-16", "premarket", detected_at, "s1",
+                          10.0, 5.0, 1000, 500, 2.0, 10000, gates_fired=[])
+    reg.record_outcome(ticker, "2026-09-16", 0.0, 11.0, 10.0, minutes_to_max,
+                        True, False, False, "EXPLOSION",
+                        confiable_para_aprendizaje=confiable, is_final=is_final)
+
+
+def test_peak_hour_distribution_agrupa_por_hora_et_no_por_minutos_desde_deteccion():
+    _fresh()
+    try:
+        reg._reset_peak_hour_cache_for_tests()
+        # Detectada a las 08:00 UTC (04:00 ET), maximo 330 min despues ->
+        # 13:30 UTC = 09:30 ET (apertura regular).
+        _detectada_y_cerrada("AAA", "2026-09-16T08:00:00+00:00", 330.0)
+        # Detectada a las 12:00 UTC (08:00 ET), maximo 90 min despues ->
+        # 13:30 UTC = 09:30 ET tambien -- misma hora ET pese a haberse
+        # detectado en un momento distinto (confirma que se agrupa por
+        # HORA REAL del maximo, no por "minutos desde deteccion").
+        _detectada_y_cerrada("BBB", "2026-09-16T12:00:00+00:00", 90.0)
+
+        r = reg.peak_hour_distribution()
+        assert r["ok"] is True
+        assert r["n_casos"] == 2
+        assert r["hora_pico_et"] == 9
+        assert r["pct_pico_et"] == 100.0
+        assert r["distribucion_por_hora_et"] == {"9": 100.0}
+    finally:
+        _restore()
+
+
+def test_peak_hour_distribution_ignora_no_confiables_y_no_finales():
+    _fresh()
+    try:
+        reg._reset_peak_hour_cache_for_tests()
+        _detectada_y_cerrada("AAA", "2026-09-16T08:00:00+00:00", 330.0, confiable=True, is_final=True)
+        _detectada_y_cerrada("BBB", "2026-09-16T08:00:00+00:00", 60.0, confiable=False, is_final=True)
+        _detectada_y_cerrada("CCC", "2026-09-16T08:00:00+00:00", 60.0, confiable=True, is_final=False)
+
+        r = reg.peak_hour_distribution()
+        assert r["n_casos"] == 1  # solo AAA -- confiable y final
+    finally:
+        _restore()
+
+
+def test_peak_hour_distribution_sin_datos_no_inventa_nada():
+    _fresh()
+    try:
+        reg._reset_peak_hour_cache_for_tests()
+        r = reg.peak_hour_distribution()
+        assert r["ok"] is True
+        assert r["n_casos"] == 0
+        assert r["hora_pico_et"] is None
+        assert r["pct_pico_et"] is None
+        assert r["distribucion_por_hora_et"] == {}
+    finally:
+        _restore()
+
+
+def test_peak_hour_distribution_respeta_ttl_cache(monkeypatch):
+    _fresh()
+    try:
+        reg._reset_peak_hour_cache_for_tests()
+        _detectada_y_cerrada("AAA", "2026-09-16T08:00:00+00:00", 330.0)
+        r1 = reg.peak_hour_distribution(ttl_seconds=3600)
+        assert r1["n_casos"] == 1
+
+        # Nueva candidata cerrada, pero el cache todavia no vencio --
+        # debe devolver el mismo resultado cacheado, sin recalcular.
+        _detectada_y_cerrada("BBB", "2026-09-16T08:00:00+00:00", 330.0)
+        r2 = reg.peak_hour_distribution(ttl_seconds=3600)
+        assert r2["n_casos"] == 1  # sigue cacheado, no ve a BBB todavia
+
+        # Con ttl_seconds=0, el cache se considera vencido de inmediato.
+        r3 = reg.peak_hour_distribution(ttl_seconds=0)
+        assert r3["n_casos"] == 2  # ahora si recalculo y ve a los dos
+    finally:
+        _restore()
