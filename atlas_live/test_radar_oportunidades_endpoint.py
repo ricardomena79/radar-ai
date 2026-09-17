@@ -852,6 +852,67 @@ def test_prioridad_score_expuesto_en_el_endpoint_sin_tocar_estado_final():
         _rw.get_last_quotes = orig_last_quotes
 
 
+# --- FIX 2026-09-17 -- penalizacion continua por antiguedad (no solo el
+# corte binario de _esAntigua() en cabina.js) ---------------------------
+
+def test_prioridad_score_penaliza_mas_cuanto_mas_vieja():
+    calc = server._calcular_prioridad_score
+    reciente = calc(None, 3.0, None, None, minutos_sin_confirmar=95.0)
+    vieja = calc(None, 3.0, None, None, minutos_sin_confirmar=900.0)
+    assert reciente > vieja
+
+
+def test_prioridad_score_penalizacion_topa_en_600_minutos():
+    calc = server._calcular_prioridad_score
+    a_600 = calc(100.0, 999.0, 999.0, 0.0, minutos_sin_confirmar=600.0)
+    a_2000 = calc(100.0, 999.0, 999.0, 0.0, minutos_sin_confirmar=2000.0)
+    assert a_600 == a_2000  # el tope no sigue penalizando mas alla de 600 min
+    assert a_600 == 65.0  # 90 (sin penalizacion) - 25 (tope completo)
+
+
+def test_prioridad_score_sin_dato_de_antiguedad_no_penaliza():
+    calc = server._calcular_prioridad_score
+    con_none = calc(100.0, 999.0, 999.0, 0.0, minutos_sin_confirmar=None)
+    sin_parametro = calc(100.0, 999.0, 999.0, 0.0)
+    assert con_none == sin_parametro == 90.0
+
+
+def test_prioridad_score_nunca_negativo_con_antiguedad_extrema():
+    calc = server._calcular_prioridad_score
+    assert calc(None, None, None, None, minutos_sin_confirmar=100000.0) == 0.0
+
+
+def test_endpoint_usa_stage_observed_at_para_la_penalizacion_de_antiguedad():
+    # Dos candidatas idénticas salvo por hace cuánto se reconfirmaron --
+    # la mas vieja debe terminar con prioridad_score mas bajo en el
+    # endpoint real, no solo en la funcion pura.
+    from datetime import datetime, timedelta, timezone
+
+    ahora = datetime.now(timezone.utc)
+    reciente_iso = (ahora - timedelta(minutes=95)).isoformat().replace("+00:00", "Z")
+    vieja_iso = (ahora - timedelta(minutes=900)).isoformat().replace("+00:00", "Z")
+
+    orig_live_opps = reg.live_opportunities
+    orig_last_quotes = _rw.get_last_quotes
+    reg.live_opportunities = lambda market_date: [
+        {"ticker": "RECIENTE", "price_at_detection": 10.0, "stage": "ALERTA_TEMPRANA",
+         "racional_available": True, "relative_volume_hoy": 3.0, "retroceso_desde_maximo_pct": None,
+         "stage_observed_at": reciente_iso, "detected_at": reciente_iso},
+        {"ticker": "VIEJA", "price_at_detection": 10.0, "stage": "ALERTA_TEMPRANA",
+         "racional_available": True, "relative_volume_hoy": 3.0, "retroceso_desde_maximo_pct": None,
+         "stage_observed_at": vieja_iso, "detected_at": vieja_iso},
+    ]
+    _rw.get_last_quotes = lambda: {"RECIENTE": _fresh_quote(10.2, 2.0), "VIEJA": _fresh_quote(10.2, 2.0)}
+    try:
+        r = _client().get("/api/radar-oportunidades")
+        assert r.status_code == 200
+        by_ticker = {o["ticker"]: o for o in r.get_json()["oportunidades"]}
+        assert by_ticker["RECIENTE"]["prioridad_score"] > by_ticker["VIEJA"]["prioridad_score"]
+    finally:
+        reg.live_opportunities = orig_live_opps
+        _rw.get_last_quotes = orig_last_quotes
+
+
 def test_prioridad_score_flag_apagado_por_defecto_ignora_pm_early_signal():
     """El flag ATLAS_PREMARKET_VOLUME_SIGNAL_ENABLED nace en False -- el
     componente pm_early_signal del tie-break queda en 0 aunque el campo

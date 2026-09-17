@@ -867,6 +867,7 @@ def _calcular_prioridad_score(
     relative_volume_hoy,
     predicted_pct,
     retroceso_desde_maximo_pct,
+    minutos_sin_confirmar=None,
 ) -> float:
     """Hito 7 (2026-09-14, PLAN Radar/Finnhub) -- tie-break INCREMENTAL,
     puramente de presentación: NUNCA reemplaza el bucket categórico de
@@ -884,7 +885,26 @@ def _calcular_prioridad_score(
     `retroceso_desde_maximo_pct` -> score bajo, pese a la magnitud ya
     alcanzada) sin pretender ser un score predictivo fuerte. Clampeado a
     [0, 100]. Nunca inventa datos: cada componente ausente aporta 0, nunca
-    `None` propagado ni una excepción."""
+    `None` propagado ni una excepción.
+
+    `minutos_sin_confirmar` (FIX 2026-09-17, autorizado explícitamente --
+    "arregla lo de las oportunidades"): penalización CONTINUA por
+    antigüedad, complementaria al corte binario `_esAntigua()`
+    (`cabina.js`, >90 min = "antigua") que ya decide el ORDEN entre
+    bucket/antigüedad -- ese corte no se toca. El problema real que este
+    parámetro corrige: dentro del grupo "antigua", una candidata a 91
+    minutos sin confirmar y otra a 900 minutos competían EXACTAMENTE
+    igual (el corte es un booleano, sin gradiente) -- confirmado con
+    datos reales de producción (2026-09-16): 27 de 37 oportunidades
+    accionables del día completo quedaron congeladas desde los primeros
+    26 minutos de premarket (08:00-08:26 UTC) y ninguna candidata nueva
+    de sesión regular llegó a desplazarlas del tope pese a existir (511
+    detecciones nuevas después de la apertura regular). Acá SOLO se
+    corrige el gradiente dentro del empate -- penalización lineal, tope
+    de -25 puntos a partir de 600 minutos (10 horas) sin confirmar, nunca
+    negativa ni mayor a eso. Con `None` (dato ausente) no penaliza nada,
+    mismo criterio de "componente ausente aporta 0" que el resto de la
+    función."""
     score = 0.0
     if pm_early_signal_at_detection is not None:
         score += 40.0 * (min(100.0, max(0.0, pm_early_signal_at_detection)) / 100.0)
@@ -894,6 +914,8 @@ def _calcular_prioridad_score(
         score += 20.0 * min(1.0, predicted_pct / 20.0)
     if retroceso_desde_maximo_pct is not None and retroceso_desde_maximo_pct > 0:
         score -= 30.0 * min(1.0, retroceso_desde_maximo_pct / 20.0)
+    if minutos_sin_confirmar is not None and minutos_sin_confirmar > 0:
+        score -= 25.0 * min(1.0, minutos_sin_confirmar / 600.0)
     return round(max(0.0, min(100.0, score)), 2)
 
 
@@ -1528,11 +1550,26 @@ def _api_radar_oportunidades_impl():
             pm_signal_para_ranking = (
                 o.get("pm_early_signal_at_detection") if ATLAS_PREMARKET_VOLUME_SIGNAL_ENABLED else None
             )
+            # FIX 2026-09-17: mismo campo/fallback que `cabina.js::_minutosSinConfirmar()`
+            # (stage_observed_at, o detected_at si la etapa nunca cambió) --
+            # nunca se recalcula con un criterio distinto al que ya define
+            # "antigua" en la UI.
+            minutos_sin_confirmar = None
+            ts_confirmacion = o.get("stage_observed_at") or o.get("detected_at")
+            if ts_confirmacion:
+                try:
+                    dt_confirmacion = datetime.fromisoformat(ts_confirmacion.replace("Z", "+00:00"))
+                    if dt_confirmacion.tzinfo is None:
+                        dt_confirmacion = dt_confirmacion.replace(tzinfo=timezone.utc)
+                    minutos_sin_confirmar = (datetime.now(timezone.utc) - dt_confirmacion).total_seconds() / 60.0
+                except Exception:
+                    minutos_sin_confirmar = None
             o["prioridad_score"] = _calcular_prioridad_score(
                 pm_signal_para_ranking,
                 o.get("relative_volume_hoy"),
                 (o.get("prediccion_magnitud_congelada") or {}).get("predicted_pct"),
                 o.get("retroceso_desde_maximo_pct"),
+                minutos_sin_confirmar,
             )
         except Exception:
             o["prioridad_score"] = 0.0
