@@ -1149,9 +1149,18 @@ function renderCapacidad(data) {
   const statusClass = "status-" + (data.status || "ok").toLowerCase();
   const barPct = pct != null ? Math.min(100, Math.max(0, pct)) : 0;
 
-  const crecimientoTxt = data.growth && data.growth.history_status === "ok"
-    ? `+${data.growth.mb_per_day} MB/día`
-    : "calculando...";
+  // FIX 2026-09-18 (autorizado explícitamente -- "corrígelo"): antes se
+  // anteponía un "+" fijo sin revisar el signo real de mb_per_day -- con
+  // una tasa negativa (el disco achicándose, ej. tras una limpieza grande)
+  // se mostraba igual como si estuviera creciendo rápido. Ahora se
+  // respeta el signo real, y el caso negativo se aclara con una palabra
+  // (nunca solo un "-" fácil de pasar por alto).
+  let crecimientoTxt = "calculando...";
+  if (data.growth && data.growth.history_status === "ok" && data.growth.mb_per_day != null) {
+    const mbPerDay = data.growth.mb_per_day;
+    const abs = Math.abs(mbPerDay);
+    crecimientoTxt = mbPerDay >= 0 ? `+${abs} MB/día` : `-${abs} MB/día (achicándose)`;
+  }
 
   const proj = data.projection || {};
   const proyeccionTxt = proj.days_to_80_pct != null
