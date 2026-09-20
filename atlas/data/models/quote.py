@@ -85,6 +85,16 @@ class Quote:
     bid_timestamp: Optional[datetime] = None
     ask_timestamp: Optional[datetime] = None
 
+    # `bidsize`/`asksize` (2026-09-20, solo captura -- confirmado con una
+    # consulta real a Tradier que la respuesta cruda de `/v1/markets/quotes`
+    # ya trae ambos campos como hermanos de `bid`/`ask`, sin usar hasta
+    # ahora). Cantidad de acciones disponible al precio de `bid`/`ask`
+    # respectivamente -- NUNCA se usan todavía en ningún cálculo, gate,
+    # ranking ni aprendizaje; puramente expuestos para trazabilidad, mismo
+    # criterio que `bid`/`ask`. `None` para proveedores que no son Tradier.
+    bidsize: Optional[int] = None
+    asksize: Optional[int] = None
+
     # `price_is_stale` (2026-08-24, Fase 1 -- corrección de datos premarket,
     # caso real NSSC: $38.09/0% congelado ~46 minutos seguidos mientras el
     # movimiento premarket real seguía). `True` únicamente cuando NINGUNA

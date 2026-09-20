@@ -307,12 +307,20 @@ def _resolve_current_price(data: Dict[str, Any], now: datetime) -> Dict[str, Any
     ask = data.get("ask")
     bid_ts = _epoch_ms_to_dt(data.get("bid_date"))
     ask_ts = _epoch_ms_to_dt(data.get("ask_date"))
+    # Captura únicamente (2026-09-20, confirmado con consulta real a
+    # Tradier -- ver docstring de `Quote.bidsize`/`Quote.asksize`): cantidad
+    # de acciones al bid/ask. Constante por quote (no depende de qué Caso
+    # A/B/B2/C se resuelva abajo), así que se fija una sola vez acá y
+    # sobrevive intacta a través de todos los `resolved.update(...)`
+    # posteriores, que nunca la tocan.
+    bidsize = data.get("bidsize")
+    asksize = data.get("asksize")
 
     resolved = {
         "last_price": last, "change_percent": change_pct_raw, "timestamp": trade_ts,
         "price_basis": "tradier_last", "bid": bid, "ask": ask,
         "bid_timestamp": bid_ts, "ask_timestamp": ask_ts, "price_is_stale": False,
-        "bid_only_reason": None,
+        "bid_only_reason": None, "bidsize": bidsize, "asksize": asksize,
         # `executable_price` (Fase 1D, 2026-08-24 -- separación señal/
         # ejecutable): Caso A por defecto -- un trade recién ejecutado es la
         # mejor aproximación disponible a "a este precio hay contraparte
@@ -457,6 +465,8 @@ def _to_quote(data: Dict[str, Any], symbol: str, now: Optional[datetime] = None)
         ask=resolved["ask"],
         bid_timestamp=resolved["bid_timestamp"],
         ask_timestamp=resolved["ask_timestamp"],
+        bidsize=resolved["bidsize"],
+        asksize=resolved["asksize"],
         price_is_stale=resolved["price_is_stale"],
         possible_split_flag=possible_split_flag,
         possible_split_ratio=possible_split_ratio,
