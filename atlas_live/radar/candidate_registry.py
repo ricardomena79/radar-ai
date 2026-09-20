@@ -409,6 +409,12 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         # aprendizaje ni predicción de magnitud lee estas columnas.
         _ensure_column(conn, "candidate_detection", "bid_ask_size_ratio_at_detection", "REAL")
         _ensure_column(conn, "candidate_detection", "bid_ask_size_imbalance_at_detection", "REAL")
+        # Valores crudos (2026-09-20, autorizado explícitamente -- la
+        # Cabina necesita mostrar "COMPRA 1.000 | VENTA 100", no solo el
+        # ratio/imbalance ya derivados). Mismo criterio "estado A,
+        # inmutable" y misma fuente (`quote.bidsize`/`quote.asksize`).
+        _ensure_column(conn, "candidate_detection", "bidsize_at_detection", "INTEGER")
+        _ensure_column(conn, "candidate_detection", "asksize_at_detection", "INTEGER")
         # Fuente de predicted_pct (2026-09-13, autorizado explícitamente tras
         # validación fuera de muestra tres-cortes): "external" (Base
         # Histórica, `historical_scoring.py`, comportamiento de siempre) o
@@ -514,6 +520,8 @@ def record_detection(
     possible_split_flag_at_detection: Optional[str] = None, possible_split_ratio_at_detection: Optional[float] = None,
     bid_ask_size_ratio_at_detection: Optional[float] = None,
     bid_ask_size_imbalance_at_detection: Optional[float] = None,
+    bidsize_at_detection: Optional[int] = None,
+    asksize_at_detection: Optional[int] = None,
 ) -> bool:
     """Registra la primera detección. Devuelve True si fue nueva (INSERT
     real), False si ya existía (idempotente, nunca se pisa).
@@ -548,7 +556,13 @@ def record_detection(
     `spread_pct_at_detection`. `None` cuando `bidsize`/`asksize` no estaban
     disponibles o la división no era calculable (nunca un valor inventado).
     Puramente informativo -- ningún gate, `alert_stage`, `priority_classifier`,
-    aprendizaje ni predicción de magnitud lee estas columnas."""
+    aprendizaje ni predicción de magnitud lee estas columnas.
+
+    `bidsize_at_detection`/`asksize_at_detection` (2026-09-20): valores
+    CRUDOS de `quote.bidsize`/`quote.asksize` -- de dónde salen el ratio/
+    imbalance de arriba. Se guardan aparte para que la Cabina pueda
+    mostrar "COMPRA 1.000 | VENTA 100" sin tener que reconstruirlos desde
+    el ratio (que perdería la magnitud real)."""
     with _connect() as conn:
         cur = conn.execute(
             """INSERT OR IGNORE INTO candidate_detection
@@ -560,8 +574,9 @@ def record_detection(
                 premarket_volume_acceleration_at_detection, premarket_volume_acceleration_state_at_detection,
                 pm_universe_size_at_detection, pm_volume_at_detection, pm_dollar_volume_at_detection,
                 possible_split_flag_at_detection, possible_split_ratio_at_detection,
-                bid_ask_size_ratio_at_detection, bid_ask_size_imbalance_at_detection)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                bid_ask_size_ratio_at_detection, bid_ask_size_imbalance_at_detection,
+                bidsize_at_detection, asksize_at_detection)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (ticker, market_date, session, detected_at, sweep_id, price_at_detection,
              change_pct_at_detection, volume_at_detection, average_volume_at_detection,
              relative_volume_at_detection, dollar_volume_at_detection,
@@ -571,7 +586,8 @@ def record_detection(
              pm_acceleration_at_detection, pm_acceleration_state_at_detection,
              pm_universe_size_at_detection, pm_volume_at_detection, pm_dollar_volume_at_detection,
              possible_split_flag_at_detection, possible_split_ratio_at_detection,
-             bid_ask_size_ratio_at_detection, bid_ask_size_imbalance_at_detection),
+             bid_ask_size_ratio_at_detection, bid_ask_size_imbalance_at_detection,
+             bidsize_at_detection, asksize_at_detection),
         )
         conn.commit()
         return cur.rowcount > 0
@@ -1098,6 +1114,8 @@ def live_opportunities(market_date: str) -> List[Dict[str, Any]]:
             # magnitud lee estos 2 campos.
             "bid_ask_size_ratio_at_detection": d.get("bid_ask_size_ratio_at_detection"),
             "bid_ask_size_imbalance_at_detection": d.get("bid_ask_size_imbalance_at_detection"),
+            "bidsize_at_detection": d.get("bidsize_at_detection"),
+            "asksize_at_detection": d.get("asksize_at_detection"),
         })
     return out
 

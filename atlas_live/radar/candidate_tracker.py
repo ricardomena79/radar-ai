@@ -553,6 +553,8 @@ def process_sweep(
                 possible_split_ratio_at_detection=quote.possible_split_ratio,
                 bid_ask_size_ratio_at_detection=bid_ask_size_ratio_at_detection,
                 bid_ask_size_imbalance_at_detection=bid_ask_size_imbalance_at_detection,
+                bidsize_at_detection=quote.bidsize,
+                asksize_at_detection=quote.asksize,
             )
             if es_nueva:
                 nuevas.append(symbol)

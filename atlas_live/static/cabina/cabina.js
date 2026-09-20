@@ -110,6 +110,34 @@ const PM_STATE_LABELS = {
 const PM_VOLUMEN_TITLE =
   "Vol. premarket -- percentil del dollar_volume acumulado HOY contra TODO el universo escaneado en este barrido. NO es RVOL (no usa average_volume/relative_volume) -- puede ser alto aunque RVOL esté cerca de 0 en premarket temprano.";
 
+/* Indicador COMPRA/VENTA (2026-09-20, autorizado explícitamente --
+ * "por ahora es solo visual/informativo"). Fuente: bidsize_at_detection/
+ * asksize_at_detection/bid_ask_size_ratio_at_detection/
+ * bid_ask_size_imbalance_at_detection, ya expuestos por
+ * live_opportunities()/GET /api/radar-oportunidades (congelados en el
+ * momento de la detección, nunca recalculados acá). Puramente de
+ * presentación -- no participa en _ordenarOportunidades() ni en ningún
+ * otro cálculo de esta pantalla. Vacío ("") cuando no hay dato, mismo
+ * criterio que el resto de los helpers de esta tarjeta. */
+function _bidAskSizeHtml(o) {
+  const bidsize = o.bidsize_at_detection;
+  const asksize = o.asksize_at_detection;
+  if (bidsize == null && asksize == null) return "";
+  const bidTxt = bidsize != null ? Number(bidsize).toLocaleString("es-CL") : "--";
+  const askTxt = asksize != null ? Number(asksize).toLocaleString("es-CL") : "--";
+  const ratio = o.bid_ask_size_ratio_at_detection;
+  const imbalance = o.bid_ask_size_imbalance_at_detection;
+  const ratioTxt = ratio != null ? `${fmtNum(ratio, 2)}x` : "--";
+  const imbalanceTxt = imbalance != null ? `${imbalance >= 0 ? "+" : ""}${imbalance.toFixed(3)}` : "--";
+  return `<div class="bidask-line" title="Tamaño de compra/venta al momento de la detección -- indicador de observación, no participa en el ranking ni en ninguna decisión">
+    <span class="bidask-compra">COMPRA 🟢 ${bidTxt}</span>
+    <span class="bidask-sep">|</span>
+    <span class="bidask-venta">VENTA 🔴 ${askTxt}</span>
+    <span class="bidask-ratio">Ratio ${ratioTxt}</span>
+    <span class="bidask-imbalance">Imbalance ${imbalanceTxt}</span>
+  </div>`;
+}
+
 function _pmVolumenHtml(o) {
   const state = o.premarket_volume_percentile_state;
   if (state === "VALID" && o.premarket_volume_percentile != null) {
@@ -274,6 +302,7 @@ function _renderOportunidadesEn(el, top) {
       <div class="proj-col">${_proyeccionHtml(o)}</div>
       <div class="why-col">
         <div class="why-line">${_porQueHtml(o)}</div>
+        ${_bidAskSizeHtml(o)}
       </div>
     </div>`;
   }).join("");
