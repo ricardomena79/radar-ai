@@ -543,6 +543,102 @@ function startMercadoPolling() {
 }
 
 /* ============================================================
+ * ETFs NORMALES (2026-09-20, autorizado explícitamente) -- mismo tipo de
+ * ranking/presentación que Mercado (reutiliza _sparklineSvg/_mercadoAgeLabel/
+ * _mercadoAgeShort/_mercadoInitials tal cual, sin duplicarlos), pero fuente
+ * y estado propios: GET /api/etfs-normales (snapshot cacheado por
+ * atlas_live/etf_normal_view.py, universo independiente de Mercado -- nunca
+ * el mismo fetch, nunca el mismo hilo backend).
+ * ============================================================ */
+
+const ETFS_NORMALES_POLL_MS = 1500;
+let _etfsNormales = { generated_at: null, cycle_duration_s: null, rows: [] };
+let _etfsNormalesSearch = "";
+
+async function fetchEtfsNormales() {
+  try {
+    const res = await fetch("/api/etfs-normales");
+    _etfsNormales = await res.json();
+  } catch (e) {
+    // Sin cambios de estado ante un fallo de red puntual -- mismo criterio
+    // que fetchMercado().
+  }
+  renderEtfsNormales();
+}
+
+function renderEtfsNormales() {
+  const listEl = document.getElementById("etfs-normales-list");
+  const metaEl = document.getElementById("etfs-normales-meta");
+  if (!listEl || !metaEl) return;
+
+  const rows = _etfsNormales.rows || [];
+
+  metaEl.textContent = _etfsNormales.total_universe
+    ? `${_etfsNormales.total_universe} ETFs normales · ${_mercadoAgeLabel(_etfsNormales.generated_at)}`
+    : "sin apalancados/inversos -- universo independiente de Mercado";
+
+  if (!rows.length) {
+    listEl.innerHTML = `<div class="empty-state small">${_etfsNormales.ultimo_error ? "Error: " + _etfsNormales.ultimo_error : "Esperando el primer ciclo..."}</div>`;
+    return;
+  }
+
+  const q = _etfsNormalesSearch.trim().toUpperCase();
+  const filtered = q
+    ? rows.filter((r) => r.symbol.toUpperCase().includes(q) || (r.name || "").toUpperCase().includes(q))
+    : rows;
+
+  if (!filtered.length) {
+    listEl.innerHTML = `<div class="empty-state small">Sin resultados para "${_etfsNormalesSearch}".</div>`;
+    return;
+  }
+
+  listEl.innerHTML = filtered.map((r) => {
+    const isUp = (r.change_pct ?? 0) >= 0;
+    const priceText = r.price != null ? r.price.toFixed(2) : "--";
+    let pctClass = "";
+    if (r.change_pct > 0) pctClass = "mercado-up";
+    else if (r.change_pct < 0) pctClass = "mercado-down";
+    const changePctText = r.change_pct == null
+      ? "s/d"
+      : `<span class="${pctClass}">${r.change_pct > 0 ? "+" : ""}${r.change_pct.toFixed(2)}%</span>`;
+
+    let extIcon = '<span class="mercado-ext" title="Dato fresco de este ciclo">🟢</span>';
+    if (r.data_status === "STALE") {
+      extIcon = `<span class="mercado-ext mercado-stale" title="Último dato conocido (${_mercadoAgeShort(r.data_age_seconds)})">⏱</span>`;
+    } else if (r.data_status === "SIN_DATO") {
+      extIcon = '<span class="mercado-ext mercado-sindato" title="Sin dato todavía">—</span>';
+    } else if (r.price_is_stale) {
+      extIcon = '<span class="mercado-ext mercado-stale" title="Precio vencido -- fuera de sesión">⏱</span>';
+    }
+
+    return `
+      <div class="mercado-row" data-symbol="${r.symbol}">
+        <div class="mercado-logo">${_mercadoInitials(r.symbol)}</div>
+        <div class="mercado-id">
+          <div class="mercado-name">${r.name || r.symbol}</div>
+          <div class="mercado-ticker">${r.symbol}</div>
+        </div>
+        <div class="mercado-price">${priceText}</div>
+        <div class="mercado-change-pct">${changePctText}</div>
+        ${extIcon}
+        ${_sparklineSvg(r.sparkline, isUp)}
+      </div>`;
+  }).join("");
+}
+
+function startEtfsNormalesPolling() {
+  fetchEtfsNormales();
+  setInterval(fetchEtfsNormales, ETFS_NORMALES_POLL_MS);
+  const searchInput = document.getElementById("etfs-normales-search");
+  if (searchInput) {
+    searchInput.addEventListener("input", () => {
+      _etfsNormalesSearch = searchInput.value;
+      renderEtfsNormales();
+    });
+  }
+}
+
+/* ============================================================
  * UNIVERSO YAHOO -- sector independiente de Universo Racional.
  * Capa 1 (identidad, ~6.600+): GET /api/universo-yahoo, se carga UNA sola
  * vez al abrir la Cabina; la búsqueda por ticker/nombre filtra 100% en el
@@ -1260,6 +1356,7 @@ function init() {
   fetchAprendizaje();
   fetchUniverso();
   startMercadoPolling();
+  startEtfsNormalesPolling();
   initUniversoYahoo();
   fetchCapacidad();
   fetchPatronHorario();

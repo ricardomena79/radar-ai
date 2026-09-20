@@ -152,6 +152,15 @@ unified_detector.start_shadow_detector()
 from atlas_live import market_view
 market_view.start_market_view()
 
+# ETFs Normales (2026-09-20, autorizado explícitamente): ranking en vivo,
+# exclusivo, de los ETFs de Racional que NO son apalancados -- módulo
+# HERMANO de market_view.py, estado propio (nunca comparte snapshot/hilo
+# con Mercado). Mismo aislamiento total respecto a decisión/aprendizaje --
+# ver docstring de atlas_live/etf_normal_view.py. Se habilita/deshabilita
+# por ATLAS_ETF_NORMAL_VIEW_ENABLED (default: encendido).
+from atlas_live import etf_normal_view
+etf_normal_view.start_etf_normal_view()
+
 
 @app.route("/")
 def index():
@@ -396,6 +405,19 @@ def api_mercado():
     ningún costo adicional. Completamente aislado de cualquier decisión
     de Atlas -- ver docstring de `atlas_live/market_view.py`."""
     return jsonify(market_view.get_market_snapshot())
+
+
+@app.route("/api/etfs-normales")
+def api_etfs_normales():
+    """ETFs Normales (2026-09-20, autorizado explícitamente): snapshot ya
+    cacheado del ranking en vivo, exclusivo, de los ETFs de Racional que
+    NO son apalancados/inversos -- mismo patrón que `/api/mercado`, pero
+    con universo y estado 100% propios (`atlas_live/etf_normal_view.py`).
+    Público, sin token. Solo lectura del snapshot ya calculado por el hilo
+    de fondo -- este endpoint NUNCA dispara una consulta nueva a Tradier.
+    Completamente aislado del radar, el motor de decisión y el aprendizaje
+    -- ver docstring de `etf_normal_view.py`."""
+    return jsonify(etf_normal_view.get_etf_normal_snapshot())
 
 
 @app.route("/api/admin/mercado-cycle-now", methods=["POST"])
