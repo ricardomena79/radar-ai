@@ -1369,12 +1369,33 @@ function renderPatronHorario(data) {
     </div>`;
 }
 
+/* ============================================================
+ * Fase de observación bid/ask size (2026-09-20, autorizado explícitamente):
+ * contador simple -- "Faltan: N" únicamente, sin gráficos ni texto extra.
+ * Fuente: GET /api/bid-ask-size-observacion (público, solo lectura sobre
+ * candidate_detection ya persistido). Puramente informativo.
+ * ============================================================ */
+
+async function fetchBidAskSizeObservacion() {
+  const el = document.getElementById("bidask-obs-widget");
+  if (!el) return;
+  try {
+    const res = await fetch("/api/bid-ask-size-observacion");
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
+    el.textContent = `Faltan: ${data.faltan}`;
+  } catch (err) {
+    console.error("fetchBidAskSizeObservacion:", err);
+  }
+}
+
 /* ---------------- arranque ---------------- */
 
 const OPORTUNIDADES_POLL_MS = 30000;
 const UNIVERSO_POLL_MS = 60000;
 const CAPACITY_POLL_MS = 600000; // 10 min -- la capacidad cambia despacio
 const PATRON_HORARIO_POLL_MS = 600000; // 10 min -- cambia muy despacio (TTL backend 6h)
+const BIDASK_OBS_POLL_MS = 600000; // 10 min -- crece despacio, mismo criterio que Capacidad
 
 function init() {
   setupSidebar();
@@ -1389,12 +1410,14 @@ function init() {
   initUniversoYahoo();
   fetchCapacidad();
   fetchPatronHorario();
+  fetchBidAskSizeObservacion();
 
   setInterval(fetchOportunidades, OPORTUNIDADES_POLL_MS);
   setInterval(fetchAprendizaje, OPORTUNIDADES_POLL_MS);
   setInterval(fetchUniverso, UNIVERSO_POLL_MS);
   setInterval(fetchCapacidad, CAPACITY_POLL_MS);
   setInterval(fetchPatronHorario, PATRON_HORARIO_POLL_MS);
+  setInterval(fetchBidAskSizeObservacion, BIDASK_OBS_POLL_MS);
 }
 
 document.addEventListener("DOMContentLoaded", init);

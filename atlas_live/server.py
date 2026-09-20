@@ -1839,6 +1839,19 @@ def api_capacidad_resumen():
     return jsonify(cm.capacity_summary_public())
 
 
+@app.route("/api/bid-ask-size-observacion")
+def api_bid_ask_size_observacion():
+    """Fase de observación de bid_ask_size_imbalance (2026-09-20, autorizado
+    explícitamente): expone `casos_validos`/`objetivo`/`faltan` --
+    `radar_registry.bid_ask_size_observation_status()`, solo lectura sobre
+    `candidate_detection` (ya persistido, sobrevive cualquier reinicio, sin
+    tabla ni mecanismo nuevo). Público, sin token. Puramente informativo --
+    no participa en ranking, decisión, alert_stage ni aprendizaje."""
+    from atlas_live.radar import candidate_registry as radar_registry
+
+    return jsonify(radar_registry.bid_ask_size_observation_status())
+
+
 @app.route("/api/storage-guard-status")
 def api_storage_guard_status():
     """Estado read-only del kill-switch automático de emergencia por disco
