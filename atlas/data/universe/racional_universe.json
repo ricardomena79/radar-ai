@@ -10,6 +10,11 @@
     "type": "EQUITY"
   },
   {
+    "symbol": "AAC",
+    "name": "Ares Acquisition Corp",
+    "type": "EQUITY"
+  },
+  {
     "symbol": "AAL",
     "name": "American Airlines Group Inc.",
     "type": "EQUITY"
@@ -195,8 +200,18 @@
     "type": "EQUITY"
   },
   {
+    "symbol": "AEHL",
+    "name": "Antelope Enterprise Holdings Ltd",
+    "type": "EQUITY"
+  },
+  {
     "symbol": "AEHR",
     "name": "AEHR TEST SYSTEMS",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "AEI",
+    "name": "Alset Inc",
     "type": "EQUITY"
   },
   {
@@ -385,6 +400,11 @@
     "type": "EQUITY"
   },
   {
+    "symbol": "AMAC",
+    "name": "AMR Resources Acquisition Corp",
+    "type": "EQUITY"
+  },
+  {
     "symbol": "AMAT",
     "name": "Applied Materials, Inc.",
     "type": "EQUITY"
@@ -392,6 +412,11 @@
   {
     "symbol": "AMBA",
     "name": "Ambarella, Inc.",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "AMBR",
+    "name": "Amber International Holdings",
     "type": "EQUITY"
   },
   {
@@ -755,6 +780,11 @@
     "type": "EQUITY"
   },
   {
+    "symbol": "ASBH",
+    "name": "American Savings Bank",
+    "type": "EQUITY"
+  },
+  {
     "symbol": "ASML",
     "name": "ASML Holding NV",
     "type": "EQUITY"
@@ -785,9 +815,29 @@
     "type": "EQUITY"
   },
   {
+    "symbol": "ASTG",
+    "name": "Leverage Shares 2X Long ASTS Daily ETF",
+    "type": "ETF"
+  },
+  {
     "symbol": "ASTS",
     "name": "AST & Science, LLC",
     "type": "EQUITY"
+  },
+  {
+    "symbol": "ASTT",
+    "name": "Corgi ASTS 2x Daily ETF",
+    "type": "ETF"
+  },
+  {
+    "symbol": "ASTY",
+    "name": "Defiance Daily Target 2X Long ASTS ETF",
+    "type": "ETF"
+  },
+  {
+    "symbol": "ASUP",
+    "name": "T-REX 2X Long ASTS Daily Target ETF",
+    "type": "ETF"
   },
   {
     "symbol": "ASUR",
@@ -850,6 +900,11 @@
     "type": "EQUITY"
   },
   {
+    "symbol": "AUC",
+    "name": "ATIF Holdings Ltd",
+    "type": "EQUITY"
+  },
+  {
     "symbol": "AULT",
     "name": "Ault Alliance Inc",
     "type": "EQUITY"
@@ -860,8 +915,23 @@
     "type": "EQUITY"
   },
   {
+    "symbol": "AURE",
+    "name": "Aurelion Inc",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "AUXX",
+    "name": "Gold X2 Mining Corp",
+    "type": "EQUITY"
+  },
+  {
     "symbol": "AVAL",
     "name": "Grupo Aval Acciones y Valores S.A.",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "AVAT",
+    "name": "Avalanche Treasury Corp",
     "type": "EQUITY"
   },
   {
@@ -1107,6 +1177,11 @@
   {
     "symbol": "BCS",
     "name": "Barclays PLC",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "BCTXZ",
+    "name": "BriaCell Therapeutics Corp Warrants",
     "type": "EQUITY"
   },
   {
@@ -1430,6 +1505,11 @@
     "type": "ETF"
   },
   {
+    "symbol": "BLSG",
+    "name": "LeverageShares 2X Long BLSH Daily ETF",
+    "type": "ETF"
+  },
+  {
     "symbol": "BLTE",
     "name": "BELITE BIO INC - ADR",
     "type": "EQUITY"
@@ -1452,6 +1532,11 @@
   {
     "symbol": "BMA",
     "name": "Banco Macro S.A.",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "BMB",
+    "name": "Bamboo Insurance Services",
     "type": "EQUITY"
   },
   {
@@ -1513,6 +1598,11 @@
     "symbol": "BNED",
     "name": "Barnes & Noble Education, Inc.",
     "type": "EQUITY"
+  },
+  {
+    "symbol": "BNMC",
+    "name": "CORGI BMNR 2X Daily Enhanced ETF",
+    "type": "ETF"
   },
   {
     "symbol": "BNO",
@@ -1665,6 +1755,11 @@
     "type": "ETF"
   },
   {
+    "symbol": "BTDL",
+    "name": "GraniteShares 2x Long BTC Daily ETF",
+    "type": "ETF"
+  },
+  {
     "symbol": "BTE",
     "name": "Baytex Energy Corp.",
     "type": "EQUITY"
@@ -1750,6 +1845,11 @@
     "type": "EQUITY"
   },
   {
+    "symbol": "BYDDY",
+    "name": "BYD CO LTD-UNSPONSORED ADR",
+    "type": "EQUITY"
+  },
+  {
     "symbol": "BYND",
     "name": "Beyond Meat Inc",
     "type": "EQUITY"
@@ -1825,6 +1925,11 @@
     "type": "EQUITY"
   },
   {
+    "symbol": "CANG",
+    "name": "Cango Inc Class A",
+    "type": "EQUITY"
+  },
+  {
     "symbol": "CAR",
     "name": "Avis Budget Group, Inc.",
     "type": "EQUITY"
@@ -1853,6 +1958,11 @@
     "symbol": "CATH",
     "name": "Global X S&P 500 Catholic Values ETF",
     "type": "ETF"
+  },
+  {
+    "symbol": "CATL",
+    "name": "Catalyst Partners Acquisition Corp",
+    "type": "EQUITY"
   },
   {
     "symbol": "CAVA",
@@ -1902,6 +2012,11 @@
   {
     "symbol": "CCU",
     "name": "Compania Cervecerias Unidas S.A.",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "CD",
+    "name": "Chindata Group Holdings Ltd",
     "type": "EQUITY"
   },
   {
@@ -2012,6 +2127,11 @@
   {
     "symbol": "CGNT",
     "name": "Cognyte Software Ltd.",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "CHAD",
+    "name": "DeFi Development Corp (related class)",
     "type": "EQUITY"
   },
   {
@@ -2315,9 +2435,24 @@
     "type": "EQUITY"
   },
   {
+    "symbol": "COIA",
+    "name": "ProShares Ultra COIN ETF",
+    "type": "ETF"
+  },
+  {
+    "symbol": "COIG",
+    "name": "Themes ETF Trust Leveraged Coinbase ETF",
+    "type": "ETF"
+  },
+  {
     "symbol": "COIN",
     "name": "Coinbase Global Inc",
     "type": "EQUITY"
+  },
+  {
+    "symbol": "COIX",
+    "name": "CORGI COIN 2X Daily Enhanced ETF",
+    "type": "ETF"
   },
   {
     "symbol": "COKE",
@@ -2347,6 +2482,11 @@
   {
     "symbol": "CONL",
     "name": "GraniteShares 2x Long COIN Daily ETF",
+    "type": "ETF"
+  },
+  {
+    "symbol": "CONX",
+    "name": "Direxion Daily COIN Bull 2X Shares",
     "type": "ETF"
   },
   {
@@ -2467,6 +2607,11 @@
   {
     "symbol": "CRH",
     "name": "CRH plc",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "CRKN",
+    "name": "Crown Electrokinetics Corp",
     "type": "EQUITY"
   },
   {
@@ -2890,6 +3035,11 @@
     "type": "ETF"
   },
   {
+    "symbol": "DFDV",
+    "name": "DeFi Development Corp",
+    "type": "EQUITY"
+  },
+  {
     "symbol": "DFH",
     "name": "Dream Finders Homes Inc.",
     "type": "EQUITY"
@@ -3152,6 +3302,11 @@
   {
     "symbol": "DTIL",
     "name": "Precision BioSciences Inc",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "DTSS",
+    "name": "Datasea Intelligent Technology Ltd",
     "type": "EQUITY"
   },
   {
@@ -3755,6 +3910,11 @@
     "type": "EQUITY"
   },
   {
+    "symbol": "ETRA",
+    "name": "Electra Therapeutics Inc",
+    "type": "EQUITY"
+  },
+  {
     "symbol": "ETSY",
     "name": "ETSY INC",
     "type": "EQUITY"
@@ -3995,6 +4155,11 @@
     "type": "EQUITY"
   },
   {
+    "symbol": "FAAS",
+    "name": "DigiAsia Corp",
+    "type": "EQUITY"
+  },
+  {
     "symbol": "FALN",
     "name": "ISHARES FALLEN ANGELS ETF",
     "type": "ETF"
@@ -4092,6 +4257,11 @@
   {
     "symbol": "FE",
     "name": "FirstEnergy Corp.",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "FEAM",
+    "name": "5E Advanced Materials Inc",
     "type": "EQUITY"
   },
   {
@@ -4245,6 +4415,16 @@
     "type": "ETF"
   },
   {
+    "symbol": "FLX",
+    "name": "BingEx Limited - American Depositary Shares",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "FM",
+    "name": "iShares Frontier and Select EM ETF",
+    "type": "ETF"
+  },
+  {
     "symbol": "FMS",
     "name": "Fresenius Medical Care AG & Co. KGAA",
     "type": "EQUITY"
@@ -4287,6 +4467,11 @@
   {
     "symbol": "FNLC",
     "name": "FIRST BANCORP INC/ME",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "FNUC",
+    "name": "Frontier Nuclear & Minerals",
     "type": "EQUITY"
   },
   {
@@ -4425,6 +4610,11 @@
     "type": "EQUITY"
   },
   {
+    "symbol": "FWDI",
+    "name": "Forward Industries Inc",
+    "type": "EQUITY"
+  },
+  {
     "symbol": "FWONA",
     "name": "Liberty Media Group - Class A",
     "type": "EQUITY"
@@ -4467,6 +4657,11 @@
   {
     "symbol": "GAP",
     "name": "Gap, Inc., The",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "GAUZ",
+    "name": "Gauzy Ltd",
     "type": "EQUITY"
   },
   {
@@ -4550,8 +4745,23 @@
     "type": "EQUITY"
   },
   {
+    "symbol": "GEMG",
+    "name": "LeverageShares 2X Long GEMI Daily ETF",
+    "type": "ETF"
+  },
+  {
+    "symbol": "GEMI",
+    "name": "Gemini Space Station Inc",
+    "type": "EQUITY"
+  },
+  {
     "symbol": "GEN",
     "name": "NortonLifeLock Inc",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "GENI",
+    "name": "Genius Sports Ltd",
     "type": "EQUITY"
   },
   {
@@ -4620,8 +4830,18 @@
     "type": "EQUITY"
   },
   {
+    "symbol": "GIPR",
+    "name": "Generation Income Properties Inc",
+    "type": "EQUITY"
+  },
+  {
     "symbol": "GIS",
     "name": "General Mills, Inc.",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "GIXI",
+    "name": "GIX Internet Ltd",
     "type": "EQUITY"
   },
   {
@@ -4642,6 +4862,11 @@
   {
     "symbol": "GLDM",
     "name": "SPDR Gold MiniShares Trust",
+    "type": "ETF"
+  },
+  {
+    "symbol": "GLGG",
+    "name": "LeverageShares 2X Long GLXY Daily ETF",
     "type": "ETF"
   },
   {
@@ -4683,6 +4908,11 @@
     "symbol": "GLW",
     "name": "Corning Inc.",
     "type": "EQUITY"
+  },
+  {
+    "symbol": "GLX",
+    "name": "CORGI GLXY 2X Daily Enhanced ETF",
+    "type": "ETF"
   },
   {
     "symbol": "GM",
@@ -4950,6 +5180,11 @@
     "type": "ETF"
   },
   {
+    "symbol": "GWAV",
+    "name": "Greenwave Technology Solutions Inc",
+    "type": "EQUITY"
+  },
+  {
     "symbol": "GWH",
     "name": "ESS Tech Inc",
     "type": "EQUITY"
@@ -5145,8 +5380,18 @@
     "type": "EQUITY"
   },
   {
+    "symbol": "HNUC",
+    "name": "Holtec Nuclear Corp",
+    "type": "EQUITY"
+  },
+  {
     "symbol": "HODL",
     "name": "VANECK BITCOIN TRUST",
+    "type": "ETF"
+  },
+  {
+    "symbol": "HODU",
+    "name": "Direxion Daily HOOD Bull 2X Shares",
     "type": "ETF"
   },
   {
@@ -5167,6 +5412,21 @@
   {
     "symbol": "HOOD",
     "name": "Robinhood Markets, Inc.",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "HOOG",
+    "name": "Themes ETF Trust Leveraged Robinhood ETF",
+    "type": "ETF"
+  },
+  {
+    "symbol": "HOOX",
+    "name": "Tidal Trust II Defiance Daily Target 2X Long HOOD ETF",
+    "type": "ETF"
+  },
+  {
+    "symbol": "HOST",
+    "name": "Host Digital",
     "type": "EQUITY"
   },
   {
@@ -5225,6 +5485,11 @@
     "type": "ETF"
   },
   {
+    "symbol": "HSDT",
+    "name": "Solana Co (Helius Medical Technologies)",
+    "type": "EQUITY"
+  },
+  {
     "symbol": "HSY",
     "name": "Hershey Company, The",
     "type": "EQUITY"
@@ -5257,6 +5522,11 @@
   {
     "symbol": "HUBS",
     "name": "HubSpot, Inc.",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "HUHU",
+    "name": "Huhutech International Group Inc",
     "type": "EQUITY"
   },
   {
@@ -5320,6 +5590,11 @@
     "type": "EQUITY"
   },
   {
+    "symbol": "HYMU",
+    "name": "IShares High Yield Muni Income Active  ETF",
+    "type": "ETF"
+  },
+  {
     "symbol": "HYS",
     "name": "Pimco 0-5 Year High Yield Corporate Bond Index ETF",
     "type": "ETF"
@@ -5370,6 +5645,11 @@
     "type": "ETF"
   },
   {
+    "symbol": "IBDP",
+    "name": "ISHARES IBONDS DEC 2024 TERM",
+    "type": "ETF"
+  },
+  {
     "symbol": "IBDQ",
     "name": "ISHARES IBONDS DEC 2025 TERM",
     "type": "ETF"
@@ -5410,6 +5690,11 @@
     "type": "ETF"
   },
   {
+    "symbol": "IBHD",
+    "name": "iShares iBonds 2024 Term High Yield and Income ETF",
+    "type": "ETF"
+  },
+  {
     "symbol": "IBHE",
     "name": "iShares iBonds 2025 Term High Yield and Income ETF",
     "type": "ETF"
@@ -5437,6 +5722,11 @@
   {
     "symbol": "IBHJ",
     "name": "iShares iBonds 2030 Term High Yield and Income ETF",
+    "type": "ETF"
+  },
+  {
+    "symbol": "IBIA",
+    "name": "iShares iBonds Oct 2024 Term TIPS ETF",
     "type": "ETF"
   },
   {
@@ -5480,6 +5770,11 @@
     "type": "EQUITY"
   },
   {
+    "symbol": "IBMM",
+    "name": "ISHARES IBONDS DEC 2024 TERM",
+    "type": "ETF"
+  },
+  {
     "symbol": "IBMN",
     "name": "ISHARES IBONDS DEC 2025 TERM",
     "type": "ETF"
@@ -5513,6 +5808,11 @@
     "symbol": "IBRX",
     "name": "ImmunityBio Inc.",
     "type": "EQUITY"
+  },
+  {
+    "symbol": "IBTE",
+    "name": "iShares iBonds Dec 2024 Term Treasury ETF",
+    "type": "ETF"
   },
   {
     "symbol": "IBTF",
@@ -5612,6 +5912,11 @@
   {
     "symbol": "IDRV",
     "name": "ISHARES SELF-DRIVING EV&TECH",
+    "type": "ETF"
+  },
+  {
+    "symbol": "IDSE",
+    "name": "Corgi Intl Dev EQ 15%-Sep",
     "type": "ETF"
   },
   {
@@ -5860,6 +6165,11 @@
     "type": "ETF"
   },
   {
+    "symbol": "IMCC",
+    "name": "IM Cannabis Corp",
+    "type": "EQUITY"
+  },
+  {
     "symbol": "IMCG",
     "name": "iShares Morningstar Mid-Cap Growth ETF",
     "type": "ETF"
@@ -5925,6 +6235,11 @@
     "type": "EQUITY"
   },
   {
+    "symbol": "INHD",
+    "name": "Inno Holdings Inc",
+    "type": "EQUITY"
+  },
+  {
     "symbol": "INKT",
     "name": "MINK THERAPEUTICS, INC.",
     "type": "EQUITY"
@@ -5967,6 +6282,16 @@
   {
     "symbol": "INTU",
     "name": "Intuit Inc.",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "INTZ",
+    "name": "Intrusion Inc",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "INV",
+    "name": "Innventure Inc",
     "type": "EQUITY"
   },
   {
@@ -6500,6 +6825,11 @@
     "type": "EQUITY"
   },
   {
+    "symbol": "JONE",
+    "name": "Jones Ventures Acquisition Corp",
+    "type": "EQUITY"
+  },
+  {
     "symbol": "JPM",
     "name": "JPMorgan Chase & Co.",
     "type": "EQUITY"
@@ -6513,6 +6843,16 @@
     "symbol": "JPST",
     "name": "JPMorgan Ultra-Short Income ETF",
     "type": "ETF"
+  },
+  {
+    "symbol": "JTTT",
+    "name": "JATT III Acquisition Corp",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "JXG",
+    "name": "JX Luxventure Group Inc",
+    "type": "EQUITY"
   },
   {
     "symbol": "JXI",
@@ -6538,6 +6878,16 @@
     "symbol": "KARS",
     "name": "KraneShares Electric Vehicle",
     "type": "ETF"
+  },
+  {
+    "symbol": "KATT",
+    "name": "T-Rex 2X Long Daily Target ETF",
+    "type": "ETF"
+  },
+  {
+    "symbol": "KAZR",
+    "name": "Skyline Builders Group",
+    "type": "EQUITY"
   },
   {
     "symbol": "KBE",
@@ -6573,6 +6923,16 @@
     "symbol": "KD",
     "name": "Kyndryl",
     "type": "EQUITY"
+  },
+  {
+    "symbol": "KDK",
+    "name": "Kodiak AI Inc",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "KEEX",
+    "name": "Defiance Daily Target 2X ETF",
+    "type": "ETF"
   },
   {
     "symbol": "KELYA",
@@ -6725,6 +7085,11 @@
     "type": "EQUITY"
   },
   {
+    "symbol": "KRRO",
+    "name": "Korro Bio Inc",
+    "type": "EQUITY"
+  },
+  {
     "symbol": "KSA",
     "name": "iShares MSCI Saudi Arabia ETF",
     "type": "ETF"
@@ -6770,6 +7135,11 @@
     "type": "ETF"
   },
   {
+    "symbol": "KXIN",
+    "name": "Kaixin Holdings",
+    "type": "EQUITY"
+  },
+  {
     "symbol": "LABD",
     "name": "Direxion Daily S&P Biotech Bear 3X Shares",
     "type": "ETF"
@@ -6787,6 +7157,11 @@
   {
     "symbol": "LAD",
     "name": "Lithia Motors Inc.",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "LAFAR",
+    "name": "Lafayette Acquisition Corp",
     "type": "EQUITY"
   },
   {
@@ -6880,6 +7255,11 @@
     "type": "EQUITY"
   },
   {
+    "symbol": "LGHL",
+    "name": "Lion Group Holding Ltd",
+    "type": "EQUITY"
+  },
+  {
     "symbol": "LGIH",
     "name": "LGI Homes, Inc.",
     "type": "EQUITY"
@@ -6923,6 +7303,11 @@
     "symbol": "LIT",
     "name": "Global X Lithium & Battery Tech ETF",
     "type": "ETF"
+  },
+  {
+    "symbol": "LKSPR",
+    "name": "Lake Superior Acquisition Corp Rights",
+    "type": "EQUITY"
   },
   {
     "symbol": "LLY",
@@ -7052,6 +7437,11 @@
   {
     "symbol": "LSCC",
     "name": "Lattice Semiconductor Corp",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "LSE",
+    "name": "Leishen Energy Holding Co Ltd",
     "type": "EQUITY"
   },
   {
@@ -7405,6 +7795,16 @@
     "type": "EQUITY"
   },
   {
+    "symbol": "MHX",
+    "name": "CORGI MARA 2X Daily Enhanced ETF",
+    "type": "ETF"
+  },
+  {
+    "symbol": "MIAC",
+    "name": "Meridian3 Industrials Acquisition Corp",
+    "type": "EQUITY"
+  },
+  {
     "symbol": "MIDD",
     "name": "Middleby Corp.",
     "type": "EQUITY"
@@ -7565,6 +7965,11 @@
     "type": "EQUITY"
   },
   {
+    "symbol": "MRAL",
+    "name": "GraniteShares 2x Long MARA Daily ETF",
+    "type": "ETF"
+  },
+  {
     "symbol": "MRK",
     "name": "Merck",
     "type": "EQUITY"
@@ -7572,6 +7977,11 @@
   {
     "symbol": "MRNA",
     "name": "Moderna, Inc.",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "MRNO",
+    "name": "Murano Global Investments plc",
     "type": "EQUITY"
   },
   {
@@ -7650,6 +8060,21 @@
     "type": "EQUITY"
   },
   {
+    "symbol": "MST",
+    "name": "Defiance Leveraged Long+Income MSTR ETF",
+    "type": "ETF"
+  },
+  {
+    "symbol": "MSTC",
+    "name": "CORGI MSTR 2X Daily Enhanced ETF",
+    "type": "ETF"
+  },
+  {
+    "symbol": "MSTP",
+    "name": "GraniteShares 2x Long MSTR Daily ETF",
+    "type": "ETF"
+  },
+  {
     "symbol": "MSTR",
     "name": "MicroStrategy Inc.",
     "type": "EQUITY"
@@ -7657,6 +8082,16 @@
   {
     "symbol": "MSTU",
     "name": "T-Rex 2X Long MSTR Daily Target ETF",
+    "type": "ETF"
+  },
+  {
+    "symbol": "MSTW",
+    "name": "Roundhill MSTR WeeklyPay ETF",
+    "type": "ETF"
+  },
+  {
+    "symbol": "MSTX",
+    "name": "Defiance Daily Target 2X Long MSTR ETF",
     "type": "ETF"
   },
   {
@@ -7672,6 +8107,11 @@
   {
     "symbol": "MT",
     "name": "ArcelorMittal SA",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "MTAK",
+    "name": "Market Technology Acquisition Corp",
     "type": "EQUITY"
   },
   {
@@ -7885,6 +8325,16 @@
     "type": "EQUITY"
   },
   {
+    "symbol": "NCPL",
+    "name": "Netcapital Inc",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "NCT",
+    "name": "Intercont (Cayman) Ltd",
+    "type": "EQUITY"
+  },
+  {
     "symbol": "NDAQ",
     "name": "Nasdaq OMX Group, Inc.",
     "type": "EQUITY"
@@ -7932,6 +8382,11 @@
   {
     "symbol": "NFE",
     "name": "New Fortress Energy Inc.",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "NFEGP",
+    "name": "New Fortress Energy Inc Preferred",
     "type": "EQUITY"
   },
   {
@@ -8100,6 +8555,11 @@
     "type": "EQUITY"
   },
   {
+    "symbol": "NSAI",
+    "name": "NorthStrive Acquisition Corp",
+    "type": "EQUITY"
+  },
+  {
     "symbol": "NSC",
     "name": "Norfolk Southern Corporation",
     "type": "EQUITY"
@@ -8107,6 +8567,11 @@
   {
     "symbol": "NSIT",
     "name": "Insight Enterprises Inc",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "NSRGY",
+    "name": "Nestle",
     "type": "EQUITY"
   },
   {
@@ -8260,6 +8725,11 @@
     "type": "EQUITY"
   },
   {
+    "symbol": "NWGL",
+    "name": "CL Workshop Group Limited - American Depositary Shares",
+    "type": "EQUITY"
+  },
+  {
     "symbol": "NWL",
     "name": "Newell Rubbermaid Inc.",
     "type": "EQUITY"
@@ -8310,8 +8780,18 @@
     "type": "EQUITY"
   },
   {
+    "symbol": "OCEA",
+    "name": "OCEAN BIOMEDICAL INC",
+    "type": "EQUITY"
+  },
+  {
     "symbol": "OCGN",
     "name": "Ocugen Inc",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "OCLT",
+    "name": "OceanLight Acquisition Corp",
     "type": "EQUITY"
   },
   {
@@ -8355,6 +8835,11 @@
     "type": "EQUITY"
   },
   {
+    "symbol": "OIG",
+    "name": "Orion180 Insurance Group",
+    "type": "EQUITY"
+  },
+  {
     "symbol": "OIH",
     "name": "VanEck Oil Services ETF",
     "type": "ETF"
@@ -8377,6 +8862,11 @@
   {
     "symbol": "OLN",
     "name": "Olin Corp.",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "OLOX",
+    "name": "Olenox Industries",
     "type": "EQUITY"
   },
   {
@@ -8670,6 +9160,11 @@
     "type": "ETF"
   },
   {
+    "symbol": "PDC",
+    "name": "Perpetuals.com Ltd",
+    "type": "EQUITY"
+  },
+  {
     "symbol": "PDD",
     "name": "Pinduoduo Inc",
     "type": "EQUITY"
@@ -8682,6 +9177,11 @@
   {
     "symbol": "PDO",
     "name": "PIMCO DYNAMIC INCOME OPPORT",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "PECR",
+    "name": "Peace Acquisition Corp",
     "type": "EQUITY"
   },
   {
@@ -9050,6 +9550,11 @@
     "type": "ETF"
   },
   {
+    "symbol": "PUR",
+    "name": "Defiance Daily Target 2X Long ETF",
+    "type": "ETF"
+  },
+  {
     "symbol": "PVH",
     "name": "PVH Corp.",
     "type": "EQUITY"
@@ -9137,6 +9642,16 @@
   {
     "symbol": "QMCO",
     "name": "QUANTUM CORP",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "QMLS",
+    "name": "QumulusAI",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "QNME",
+    "name": "Quanome Technologies",
     "type": "EQUITY"
   },
   {
@@ -9280,6 +9795,11 @@
     "type": "ETF"
   },
   {
+    "symbol": "RDWU",
+    "name": "T-REX 2X Long RDW Daily Target ETF",
+    "type": "ETF"
+  },
+  {
     "symbol": "REAL",
     "name": "RealReal, Inc.",
     "type": "EQUITY"
@@ -9288,6 +9808,11 @@
     "symbol": "REET",
     "name": "iShares Global REIT ETF",
     "type": "ETF"
+  },
+  {
+    "symbol": "REFR",
+    "name": "Research Frontiers Incorporated",
+    "type": "EQUITY"
   },
   {
     "symbol": "REG",
@@ -9410,8 +9935,18 @@
     "type": "EQUITY"
   },
   {
+    "symbol": "RML",
+    "name": "Resolution Minerals Ltd ADR",
+    "type": "EQUITY"
+  },
+  {
     "symbol": "RMNI",
     "name": "Rimini Street Inc",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "RNAQ",
+    "name": "Rainier Acquisition Corp",
     "type": "EQUITY"
   },
   {
@@ -9428,6 +9963,11 @@
     "symbol": "ROAD",
     "name": "CONSTRUCTION PARTNERS INC-A",
     "type": "EQUITY"
+  },
+  {
+    "symbol": "ROBN",
+    "name": "T-Rex 2X Long HOOD Daily Target ETF",
+    "type": "ETF"
   },
   {
     "symbol": "ROBO",
@@ -9492,6 +10032,11 @@
   {
     "symbol": "RTX",
     "name": "Raytheon Technologies Corporation",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "RUBI",
+    "name": "Rubico Inc",
     "type": "EQUITY"
   },
   {
@@ -9605,6 +10150,11 @@
     "type": "EQUITY"
   },
   {
+    "symbol": "SAMO",
+    "name": "Samos Energy Acquisition Corp",
+    "type": "EQUITY"
+  },
+  {
     "symbol": "SAN",
     "name": "Banco Santander, S.A.",
     "type": "EQUITY"
@@ -9632,6 +10182,11 @@
   {
     "symbol": "SAVA",
     "name": "Cassava Sciences Inc",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "SAX",
+    "name": "Saratoga Investment Corp",
     "type": "EQUITY"
   },
   {
@@ -9735,6 +10290,11 @@
     "type": "ETF"
   },
   {
+    "symbol": "SDEV",
+    "name": "Stablecoin Development Corp",
+    "type": "EQUITY"
+  },
+  {
     "symbol": "SDG",
     "name": "ISHARES TRUST ISHARES MSCI GLOBAL SUSTAINABLE DEVELOPMENT GOALS ETF",
     "type": "ETF"
@@ -9767,6 +10327,11 @@
   {
     "symbol": "SE",
     "name": "Sea Limited",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "SECZ",
+    "name": "Securitize Corp",
     "type": "EQUITY"
   },
   {
@@ -9847,6 +10412,11 @@
   {
     "symbol": "SGHC",
     "name": "SUPER GROUP SGHC LTD",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "SGLD",
+    "name": "Scorpio Gold Corp",
     "type": "EQUITY"
   },
   {
@@ -9950,6 +10520,11 @@
     "type": "ETF"
   },
   {
+    "symbol": "SION",
+    "name": "Sionna Therapeutics Inc",
+    "type": "EQUITY"
+  },
+  {
     "symbol": "SIRI",
     "name": "Sirius XM Holdings Inc",
     "type": "EQUITY"
@@ -10000,6 +10575,11 @@
     "type": "EQUITY"
   },
   {
+    "symbol": "SKYA",
+    "name": "SkyAI",
+    "type": "EQUITY"
+  },
+  {
     "symbol": "SKYT",
     "name": "SKYWATER TECHNOLOGY INC",
     "type": "EQUITY"
@@ -10043,6 +10623,11 @@
     "symbol": "SLN",
     "name": "SILENCE THERAPEUTICS PLC",
     "type": "EQUITY"
+  },
+  {
+    "symbol": "SLON",
+    "name": "ProShares Ultra Solana ETF",
+    "type": "ETF"
   },
   {
     "symbol": "SLP",
@@ -10160,6 +10745,11 @@
     "type": "EQUITY"
   },
   {
+    "symbol": "SMRX",
+    "name": "Corgi SMR 2x Daily ETF",
+    "type": "ETF"
+  },
+  {
     "symbol": "SMTC",
     "name": "Semtech Corp",
     "type": "EQUITY"
@@ -10168,6 +10758,16 @@
     "symbol": "SMTI",
     "name": "SANARA MEDTECH INC",
     "type": "EQUITY"
+  },
+  {
+    "symbol": "SMU",
+    "name": "Tradr 2X Long SMR Daily ETF",
+    "type": "ETF"
+  },
+  {
+    "symbol": "SMUP",
+    "name": "T-REX 2X Long SMR Daily Target ETF",
+    "type": "ETF"
   },
   {
     "symbol": "SMWB",
@@ -10187,6 +10787,21 @@
   {
     "symbol": "SNCR",
     "name": "Synchronoss Technologies, Inc.",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "SNDC",
+    "name": "CORGI SNDK 2X Daily Enhanced ETF",
+    "type": "ETF"
+  },
+  {
+    "symbol": "SNDG",
+    "name": "LS 2X Long SNDK Daily ETF",
+    "type": "ETF"
+  },
+  {
+    "symbol": "SNDK",
+    "name": "Sandisk Corporation - Common Stock When-Issued",
     "type": "EQUITY"
   },
   {
@@ -10220,6 +10835,11 @@
     "type": "EQUITY"
   },
   {
+    "symbol": "SNXX",
+    "name": "Tradr 2X Long SNDK Daily ETF",
+    "type": "ETF"
+  },
+  {
     "symbol": "SO",
     "name": "Southern Company",
     "type": "EQUITY"
@@ -10245,8 +10865,18 @@
     "type": "EQUITY"
   },
   {
+    "symbol": "SOLT",
+    "name": "Volatility Shares Trust 2X Solana ETF",
+    "type": "ETF"
+  },
+  {
     "symbol": "SOLV",
     "name": "SOLVENTUM CORP",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "SONM",
+    "name": "DNA X",
     "type": "EQUITY"
   },
   {
@@ -10255,8 +10885,18 @@
     "type": "EQUITY"
   },
   {
+    "symbol": "SOS",
+    "name": "SOS Ltd",
+    "type": "EQUITY"
+  },
+  {
     "symbol": "SOUN",
     "name": "SOUNDHOUND AI INC",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "SOWG",
+    "name": "Sow Good Inc",
     "type": "EQUITY"
   },
   {
@@ -10645,6 +11285,16 @@
     "type": "ETF"
   },
   {
+    "symbol": "SUIG",
+    "name": "Sui Group Holdings Ltd",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "SUIL",
+    "name": "2X Sui ETF",
+    "type": "ETF"
+  },
+  {
     "symbol": "SUNS",
     "name": "SUNRISE REALTY TRUST INC",
     "type": "EQUITY"
@@ -10685,6 +11335,11 @@
     "type": "ETF"
   },
   {
+    "symbol": "SVRN",
+    "name": "SVRN (fka Oceanpal Inc)",
+    "type": "EQUITY"
+  },
+  {
     "symbol": "SWBI",
     "name": "Smith & Wesson Brands",
     "type": "EQUITY"
@@ -10707,6 +11362,11 @@
   {
     "symbol": "SWKS",
     "name": "Skyworks Solutions Inc.",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "SWRD",
+    "name": "Stewards",
     "type": "EQUITY"
   },
   {
@@ -10990,6 +11650,11 @@
     "type": "EQUITY"
   },
   {
+    "symbol": "TJGC",
+    "name": "TJGC Group Ltd",
+    "type": "EQUITY"
+  },
+  {
     "symbol": "TJX",
     "name": "TJX Companies, Inc., The",
     "type": "EQUITY"
@@ -11007,6 +11672,11 @@
   {
     "symbol": "TKO.OLD",
     "name": "World Wrestling Entertainment Inc.",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "TLAC",
+    "name": "Three Lions Acquisition Corp",
     "type": "EQUITY"
   },
   {
@@ -11080,6 +11750,11 @@
     "type": "ETF"
   },
   {
+    "symbol": "TNMG",
+    "name": "TNL Mediagene",
+    "type": "EQUITY"
+  },
+  {
     "symbol": "TNXP",
     "name": "Tonix Pharmaceuticals Holding Corp.",
     "type": "EQUITY"
@@ -11092,6 +11767,11 @@
   {
     "symbol": "TOP",
     "name": "TOP Financial Group Ltd",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "TOPP",
+    "name": "Toppoint Holdings Inc",
     "type": "EQUITY"
   },
   {
@@ -11142,6 +11822,11 @@
   {
     "symbol": "TR",
     "name": "Tootsie Roll Industries Inc",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "TRBG",
+    "name": "TurboGen Ltd",
     "type": "EQUITY"
   },
   {
@@ -11197,6 +11882,11 @@
   {
     "symbol": "TRUE.OLD",
     "name": "TrueCar, Inc.",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "TRUG",
+    "name": "TruGolf Holdings Inc",
     "type": "EQUITY"
   },
   {
@@ -11358,6 +12048,16 @@
     "symbol": "TXRH",
     "name": "Texas Roadhouse, Inc.",
     "type": "EQUITY"
+  },
+  {
+    "symbol": "TXXH",
+    "name": "21Shares 2X Long HYPE ETF",
+    "type": "ETF"
+  },
+  {
+    "symbol": "TXXS",
+    "name": "21Shares 2X Long SUI ETF",
+    "type": "ETF"
   },
   {
     "symbol": "TYL",
@@ -11590,6 +12290,11 @@
     "type": "ETF"
   },
   {
+    "symbol": "USDE",
+    "name": "StablecoinX Inc Class A",
+    "type": "EQUITY"
+  },
+  {
     "symbol": "USHY",
     "name": "iShares Broad USD High Yield Corporate Bond ETF",
     "type": "ETF"
@@ -11672,6 +12377,11 @@
   {
     "symbol": "UWM",
     "name": "ProShares Ultra Russell2000",
+    "type": "ETF"
+  },
+  {
+    "symbol": "UXRP",
+    "name": "ProShares Ultra XRP ETF",
     "type": "ETF"
   },
   {
@@ -11763,6 +12473,11 @@
     "symbol": "VEA",
     "name": "FTSE Developed Market Index ETF Vanguard",
     "type": "ETF"
+  },
+  {
+    "symbol": "VEEA",
+    "name": "Veea Inc",
+    "type": "EQUITY"
   },
   {
     "symbol": "VEEV",
@@ -11922,6 +12637,11 @@
   {
     "symbol": "VIV",
     "name": "Telefonica Brasil, S.A.",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "VIVS",
+    "name": "VivoSim Labs Inc",
     "type": "EQUITY"
   },
   {
@@ -12195,6 +12915,11 @@
     "type": "EQUITY"
   },
   {
+    "symbol": "VWAV",
+    "name": "VisionWave Holdings Inc",
+    "type": "EQUITY"
+  },
+  {
     "symbol": "VWO",
     "name": "Emerging Markets Stock Idx ETF Vanguard",
     "type": "ETF"
@@ -12252,6 +12977,11 @@
   {
     "symbol": "WBD",
     "name": "Discovery Inc.",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "WCCB",
+    "name": "West Coast Community Bancorp",
     "type": "EQUITY"
   },
   {
@@ -12342,6 +13072,11 @@
   {
     "symbol": "WGS",
     "name": "GeneDx Holdings Corp",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "WHLR",
+    "name": "Wheeler Real Estate Investment Trust Inc",
     "type": "EQUITY"
   },
   {
@@ -12475,6 +13210,11 @@
     "type": "EQUITY"
   },
   {
+    "symbol": "WZRD",
+    "name": "Opportunistic Trader",
+    "type": "EQUITY"
+  },
+  {
     "symbol": "XAR",
     "name": "S&P Aerospace Defense SPDR ETF",
     "type": "ETF"
@@ -12498,6 +13238,11 @@
     "symbol": "XDTE",
     "name": "Roundhill S&P 500 0DTE Covered Call Strategy ETF",
     "type": "ETF"
+  },
+  {
+    "symbol": "XENE",
+    "name": "Xenon Pharmaceuticals Inc",
+    "type": "EQUITY"
   },
   {
     "symbol": "XES",
@@ -12525,6 +13270,11 @@
     "type": "EQUITY"
   },
   {
+    "symbol": "XIII",
+    "name": "Churchill Capital Corp XIII",
+    "type": "EQUITY"
+  },
+  {
     "symbol": "XITK",
     "name": "SPDR FACTSET INNOVATIVE TECH",
     "type": "ETF"
@@ -12538,6 +13288,11 @@
     "symbol": "XLC",
     "name": "Communication Services Select Sector SPDR ETF",
     "type": "ETF"
+  },
+  {
+    "symbol": "XLCU",
+    "name": "MicroSectors 3X Long Communication Services XLC ETNs",
+    "type": "ETN"
   },
   {
     "symbol": "XLE",
@@ -12568,6 +13323,11 @@
     "symbol": "XLP",
     "name": "Consumer Staples Select Sector SPDR",
     "type": "ETF"
+  },
+  {
+    "symbol": "XLPU",
+    "name": "MicroSectors 3X Long Consumer Staples XLP ETNs",
+    "type": "ETN"
   },
   {
     "symbol": "XLRE",
@@ -12665,6 +13425,11 @@
     "type": "EQUITY"
   },
   {
+    "symbol": "XRPT",
+    "name": "2X XRP ETF",
+    "type": "ETF"
+  },
+  {
     "symbol": "XRT",
     "name": "S&P Retail SPDR ETF",
     "type": "ETF"
@@ -12688,6 +13453,11 @@
     "symbol": "XT",
     "name": "iShares Exponential Technologies ETF",
     "type": "ETF"
+  },
+  {
+    "symbol": "XTER",
+    "name": "Karman Line Acquisition Corp",
+    "type": "EQUITY"
   },
   {
     "symbol": "XTIA",
@@ -12750,6 +13520,11 @@
     "type": "EQUITY"
   },
   {
+    "symbol": "YFOR",
+    "name": "YYForce Inc",
+    "type": "EQUITY"
+  },
+  {
     "symbol": "YI",
     "name": "111 Inc",
     "type": "EQUITY"
@@ -12758,6 +13533,11 @@
     "symbol": "YINN",
     "name": "Direxion Daily FTSE China Bull 3x Shares ETF",
     "type": "ETF"
+  },
+  {
+    "symbol": "YMAB",
+    "name": "Y-mAbs Therapeutics Inc.",
+    "type": "EQUITY"
   },
   {
     "symbol": "YMAG",
@@ -12867,6 +13647,11 @@
   {
     "symbol": "ZS",
     "name": "Zscaler, Inc.",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "ZTG",
+    "name": "Zenta Group Co Ltd",
     "type": "EQUITY"
   },
   {
