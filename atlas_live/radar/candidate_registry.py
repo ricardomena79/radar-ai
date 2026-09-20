@@ -400,6 +400,15 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         # `NULL` cuando no fue evaluable (ver `pm_early_signal_state_at_detection`).
         _ensure_column(conn, "candidate_detection", "pm_early_signal_at_detection", "REAL")
         _ensure_column(conn, "candidate_detection", "pm_early_signal_state_at_detection", "TEXT")
+        # bid_ask_size_ratio/imbalance (2026-09-20, autorizado explícitamente
+        # -- "primero solo como indicador de observación"): derivados de
+        # `quote.bidsize`/`quote.asksize` (capturados en el commit `0fdb0e3`),
+        # congelados tal como estaban en el momento exacto de la detección --
+        # mismo criterio "estado A, inmutable" que `spread_pct_at_detection`.
+        # Puramente informativo: ningún gate, `alert_stage`, `priority_classifier`,
+        # aprendizaje ni predicción de magnitud lee estas columnas.
+        _ensure_column(conn, "candidate_detection", "bid_ask_size_ratio_at_detection", "REAL")
+        _ensure_column(conn, "candidate_detection", "bid_ask_size_imbalance_at_detection", "REAL")
         # Fuente de predicted_pct (2026-09-13, autorizado explícitamente tras
         # validación fuera de muestra tres-cortes): "external" (Base
         # Histórica, `historical_scoring.py`, comportamiento de siempre) o
@@ -503,6 +512,8 @@ def record_detection(
     pm_universe_size_at_detection: Optional[int] = None, pm_volume_at_detection: Optional[int] = None,
     pm_dollar_volume_at_detection: Optional[float] = None,
     possible_split_flag_at_detection: Optional[str] = None, possible_split_ratio_at_detection: Optional[float] = None,
+    bid_ask_size_ratio_at_detection: Optional[float] = None,
+    bid_ask_size_imbalance_at_detection: Optional[float] = None,
 ) -> bool:
     """Registra la primera detección. Devuelve True si fue nueva (INSERT
     real), False si ya existía (idempotente, nunca se pisa).
@@ -528,7 +539,16 @@ def record_detection(
     `INSERT` escribe `NULL` sin necesidad de lógica especial. Los 3
     `pm_*_at_detection` restantes son puramente de reproducibilidad -- con
     qué universo/volumen se calculó, para poder auditar el número después
-    sin tener que confiar ciegamente en él."""
+    sin tener que confiar ciegamente en él.
+
+    `bid_ask_size_ratio_at_detection`/`bid_ask_size_imbalance_at_detection`
+    (2026-09-20, autorizado explícitamente -- indicador de observación):
+    derivados de `quote.bidsize`/`quote.asksize`, congelados tal cual en el
+    momento de la detección -- mismo criterio "estado A, inmutable" que
+    `spread_pct_at_detection`. `None` cuando `bidsize`/`asksize` no estaban
+    disponibles o la división no era calculable (nunca un valor inventado).
+    Puramente informativo -- ningún gate, `alert_stage`, `priority_classifier`,
+    aprendizaje ni predicción de magnitud lee estas columnas."""
     with _connect() as conn:
         cur = conn.execute(
             """INSERT OR IGNORE INTO candidate_detection
@@ -539,8 +559,9 @@ def record_detection(
                 premarket_volume_percentile_at_detection, premarket_volume_percentile_state_at_detection,
                 premarket_volume_acceleration_at_detection, premarket_volume_acceleration_state_at_detection,
                 pm_universe_size_at_detection, pm_volume_at_detection, pm_dollar_volume_at_detection,
-                possible_split_flag_at_detection, possible_split_ratio_at_detection)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                possible_split_flag_at_detection, possible_split_ratio_at_detection,
+                bid_ask_size_ratio_at_detection, bid_ask_size_imbalance_at_detection)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (ticker, market_date, session, detected_at, sweep_id, price_at_detection,
              change_pct_at_detection, volume_at_detection, average_volume_at_detection,
              relative_volume_at_detection, dollar_volume_at_detection,
@@ -549,7 +570,8 @@ def record_detection(
              pm_percentile_at_detection, pm_percentile_state_at_detection,
              pm_acceleration_at_detection, pm_acceleration_state_at_detection,
              pm_universe_size_at_detection, pm_volume_at_detection, pm_dollar_volume_at_detection,
-             possible_split_flag_at_detection, possible_split_ratio_at_detection),
+             possible_split_flag_at_detection, possible_split_ratio_at_detection,
+             bid_ask_size_ratio_at_detection, bid_ask_size_imbalance_at_detection),
         )
         conn.commit()
         return cur.rowcount > 0
@@ -1069,6 +1091,13 @@ def live_opportunities(market_date: str) -> List[Dict[str, Any]]:
             # cual desde `server.py` -- este campo ya se guardaba en
             # `candidate_detection`, solo faltaba exponerlo acá).
             "dollar_volume_at_detection": d.get("dollar_volume_at_detection"),
+            # bid_ask_size_ratio/imbalance (2026-09-20, autorizado
+            # explícitamente -- indicador de observación): puramente
+            # informativo, congelado tal cual en la detección -- ningún
+            # gate/alert_stage/priority_classifier/aprendizaje/predicción de
+            # magnitud lee estos 2 campos.
+            "bid_ask_size_ratio_at_detection": d.get("bid_ask_size_ratio_at_detection"),
+            "bid_ask_size_imbalance_at_detection": d.get("bid_ask_size_imbalance_at_detection"),
         })
     return out
 

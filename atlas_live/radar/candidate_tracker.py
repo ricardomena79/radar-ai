@@ -499,6 +499,26 @@ def process_sweep(
                 mid = (quote.bid + quote.ask) / 2
                 spread_pct_at_detection = round((quote.ask - quote.bid) / mid * 100, 4) if mid else None
 
+            # bid_ask_size_ratio/imbalance (2026-09-20, autorizado
+            # explícitamente -- "primero solo como indicador de
+            # observación"): derivados de quote.bidsize/quote.asksize
+            # (capturados en el commit 0fdb0e3). Puramente diagnóstico,
+            # calculados desde `quote` (nunca desde `current`, el
+            # SweepSnapshot que sí leen las puertas) -- ningún gate,
+            # alert_stage, priority_classifier, aprendizaje ni predicción
+            # de magnitud los usa. Guardas explícitas contra división por
+            # cero -- nunca un valor inventado cuando no hay dato.
+            bid_ask_size_ratio_at_detection = None
+            bid_ask_size_imbalance_at_detection = None
+            if quote.bidsize is not None and quote.asksize is not None:
+                if quote.asksize > 0:
+                    bid_ask_size_ratio_at_detection = round(quote.bidsize / quote.asksize, 4)
+                denom = quote.bidsize + quote.asksize
+                if denom > 0:
+                    bid_ask_size_imbalance_at_detection = round(
+                        (quote.bidsize - quote.asksize) / denom, 4
+                    )
+
             # PM-RVOL Fase 2 -- señales calculadas con `current`/`prior_history`,
             # los MISMOS objetos que `evaluate_all_gates()` ya usó arriba en
             # este barrido (nunca recalculadas después, nunca desde otra
@@ -531,6 +551,8 @@ def process_sweep(
                 # Nunca leído por `gates`/`current` (SweepSnapshot) arriba.
                 possible_split_flag_at_detection=quote.possible_split_flag,
                 possible_split_ratio_at_detection=quote.possible_split_ratio,
+                bid_ask_size_ratio_at_detection=bid_ask_size_ratio_at_detection,
+                bid_ask_size_imbalance_at_detection=bid_ask_size_imbalance_at_detection,
             )
             if es_nueva:
                 nuevas.append(symbol)
