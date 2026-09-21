@@ -180,28 +180,31 @@ def run_sweep_once() -> Optional[float]:
             reg.set_meta(state="ERROR", ultimo_error="TRADIER_API_TOKEN no configurado -- radar no puede operar sin Tradier")
             return None
 
-        # Universo de mercado completo (2026-08-17, Fase 5 -- Racional ya
-        # NO limita qué escanea el radar, solo etiqueta operabilidad en
-        # lectura). Misma fuente/clasificación ya aprobada y probada en
-        # scripts/build_historical_reference.py: solo EQUITY, sin ETFs ni
-        # derivados mezclados en la misma detección.
+        # REVERSIÓN a Racional-only (2026-09-21, autorizado explícitamente
+        # -- "que haga el barrido con las de Racional nomás. para qué
+        # otras si no puedo comprar"): reemplaza el universo AMPLIADO de
+        # Fase 5/Fase 1 (arriba, ver historial) por el catálogo Racional
+        # puro (`broad_universe.racional_symbols()`, ~2.734 símbolos hoy).
         #
-        # Excepción quirúrgica (2026-08-20, pedido explícito del usuario,
-        # caso real MSTU/ETHU/CONL/BITX): se suman los ETFs APALANCADOS
-        # (1x/2x/3x sobre una sola acción/cripto, ver
-        # `broad_universe.is_leveraged_etf_name`) -- amplifican
-        # directamente el movimiento de su subyacente, la categoría exacta
-        # que causó una brecha real (un rally de cripto se movió sobre
-        # todo a través de estos ETFs, invisibles para el radar). El resto
-        # de los ~4.780 ETFs (bonos, índices pasivos, sectoriales sin
-        # apalancamiento) sigue excluido, sin cambios -- no se toca
-        # `classify_instrument_type()` ni la Base Histórica.
-        meta = broad_universe.fetch_broad_universe_meta()
-        symbols = sorted(
-            s for s, info in meta.items()
-            if info.get("type") == "EQUITY"
-            or (info.get("type") == "ETF" and broad_universe.is_leveraged_etf_name(info.get("name")))
-        )
+        # Motivo real, medido en producción: con el universo ampliado
+        # (~6.600 símbolos), un barrido completo tardaba ~93s y el ciclo
+        # completo (barrido + espera auto-ajustada) llegaba a ~213s --
+        # por encima de PRICE_MAX_AGE_SECONDS=180s (scan_worker.py), así
+        # que las candidatas oscilaban entre VENCIDO/OK constantemente,
+        # vaciando el panel de Oportunidades de forma intermitente sin
+        # ser un error real. Con ~2.734 símbolos (el tamaño histórico ya
+        # medido: ~15s por barrido completo), el ciclo vuelve a quedar
+        # muy por debajo del umbral.
+        #
+        # Alcance de este cambio, tal como se pidió: SOLO afecta qué
+        # símbolos detecta/procesa el radar (y por lo tanto qué alimenta
+        # `/api/radar-oportunidades`) -- Mercado (`market_view.py`) y ETFs
+        # Normales (`etf_normal_view.py`) ya usaban su propio universo
+        # Racional por separado, sin cambios acá. `candidate_gates.py`,
+        # `alert_stage.py`, `priority_classifier.py`,
+        # `atlas_decision_core.py`: sin tocar -- solo cambia QUÉ llega al
+        # mismo pipeline de siempre, nunca cómo se evalúa.
+        symbols = sorted(broad_universe.racional_symbols())
         market_date = market_hours.market_date()
 
         t0 = time.time()

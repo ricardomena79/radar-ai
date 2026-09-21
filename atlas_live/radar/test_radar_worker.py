@@ -163,33 +163,24 @@ def test_un_barrido_roto_no_tumba_el_mecanismo():
         _restore()
 
 
-def test_sweep_usa_universo_completo_equity_mas_etfs_apalancados():
-    """Fase 5 (2026-08-17) -- el barrido ya NO se limita al universo
-    Racional: usa fetch_broad_universe_meta() filtrado a EQUITY (misma
-    clasificación ya aprobada en build_historical_reference.py). ETFs y
-    derivados quedan afuera de la detección, CON UNA EXCEPCIÓN (2026-08-20,
-    caso real MSTU): los ETFs apalancados (1x/2x/3x sobre una sola acción/
-    cripto) sí se incluyen -- amplifican directamente su subyacente. Un
-    ETF sin ese patrón en el nombre (QQQ) sigue excluido, sin cambios."""
+def test_sweep_usa_solo_el_universo_racional():
+    """REVERSIÓN a Racional-only (2026-09-21, autorizado explícitamente --
+    "que haga el barrido con las de Racional nomás. para qué otras si no
+    puedo comprar"): el barrido ya NO usa el universo AMPLIADO de Fase 5/
+    Fase 1 (fetch_broad_universe_meta()/build_expanded_universe()) -- usa
+    exclusivamente broad_universe.racional_symbols(), ordenado. Motivo
+    real medido: con el universo ampliado (~6.600 símbolos) el ciclo
+    completo (barrido+espera) superaba el umbral de frescura de 180s
+    (PRICE_MAX_AGE_SECONDS), vaciando Oportunidades de forma intermitente."""
     _fresh()
     saved = _install_fakes(session="regular", quotes={})
-    orig_meta = w.broad_universe.fetch_broad_universe_meta
     orig_racional = w.broad_universe.racional_symbols
     captured = {}
-    w.broad_universe.fetch_broad_universe_meta = lambda: {
-        "AAPL": {"type": "EQUITY", "name": "Apple Inc."},
-        "ZZZZ": {"type": "EQUITY", "name": "ZZZZ Corp"},
-        "QQQ": {"type": "ETF", "name": "Invesco QQQ Trust Series 1"},
-        "MSTU": {"type": "ETF", "name": "T-Rex 2X Long MSTR Daily Target ETF"},
-        "XYZW": {"type": "WARRANT", "name": "XYZ Corp Warrants"},
-    }
-    # Fase 1 de ampliación (2026-09-07): run_sweep_once() ahora también
-    # llama a racional_symbols() por dentro de build_expanded_universe() --
-    # se mockea vacío acá para que esta prueba siga aislada y siga
-    # verificando EXCLUSIVAMENTE el filtro de tipo del universo base
-    # (QQQ/XYZW afuera, MSTU adentro por apalancado). El comportamiento de
-    # unión con Racional se prueba aparte, en los tests de abajo.
-    w.broad_universe.racional_symbols = lambda: set()
+    # fetch_broad_universe_meta() deliberadamente NO se mockea a nada
+    # específico -- run_sweep_once() ya no la llama en absoluto, así que
+    # si algún cambio futuro la reintrodujera por error, este test fallaría
+    # al no encontrar el símbolo esperado (ANY_META_ONLY) en el resultado.
+    w.broad_universe.racional_symbols = lambda: {"ZZZZ", "AAPL", "MSTU"}
     orig_fetch = w.fetch_universe_quotes
 
     def _capturing_fetch(symbols, tradier_provider=None, fallback_provider=None):
@@ -199,11 +190,11 @@ def test_sweep_usa_universo_completo_equity_mas_etfs_apalancados():
     w.fetch_universe_quotes = _capturing_fetch
     try:
         w.run_sweep_once()
-        # EQUITY + el ETF apalancado (MSTU), ordenado -- QQQ (ETF normal) y
-        # XYZW (warrant) siguen afuera.
+        # Exactamente racional_symbols(), ordenado -- sin unión con ningún
+        # universo ampliado.
         assert captured["symbols"] == ["AAPL", "MSTU", "ZZZZ"]
     finally:
-        w.broad_universe.fetch_broad_universe_meta = orig_meta
+        w.broad_universe.racional_symbols = orig_racional
         w.broad_universe.racional_symbols = orig_racional
         w.fetch_universe_quotes = orig_fetch
         _uninstall_fakes(saved)
