@@ -64,10 +64,13 @@ META_CONFIANZA_PCT = 80.0
 META_MUESTRA_MINIMA = 500
 
 # Fase de observación de bid_ask_size_imbalance (2026-09-20, autorizado
-# explícitamente): objetivo fijo de 200 casos válidos antes de siquiera
-# evaluar si el indicador aporta algo -- NUNCA se usa en ranking/decisión/
-# alert_stage/aprendizaje mientras tanto, ver `bid_ask_size_observation_status()`.
-BID_ASK_SIZE_OBSERVATION_TARGET = 200
+# explícitamente; objetivo subido de 200 a 1.000, luego a 10.000 y luego a
+# 20.000 el 2026-09-22, todos autorizados explícitamente -- los pisos
+# anteriores se cruzaron muy rápido; 20.000 exige varios días reales de
+# acumulación antes de evaluar si el indicador aporta algo) -- NUNCA se usa
+# en ranking/decisión/alert_stage/aprendizaje mientras tanto, ver
+# `bid_ask_size_observation_status()`.
+BID_ASK_SIZE_OBSERVATION_TARGET = 20000
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS candidate_detection (
