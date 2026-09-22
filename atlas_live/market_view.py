@@ -91,6 +91,16 @@ SPARKLINE_MAX_POINTS = int(_env_float("ATLAS_MARKET_VIEW_SPARKLINE_POINTS", 60))
 # auditando tal cual).
 MERCADO_TOP_N = int(_env_float("ATLAS_MERCADO_TOP_N", 100))
 
+# Plausibilidad de previous_close (2026-09-22, autorizado explícitamente --
+# caso real VWAV: Tradier devolvió prevclose=$0,31 en vez de ~$6,20,
+# produciendo cambio_pct=+1.825% absurdo). previous_close es el cierre del
+# día ANTERIOR -- un valor fijo que, dentro del mismo día, nunca debería
+# cambiar de un ciclo a otro. Tolerancia generosa (nunca 0%, para no
+# marcar como sospechoso el redondeo normal de punto flotante entre
+# ciclos) pero muy por debajo de cualquier movimiento real posible de un
+# valor que se supone constante.
+PREVCLOSE_IMPLAUSIBLE_TOLERANCE_PCT = _env_float("ATLAS_MERCADO_PREVCLOSE_TOLERANCE_PCT", 2.0)
+
 # Multi-fuente (2026-08-31, autorizado explícitamente): Tradier sigue
 # siendo la fuente principal para el universo completo -- Yahoo/Finnhub
 # SOLO se consultan para los símbolos que Tradier devolvió stale/sin dato
@@ -595,10 +605,31 @@ def _run_cycle_body(symbols_override: Optional[List[str]] = None) -> float:
         if resuelto.source == "cache":
             cache_used_count += 1
 
+        # Plausibilidad de `previous_close` (2026-09-22, caso real VWAV --
+        # Tradier devolvió prevclose=$0,31 en vez de ~$6,20, produciendo un
+        # "+1.825%" absurdo, coherente con su propio last/prevclose pero
+        # roto en el origen). `previous_close` es el cierre del día
+        # ANTERIOR -- un valor fijo que, dentro del mismo día, NUNCA debería
+        # cambiar de un ciclo a otro. Si el nuevo valor difiere del último
+        # `previous_close` genuinamente fresco que Mercado ya tenía
+        # cacheado para este símbolo por más de `PREVCLOSE_IMPLAUSIBLE_TOLERANCE_PCT`,
+        # se trata como no confiable -- nunca se inventa un % corregido,
+        # se muestra "sin dato" (change_abs/change_pct en None), igual
+        # criterio que el resto del proyecto ("nunca inventar, declarar
+        # explícitamente"). El precio (`price`) NO se toca -- viene de
+        # `last`/bid-ask, una fuente independiente del `prevclose` roto.
+        prevclose_confiable = True
+        if resuelto.previous_close is not None and cached and cached.get("previous_close"):
+            prev_cached = cached["previous_close"]
+            diff_pct = abs(resuelto.previous_close - prev_cached) / prev_cached * 100
+            if diff_pct > PREVCLOSE_IMPLAUSIBLE_TOLERANCE_PCT:
+                prevclose_confiable = False
+
         change_abs = (
             round(resuelto.price - resuelto.previous_close, 4)
-            if resuelto.price is not None and resuelto.previous_close is not None else None
+            if resuelto.price is not None and resuelto.previous_close is not None and prevclose_confiable else None
         )
+        change_pct_final = resuelto.change_pct if prevclose_confiable else None
         data_age_seconds = None
         if resuelto.timestamp is not None:
             ts = resuelto.timestamp if resuelto.timestamp.tzinfo else resuelto.timestamp.replace(tzinfo=timezone.utc)
@@ -618,11 +649,15 @@ def _run_cycle_body(symbols_override: Optional[List[str]] = None) -> float:
             # Cache de último dato conocido -- SOLO se actualiza con un
             # resultado genuinamente fresco (nunca con "cache"/"sin_dato"),
             # para que no se retroalimente a sí mismo con datos viejos.
+            # `previous_close` cacheado NUNCA se pisa con un valor marcado
+            # no confiable -- así el próximo ciclo sigue comparando contra
+            # el último `prevclose` bueno conocido, en vez de quedar
+            # "envenenado" por el dato roto de este ciclo.
             with _last_known_lock:
                 _last_known_by_symbol[original] = {
                     "price": resuelto.price,
-                    "previous_close": resuelto.previous_close,
-                    "change_pct": resuelto.change_pct,
+                    "previous_close": resuelto.previous_close if prevclose_confiable else (cached or {}).get("previous_close"),
+                    "change_pct": change_pct_final,
                     "price_basis": resuelto.price_basis,
                     "source": resuelto.source,
                     "cached_at": now_utc,
@@ -633,7 +668,7 @@ def _run_cycle_body(symbols_override: Optional[List[str]] = None) -> float:
             "name": name_by_original.get(original, original),
             "price": resuelto.price,
             "change_abs": change_abs,
-            "change_pct": resuelto.change_pct,
+            "change_pct": change_pct_final,
             "price_is_stale": resuelto.is_stale,
             "data_age_seconds": data_age_seconds,
             "sparkline": sparkline,
@@ -641,6 +676,7 @@ def _run_cycle_body(symbols_override: Optional[List[str]] = None) -> float:
             "source": resuelto.source,
             "session_dato": resuelto.session,
             "overnight_disponible": resuelto.overnight_disponible,
+            "prevclose_confiable": prevclose_confiable,
         })
 
     # Ranking -- siempre descendente. Prioridad FRESCO > STALE > SIN_DATO

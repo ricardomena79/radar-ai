@@ -183,6 +183,54 @@ def test_D_ranking_se_recalcula_con_precios_nuevos(monkeypatch):
     assert [r["symbol"] for r in mv.get_market_snapshot()["rows"]] == ["A", "B"]
 
 
+# --- D2: previous_close implausible (caso real VWAV, 2026-09-22) ---
+
+def test_D2_prevclose_implausible_muestra_sin_dato_no_el_pct_absurdo(monkeypatch):
+    mv._last_known_by_symbol.clear()
+    # Ciclo 1: prevclose real y confiable ($6.20) -- se cachea.
+    quotes_ciclo1 = {"VWAV": _FakeQuote("VWAV", 5.97, 5.66 / 6.20 * 100, previous_close=6.20)}
+    provider = _patch(monkeypatch, ["VWAV"], quotes_ciclo1)
+    mv.run_market_cycle_once()
+    fila1 = mv.get_market_snapshot()["rows"][0]
+    assert fila1["prevclose_confiable"] is True
+    assert fila1["change_pct"] is not None
+
+    # Ciclo 2: mismo precio actual, pero Tradier ahora devuelve un
+    # prevclose roto ($0.31 -- caso real, produce un +1.825% absurdo) --
+    # previous_close cambió de un ciclo a otro para el MISMO día, lo cual
+    # nunca debería pasar.
+    provider.quotes_by_symbol = {"VWAV": _FakeQuote("VWAV", 5.97, 1825.19, previous_close=0.3101)}
+    mv.run_market_cycle_once()
+    fila2 = mv.get_market_snapshot()["rows"][0]
+    assert fila2["prevclose_confiable"] is False
+    assert fila2["change_pct"] is None  # nunca el +1.825% inventado por el proveedor
+    assert fila2["change_abs"] is None
+    assert fila2["price"] == 5.97  # el precio en sí (fuente independiente) se conserva
+
+    # El cache interno NO se envenena con el prevclose roto -- si el
+    # PRÓXIMO ciclo vuelve a traer un prevclose bueno, se sigue
+    # comparando contra el $6.20 original, no contra el $0.31 descartado.
+    with mv._last_known_lock:
+        cacheado = mv._last_known_by_symbol["VWAV"]
+    assert cacheado["previous_close"] == 6.20
+
+
+def test_D3_prevclose_estable_entre_ciclos_sigue_confiable(monkeypatch):
+    """Regresión: una variación mínima de redondeo entre ciclos (dentro de
+    la tolerancia) NUNCA debe marcarse como no confiable -- caso normal,
+    sin ningún error real."""
+    mv._last_known_by_symbol.clear()
+    quotes_ciclo1 = {"AAA": _FakeQuote("AAA", 10.0, 5.0, previous_close=9.523809)}
+    _patch(monkeypatch, ["AAA"], quotes_ciclo1)
+    mv.run_market_cycle_once()
+
+    provider2 = _patch(monkeypatch, ["AAA"], {"AAA": _FakeQuote("AAA", 10.2, 7.14, previous_close=9.523810)})
+    mv.run_market_cycle_once()
+    fila = mv.get_market_snapshot()["rows"][0]
+    assert fila["prevclose_confiable"] is True
+    assert fila["change_pct"] is not None
+
+
 # --- E: batch dividido correctamente en chunks ---
 
 def test_E_batch_dividido_en_chunks_correctos(monkeypatch):
