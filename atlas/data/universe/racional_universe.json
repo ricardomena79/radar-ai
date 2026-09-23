@@ -6160,11 +6160,6 @@
     "type": "ETF"
   },
   {
-    "symbol": "IMCC",
-    "name": "IM Cannabis Corp",
-    "type": "EQUITY"
-  },
-  {
     "symbol": "IMCG",
     "name": "iShares Morningstar Mid-Cap Growth ETF",
     "type": "ETF"
