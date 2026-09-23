@@ -668,6 +668,100 @@ function startEtfsNormalesPolling() {
 }
 
 /* ============================================================
+ * MICROCAP (2026-09-23, autorizado explícitamente) -- mismo tipo de
+ * ranking/presentación que Mercado (reutiliza _sparklineSvg/_mercadoAgeLabel/
+ * _mercadoAgeShort/_mercadoInitials tal cual), pero fuente y estado
+ * propios: GET /api/microcap (snapshot cacheado por
+ * atlas_live/microcap_view.py, universo independiente de Mercado y de
+ * ETFs Normales -- solo acciones de Racional bajo $5 USD).
+ * ============================================================ */
+
+const MICROCAP_POLL_MS = 1500;
+let _microcap = { generated_at: null, cycle_duration_s: null, rows: [] };
+let _microcapSearch = "";
+
+async function fetchMicrocap() {
+  try {
+    const res = await fetch("/api/microcap");
+    _microcap = await res.json();
+  } catch (e) {
+    // Sin cambios de estado ante un fallo de red puntual -- mismo criterio
+    // que fetchMercado().
+  }
+  renderMicrocap();
+}
+
+function renderMicrocap() {
+  const listEl = document.getElementById("microcap-list");
+  const metaEl = document.getElementById("microcap-meta");
+  if (!listEl || !metaEl) return;
+
+  const rows = _microcap.rows || [];
+
+  metaEl.textContent = _microcap.total_bajo_umbral != null
+    ? `${_microcap.total_bajo_umbral} acciones bajo $5 (de ${_microcap.total_universe} escaneadas) · ${_mercadoAgeLabel(_microcap.generated_at)}`
+    : "universo independiente de Mercado";
+
+  if (!rows.length) {
+    listEl.innerHTML = `<div class="empty-state small">${_microcap.ultimo_error ? "Error: " + _microcap.ultimo_error : "Esperando el primer ciclo..."}</div>`;
+    return;
+  }
+
+  const q = _microcapSearch.trim().toUpperCase();
+  const filtered = q
+    ? rows.filter((r) => r.symbol.toUpperCase().includes(q) || (r.name || "").toUpperCase().includes(q))
+    : rows;
+
+  if (!filtered.length) {
+    listEl.innerHTML = `<div class="empty-state small">Sin resultados para "${_microcapSearch}".</div>`;
+    return;
+  }
+
+  listEl.innerHTML = filtered.map((r) => {
+    const isUp = (r.change_pct ?? 0) >= 0;
+    const priceText = r.price != null ? r.price.toFixed(2) : "--";
+    let pctClass = "";
+    if (r.change_pct > 0) pctClass = "mercado-up";
+    else if (r.change_pct < 0) pctClass = "mercado-down";
+    const changePctText = r.change_pct == null
+      ? "s/d"
+      : `<span class="${pctClass}">${r.change_pct > 0 ? "+" : ""}${r.change_pct.toFixed(2)}%</span>`;
+
+    let extIcon = '<span class="mercado-ext" title="Dato fresco de este ciclo">🟢</span>';
+    if (r.data_status === "STALE") {
+      extIcon = `<span class="mercado-ext mercado-stale" title="Último dato conocido (${_mercadoAgeShort(r.data_age_seconds)})">⏱</span>`;
+    } else if (r.price_is_stale) {
+      extIcon = '<span class="mercado-ext mercado-stale" title="Precio vencido -- fuera de sesión">⏱</span>';
+    }
+
+    return `
+      <div class="mercado-row" data-symbol="${r.symbol}">
+        <div class="mercado-logo">${_mercadoInitials(r.symbol)}</div>
+        <div class="mercado-id">
+          <div class="mercado-name">${r.name || r.symbol}</div>
+          <div class="mercado-ticker">${r.symbol}</div>
+        </div>
+        <div class="mercado-price">${priceText}</div>
+        <div class="mercado-change-pct">${changePctText}</div>
+        ${extIcon}
+        ${_sparklineSvg(r.sparkline, isUp)}
+      </div>`;
+  }).join("");
+}
+
+function startMicrocapPolling() {
+  fetchMicrocap();
+  setInterval(fetchMicrocap, MICROCAP_POLL_MS);
+  const searchInput = document.getElementById("microcap-search");
+  if (searchInput) {
+    searchInput.addEventListener("input", () => {
+      _microcapSearch = searchInput.value;
+      renderMicrocap();
+    });
+  }
+}
+
+/* ============================================================
  * UNIVERSO YAHOO -- sector independiente de Universo Racional.
  * Capa 1 (identidad, ~6.600+): GET /api/universo-yahoo, se carga UNA sola
  * vez al abrir la Cabina; la búsqueda por ticker/nombre filtra 100% en el
@@ -1407,6 +1501,7 @@ function init() {
   fetchUniverso();
   startMercadoPolling();
   startEtfsNormalesPolling();
+  startMicrocapPolling();
   initUniversoYahoo();
   fetchCapacidad();
   fetchPatronHorario();

@@ -161,6 +161,16 @@ market_view.start_market_view()
 from atlas_live import etf_normal_view
 etf_normal_view.start_etf_normal_view()
 
+# Microcap (2026-09-23, autorizado explícitamente): ranking en vivo,
+# exclusivo, de las acciones de Racional que cotizan bajo $5 USD -- módulo
+# HERMANO de market_view.py/etf_normal_view.py, estado propio (nunca
+# comparte snapshot/hilo con ninguno de los dos). Mismo aislamiento total
+# respecto a decisión/aprendizaje -- ver docstring de
+# atlas_live/microcap_view.py. Se habilita/deshabilita por
+# ATLAS_MICROCAP_VIEW_ENABLED (default: encendido).
+from atlas_live import microcap_view
+microcap_view.start_microcap_view()
+
 
 @app.route("/")
 def index():
@@ -418,6 +428,20 @@ def api_etfs_normales():
     Completamente aislado del radar, el motor de decisión y el aprendizaje
     -- ver docstring de `etf_normal_view.py`."""
     return jsonify(etf_normal_view.get_etf_normal_snapshot())
+
+
+@app.route("/api/microcap")
+def api_microcap():
+    """Microcap (2026-09-23, autorizado explícitamente): snapshot ya
+    cacheado del ranking en vivo, exclusivo, de las acciones de Racional
+    que cotizan bajo $5 USD -- mismo patrón que `/api/mercado`/
+    `/api/etfs-normales`, pero con universo y estado 100% propios
+    (`atlas_live/microcap_view.py`). Público, sin token. Solo lectura del
+    snapshot ya calculado por el hilo de fondo -- este endpoint NUNCA
+    dispara una consulta nueva a Tradier. Completamente aislado del radar,
+    el motor de decisión y el aprendizaje -- ver docstring de
+    `microcap_view.py`."""
+    return jsonify(microcap_view.get_microcap_snapshot())
 
 
 @app.route("/api/admin/mercado-cycle-now", methods=["POST"])

@@ -31,6 +31,7 @@
       <button class="nav-item active" data-view="inicio"><span class="nav-icon">🏠</span>Inicio</button>
       <button class="nav-item" data-view="mercado"><span class="nav-icon">📈</span>Mercado</button>
       <button class="nav-item" data-view="etfs-normales"><span class="nav-icon">📦</span>ETFs Normales</button>
+      <button class="nav-item" data-view="microcap"><span class="nav-icon">🪙</span>Microcap</button>
       <button class="nav-item" data-view="oportunidades"><span class="nav-icon">🎯</span>Oportunidades</button>
       <button class="nav-item" data-view="learning"><span class="nav-icon">🧠</span>Learning</button>
       <button class="nav-item" data-view="prediction-journal"><span class="nav-icon">📓</span>Prediction Journal</button>
@@ -107,6 +108,22 @@
         <div class="panel panel-full">
           <input type="text" id="etfs-normales-search" class="mercado-search" placeholder="Buscar símbolo...">
           <div id="etfs-normales-list"><div class="empty-state small">Esperando el primer ciclo...</div></div>
+        </div>
+      </section>
+
+      <!-- ================= MICROCAP (2026-09-23, autorizado
+           explícitamente) -- universo y estado propios, mismo tipo de
+           ranking que Mercado, aplicado solo a las acciones de Racional
+           que cotizan bajo $5 USD. ================= -->
+      <section id="view-microcap" class="view">
+        <div class="view-head">
+          <div class="eyebrow">Ranking en vivo, solo acciones bajo $5 USD</div>
+          <h1>Microcap</h1>
+          <div class="view-sub" id="microcap-meta">universo independiente de Mercado</div>
+        </div>
+        <div class="panel panel-full">
+          <input type="text" id="microcap-search" class="mercado-search" placeholder="Buscar símbolo...">
+          <div id="microcap-list"><div class="empty-state small">Esperando el primer ciclo...</div></div>
         </div>
       </section>
 
