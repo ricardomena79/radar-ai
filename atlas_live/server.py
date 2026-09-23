@@ -18,6 +18,7 @@ import threading
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, Dict, Tuple
 
 from flask import Flask, jsonify, redirect, request, send_from_directory
 from flask import got_request_exception
@@ -924,6 +925,152 @@ ATLAS_PREMARKET_VOLUME_SIGNAL_ENABLED = os.environ.get(
 ).strip().lower() in ("1", "true", "yes", "on", "si", "sí")
 
 
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+# Histéresis para DEGRADAR por datos de precio ausentes/vencidos (2026-09-23,
+# autorizado explícitamente -- fix del "parpadeo" del panel Oportunidades,
+# caso real: candidatas aparecían y desaparecían en ciclos de 30s). Mismo
+# patrón arquitectónico que `candidate_tracker._confirm_alert_stage_with_hysteresis()`
+# (ver ese módulo, el precedente ya aprobado y en producción) -- pero vive
+# ACÁ, en el LLAMADOR (`_api_radar_oportunidades_impl()`), en vez de dentro
+# de `priority_classifier.classify_final_priority()` (que se mantiene PURA,
+# sin memoria, sin cambios de firma/lógica -- módulo protegido de esta
+# sesión) ni de `atlas_decision_core.decide()` (tampoco se toca). Motivo:
+# `estado_final` se recalcula desde cero en CADA request de este endpoint
+# (nunca se persiste), así que el llamador real de la cadena
+# `priority_classifier`/`atlas_decision_core` para este panel es este
+# handler HTTP, exactamente el mismo rol que cumple `candidate_tracker.py`
+# para `alert_stage.classify_alert_stage()`.
+#
+# Regla dura (pedida explícitamente, no negociable): SOLO frena la
+# degradación de un bucket accionable (OPORTUNIDAD_PRIORITARIA/VIGILAR/
+# PREPARACION) hacia NO_TOCAR cuando la causa es EXCLUSIVAMENTE de datos
+# (`estado_validacion != OK` -- sin precio actual, vencido, sin timestamp,
+# o % de cambio incoherente) -- nunca frena un NO_TOCAR por etapa real
+# (NO_PERSEGUIR/FLUJO_VENDEDOR/etc, esos se confirman de inmediato, igual
+# que antes) y nunca frena una PROMOCIÓN a un bucket mejor (eso ya lo
+# protege el flujo normal, sin necesidad de histéresis). Nunca fabrica un
+# precio ni inventa un `estado_final` nuevo -- solo sigue mostrando el
+# ÚLTIMO `estado_final` ya confirmado mientras el problema de datos no
+# lleve `PRICE_VALIDATION_HYSTERESIS_SWEEPS` barridos consecutivos.
+#
+# Mismo N que `candidate_tracker.ALERT_STAGE_HYSTERESIS_SWEEPS` por
+# defecto (2), para consistencia entre ambos mecanismos de histéresis --
+# configurable aparte porque protegen causas distintas (dato de precio vs.
+# etapa en sí).
+PRICE_VALIDATION_HYSTERESIS_SWEEPS = _env_int("ATLAS_PRICE_VALIDATION_HYSTERESIS_SWEEPS", 2)
+
+# Estado en memoria de proceso, por `(ticker, market_date)` -- se pisa cada
+# vez que se confirma un cambio, nunca persistido (mismo criterio que
+# `radar_worker._last_quotes`/`candidate_tracker._pending_stage_by_ticker`).
+_price_validation_pending_by_ticker: Dict[Tuple[str, str], Dict[str, Any]] = {}
+
+
+def _aplicar_histeresis_precio_a_estado_final(
+    ticker: str,
+    market_date: str,
+    estado_final_crudo: str,
+    motivo_crudo: str,
+    es_problema_de_datos: bool,
+    sweep_marker: Any,
+) -> Tuple[str, str]:
+    """Devuelve `(estado_final, motivo_estado_final)` a MOSTRAR -- ver
+    reglas arriba. `estado_final_crudo`/`motivo_crudo` son el resultado
+    REAL de este request (post `atlas_decision_core.decide()` y, si
+    aplica, post Activación Controlada 3.5 -- el valor final tal como
+    quedó fijado más arriba en `_api_radar_oportunidades_impl()`), nunca
+    modificados por esta función salvo para sostener una degradación
+    pendiente. `es_problema_de_datos` ya viene calculado por el llamador
+    (`estado_validacion != pc.VALIDACION_OK`, incluye `SIN_PRECIO_ACTUAL`).
+    `sweep_marker` es `ultimo_sweep_at` del barrido más reciente de
+    `radar_worker` -- el contador de sweeps consecutivos avanza SOLO
+    cuando cambia, para que varios requests HTTP entre dos barridos (o
+    requests concurrentes) nunca infravaloren/sobrevaloren el conteo real
+    de barridos."""
+    key = (ticker, market_date)
+    anterior = _price_validation_pending_by_ticker.get(key)
+
+    if estado_final_crudo != "NO_TOCAR" or not es_problema_de_datos:
+        # Estado bueno, o NO_TOCAR por una razón real de etapa (no de
+        # datos) -- se confirma de inmediato, sin frenar nada, y se limpia
+        # cualquier degradación pendiente (mismo criterio que
+        # `_confirm_alert_stage_with_hysteresis`: sin oscilación real que
+        # frenar cuando el valor nuevo no es el caso protegido).
+        _price_validation_pending_by_ticker[key] = {
+            "last_confirmed_estado": estado_final_crudo,
+            "last_confirmed_motivo": motivo_crudo,
+            "pending_bad_count": 0,
+            "pending_sweep_marker": None,
+        }
+        return estado_final_crudo, motivo_crudo
+
+    if anterior is None or anterior.get("last_confirmed_estado") not in (
+        "OPORTUNIDAD_PRIORITARIA", "VIGILAR", "PREPARACION",
+    ):
+        # Nunca hubo un bucket accionable confirmado para esta candidata --
+        # no es "degradación" (por definición exige un estado bueno YA
+        # confirmado), se confirma NO_TOCAR de inmediato.
+        _price_validation_pending_by_ticker[key] = {
+            "last_confirmed_estado": "NO_TOCAR",
+            "last_confirmed_motivo": motivo_crudo,
+            "pending_bad_count": 0,
+            "pending_sweep_marker": None,
+        }
+        return estado_final_crudo, motivo_crudo
+
+    # Hay un bucket accionable confirmado -- frenar la degradación hasta
+    # acumular `PRICE_VALIDATION_HYSTERESIS_SWEEPS` barridos consecutivos
+    # con el mismo problema de datos.
+    pending_count = int(anterior.get("pending_bad_count") or 0)
+    pending_marker = anterior.get("pending_sweep_marker")
+    if pending_marker != sweep_marker:
+        pending_count += 1
+        pending_marker = sweep_marker
+
+    if pending_count >= PRICE_VALIDATION_HYSTERESIS_SWEEPS:
+        # Confirmado tras N barridos seguidos -- recién ahí se degrada de
+        # verdad (mecanismo de recuperación explícito: nunca queda
+        # frenado para siempre).
+        _price_validation_pending_by_ticker[key] = {
+            "last_confirmed_estado": "NO_TOCAR",
+            "last_confirmed_motivo": motivo_crudo,
+            "pending_bad_count": 0,
+            "pending_sweep_marker": None,
+        }
+        return estado_final_crudo, motivo_crudo
+
+    _price_validation_pending_by_ticker[key] = {
+        "last_confirmed_estado": anterior["last_confirmed_estado"],
+        "last_confirmed_motivo": anterior.get("last_confirmed_motivo"),
+        "pending_bad_count": pending_count,
+        "pending_sweep_marker": pending_marker,
+    }
+    motivo_revalidando = (
+        f"{anterior.get('last_confirmed_motivo') or motivo_crudo} | "
+        f"REVALIDANDO dato de precio ({pending_count}/{PRICE_VALIDATION_HYSTERESIS_SWEEPS} "
+        f"barridos sin confirmar -- {motivo_crudo})"
+    )
+    return anterior["last_confirmed_estado"], motivo_revalidando
+
+
+def _reset_price_validation_hysteresis_state_for_tests() -> None:
+    """SOLO para tests -- limpia el estado en memoria de
+    `_aplicar_histeresis_precio_a_estado_final()` entre corridas. Sin esto,
+    un ticker reutilizado en distintos tests dentro del MISMO proceso de
+    pytest (ej. SBLK en `test_radar_oportunidades_endpoint.py`, confirmado
+    como OPORTUNIDAD_PRIORITARIA en un test y como precio vencido en el
+    siguiente) arrastraría el `estado_final` accionable de un test anterior
+    y frenaría artificialmente la degradación esperada por ESE test.
+    Mismo patrón exacto que `radar_worker.py`'s `w._last_quotes = {}` /
+    `w._history.reset_for_new_day()` en `test_radar_worker.py::_fresh()`."""
+    _price_validation_pending_by_ticker.clear()
+
+
 def _calcular_prioridad_score(
     pm_early_signal_at_detection,
     relative_volume_hoy,
@@ -1149,6 +1296,13 @@ def _api_radar_oportunidades_impl():
     }
 
     now = datetime.now(timezone.utc)
+
+    # Marcador de barrido real (2026-09-23, histéresis de datos de precio,
+    # ver `_aplicar_histeresis_precio_a_estado_final()` arriba) -- único
+    # fetch por request, nunca por candidata: `ultimo_sweep_at` cambia
+    # exactamente una vez por barrido de `radar_worker.run_sweep_once()`,
+    # sin importar cuántos requests HTTP lleguen entre dos barridos.
+    sweep_marker = radar_registry.get_meta().get("ultimo_sweep_at")
 
     for o in oportunidades:
         q = last_quotes.get(o["ticker"])
@@ -1635,6 +1789,20 @@ def _api_radar_oportunidades_impl():
             )
         except Exception:
             o["prioridad_score"] = 0.0
+
+        # Histéresis de datos de precio (2026-09-23) -- SIEMPRE lo último,
+        # después de Activación Controlada 3.5 (que puede haber sobre-
+        # escrito `o["estado_final"]` más arriba): opera sobre el valor
+        # REALMENTE final de este request. Nunca puede fallar el request
+        # completo -- si algo sale mal acá, se muestra el valor crudo tal
+        # cual (fail-safe, mismo criterio que el resto de esta función).
+        try:
+            o["estado_final"], o["motivo_estado_final"] = _aplicar_histeresis_precio_a_estado_final(
+                o["ticker"], market_date, o["estado_final"], o.get("motivo_estado_final") or "",
+                estado_validacion != pc.VALIDACION_OK, sweep_marker,
+            )
+        except Exception:
+            pass
 
     conteos: dict = {}
     conteos_estado_final: dict = {}

@@ -50,6 +50,14 @@ def _client():
     return server.app.test_client()
 
 
+def setup_function(_fn):
+    # Ver el mismo hook en `test_radar_oportunidades_endpoint.py` -- limpia
+    # el estado en memoria de la histéresis de datos de precio
+    # (`server._aplicar_histeresis_precio_a_estado_final()`) antes de cada
+    # test de este archivo, para aislar tests entre sí.
+    server._reset_price_validation_hysteresis_state_for_tests()
+
+
 def _mock_una_candidata(monkeypatch):
     monkeypatch.setattr(reg, "live_opportunities", lambda market_date: [
         {"ticker": "AAA", "price_at_detection": 10.0, "stage": "PREPARACION", "racional_available": True},

@@ -149,6 +149,25 @@ function _pmVolumenHtml(o) {
 
 let _oportunidades = [];
 
+// Gracia de 1 ciclo (2026-09-23, autorizado explícitamente -- fix del
+// "parpadeo" del panel Oportunidades, capa 3/3 -- puramente de
+// PRESENTACIÓN en el frontend, complementaria a la histéresis ya agregada
+// en el backend (`radar_worker.py`: merge de cotizaciones en vez de
+// reemplazo total; `server.py`: histéresis de `estado_final` por datos de
+// precio). Aun con esas dos capas, un ciclo de polling (`OPORTUNIDADES_POLL_MS`,
+// 30s) puede no coincidir exactamente con un barrido real del radar --
+// esta es la última red de seguridad, puramente visual: NUNCA inventa un
+// precio ni cambia `estado_final`, solo sostiene en pantalla la ÚLTIMA
+// tarjeta accionable conocida un ciclo extra antes de sacarla del DOM,
+// marcada con un badge "revalidando" y atenuada (ver cabina.css,
+// `.opp-revalidando`/`.badge-revalidando`).
+//
+// Mapa ticker -> {o: última oportunidad accionable conocida, misses:
+// cuántos fetch consecutivos seguidos faltó}. Se reconstruye en cada
+// llamada a `_ordenarOportunidades()` -- nunca persistido, mismo criterio
+// que el resto del estado en memoria de esta pantalla.
+const _oportunidadesGraciaPorTicker = new Map();
+
 async function fetchOportunidades() {
   try {
     const res = await fetch("/api/radar-oportunidades");
@@ -184,9 +203,40 @@ function _ordenarOportunidades(oportunidades) {
   // tocan -- siguen usándose más abajo, sin cambios, únicamente para el
   // badge/orden de presentación (nunca para excluir), basados en
   // `stage_observed_at` (reconfirmación real), no en `detected_at`.
-  const accionables = oportunidades.filter(
+  const accionablesFrescas = oportunidades.filter(
     (o) => o.estado_final === "OPORTUNIDAD_PRIORITARIA" || o.estado_final === "VIGILAR"
   );
+
+  // Gracia de 1 ciclo (ver comentario de `_oportunidadesGraciaPorTicker`
+  // arriba). `tickersFrescos`: lo que este fetch SÍ trae como accionable
+  // ahora mismo -- esas nunca necesitan gracia, se muestran tal cual.
+  const tickersFrescos = new Set(accionablesFrescas.map((o) => o.ticker));
+  const accionables = [...accionablesFrescas];
+  for (const [ticker, entry] of _oportunidadesGraciaPorTicker) {
+    if (tickersFrescos.has(ticker)) continue;
+    if (entry.misses < 1) {
+      // Primera vez que falta -- se sostiene un ciclo más, marcada.
+      accionables.push({ ...entry.o, _revalidando: true });
+    }
+    // `entry.misses >= 1` (2da vez consecutiva que falta): se deja caer,
+    // no se agrega -- recién ahí desaparece de verdad.
+  }
+
+  // Mapa para el PRÓXIMO ciclo: lo fresco de HOY resetea a 0 misses (dato
+  // real); lo que se sostuvo con gracia este ciclo suma 1 miss (si ya
+  // tenía 1, no se vuelve a agregar -- queda fuera para siempre, hasta
+  // que reaparezca fresco).
+  const proximoMapa = new Map();
+  for (const o of accionablesFrescas) {
+    proximoMapa.set(o.ticker, { o, misses: 0 });
+  }
+  for (const [ticker, entry] of _oportunidadesGraciaPorTicker) {
+    if (tickersFrescos.has(ticker) || entry.misses >= 1) continue;
+    proximoMapa.set(ticker, { o: entry.o, misses: entry.misses + 1 });
+  }
+  _oportunidadesGraciaPorTicker.clear();
+  for (const [ticker, entry] of proximoMapa) _oportunidadesGraciaPorTicker.set(ticker, entry);
+
   return [...accionables].sort((a, b) => {
     const diff = FINAL_STATE_ORDER.indexOf(a.estado_final) - FINAL_STATE_ORDER.indexOf(b.estado_final);
     if (diff !== 0) return diff;
@@ -270,6 +320,15 @@ function _renderOportunidadesEn(el, top) {
       ? `<div class="badge-antigua" title="Sin reconfirmación de etapa reciente">⏱ Sin confirmación hace ${Math.round(minsSinConfirmar)} min</div>`
       : "";
 
+    // Gracia de 1 ciclo (2026-09-23) -- ver `_oportunidadesGraciaPorTicker`
+    // en `_ordenarOportunidades()`. Puramente visual: la tarjeta es la
+    // ÚLTIMA data real conocida, mostrada un ciclo extra mientras Atlas
+    // revalida el dato más reciente.
+    const revalidando = !!o._revalidando;
+    const badgeRevalidando = revalidando
+      ? `<div class="badge-revalidando" title="Atlas no confirmó esta candidata en el último barrido todavía -- se sigue mostrando con el último dato real conocido">↻ Revalidando</div>`
+      : "";
+
     // Hito 8 (2026-09-14, PLAN Radar/Finnhub) -- preferir executable_price
     // (precio confiable/comprable) cuando existe; si es null (BID_ONLY/
     // STALE_REGULAR_CLOSE), se sigue mostrando el precio de SEÑAL
@@ -283,12 +342,13 @@ function _renderOportunidadesEn(el, top) {
       : "";
 
     return `
-    <div class="opp-row${rank1}${antigua ? " opp-antigua" : ""}">
+    <div class="opp-row${rank1}${antigua ? " opp-antigua" : ""}${revalidando ? " opp-revalidando" : ""}">
       <div class="rank-badge">${i + 1}</div>
       <div class="tk-col">
         <div class="ticker">${o.ticker}</div>
         <div class="meta">${detectadaHace}${o.racional_available ? " · Racional" : ""}</div>
         ${badgeAntigua}
+        ${badgeRevalidando}
         ${badgeSoloSenal}
       </div>
       <div class="px-col">

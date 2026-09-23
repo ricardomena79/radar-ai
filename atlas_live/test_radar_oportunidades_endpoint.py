@@ -41,6 +41,18 @@ def _client():
     return server.app.test_client()
 
 
+def setup_function(_fn):
+    # Histéresis de datos de precio (2026-09-23, ver
+    # `server._aplicar_histeresis_precio_a_estado_final()`): estado en
+    # memoria de proceso, se limpia antes de CADA test de este archivo --
+    # sin esto, tickers reutilizados entre tests (ej. SBLK: confirmado
+    # OPORTUNIDAD_PRIORITARIA en un test, precio vencido en el siguiente)
+    # arrastrarían el `estado_final` accionable del test anterior y
+    # frenarían artificialmente la degradación que cada test espera ver de
+    # inmediato.
+    server._reset_price_validation_hysteresis_state_for_tests()
+
+
 def _fresh_quote(last_price, change_percent, previous_close=None, age_seconds=5):
     """Quote-like fake, COHERENTE y FRESCO por defecto (2026-08-18, cierre
     de confiabilidad) -- para tests que no están probando la cadena de
@@ -796,6 +808,109 @@ def test_caso_g_oportunidad_prioritaria_nunca_tiene_estado_validacion_vencido():
         assert o["estado_final"] != "OPORTUNIDAD_PRIORITARIA"
         assert o["estado_final"] == "NO_TOCAR"
     finally:
+        reg.live_opportunities = orig_live_opps
+        _rw.get_last_quotes = orig_last_quotes
+
+
+# ---------------------------------------------------------------------------
+# FIX 2026-09-23 (autorizado explícitamente -- panel Oportunidades
+# "parpadea", capa 2/3): histéresis de `estado_final` cuando la degradación
+# a NO_TOCAR es causada EXCLUSIVAMENTE por datos de precio (sin precio
+# actual / vencido / etc), ver `server._aplicar_histeresis_precio_a_estado_final()`.
+# Tests puros de esa función viven en
+# `test_server_price_validation_hysteresis.py` -- acá se prueba de punta a
+# punta, con el endpoint real, que un solo barrido con precio vencido NO
+# hace desaparecer una OPORTUNIDAD_PRIORITARIA de inmediato.
+# ---------------------------------------------------------------------------
+
+def test_histeresis_de_precio_sostiene_un_barrido_malo_antes_de_degradar():
+    import tempfile
+    import uuid as _uuid
+    from pathlib import Path
+
+    orig_live_opps = reg.live_opportunities
+    orig_last_quotes = _rw.get_last_quotes
+    orig_db_path = reg.DB_PATH
+    # `ultimo_sweep_at` (marcador de barrido real que lee la histéresis de
+    # precio, ver `server.py`) se escribe vía `reg.set_meta()` -- aislado en
+    # un DB temporal, mismo patrón exacto que `test_radar_worker.py::_fresh()`,
+    # para nunca escribir en la base real de desarrollo.
+    reg.DB_PATH = Path(tempfile.gettempdir()) / f"atlas_test_oportunidades_hist_{_uuid.uuid4().hex}.db"
+    reg._schema_ready_for = None
+
+    reg.live_opportunities = lambda market_date: [
+        {"ticker": "OPPHIST", "price_at_detection": 29.0, "stage": "INICIO",
+         "direction": "ALCISTA", "racional_available": True},
+    ]
+    try:
+        # Barrido 1 -- precio fresco, OPORTUNIDAD_PRIORITARIA real.
+        reg.set_meta(ultimo_sweep_at="2026-09-23T10:00:00+00:00")
+        _rw.get_last_quotes = lambda: {"OPPHIST": _fresh_quote(30.02, 3.3, age_seconds=10)}
+        r1 = _client().get("/api/radar-oportunidades")
+        o1 = r1.get_json()["oportunidades"][0]
+        assert o1["estado_final"] == "OPORTUNIDAD_PRIORITARIA"
+
+        # Barrido 2 -- MISMO sweep real (ultimo_sweep_at sin cambiar), pero
+        # el precio en memoria ya venció (radar_worker._last_quotes quedó
+        # congelado) -- un solo sweep malo no debe degradar todavía.
+        reg.set_meta(ultimo_sweep_at="2026-09-23T10:01:00+00:00")
+        _rw.get_last_quotes = lambda: {"OPPHIST": _fresh_quote(30.02, 3.3, age_seconds=48 * 60)}
+        r2 = _client().get("/api/radar-oportunidades")
+        o2 = r2.get_json()["oportunidades"][0]
+        assert o2["estado_final"] == "OPORTUNIDAD_PRIORITARIA"  # sostenida, no desaparece de golpe
+        assert "REVALIDANDO" in o2["motivo_estado_final"]
+
+        # Barrido 3 -- SEGUNDO sweep real consecutivo con precio vencido
+        # -- recién acá se confirma la degradación de verdad.
+        reg.set_meta(ultimo_sweep_at="2026-09-23T10:02:00+00:00")
+        r3 = _client().get("/api/radar-oportunidades")
+        o3 = r3.get_json()["oportunidades"][0]
+        assert o3["estado_final"] == "NO_TOCAR"
+    finally:
+        reg.live_opportunities = orig_live_opps
+        _rw.get_last_quotes = orig_last_quotes
+        reg.DB_PATH = orig_db_path
+        reg._schema_ready_for = None
+
+
+def test_histeresis_de_precio_nunca_frena_no_tocar_por_etapa_real():
+    """NO_PERSEGUIR/FLUJO_VENDEDOR (etapa real, no dato de precio) siempre
+    se confirma de inmediato, sin ningún frenado -- la regla dura del
+    pedido es exclusiva para degradaciones causadas por datos."""
+    import tempfile
+    import uuid as _uuid
+    from pathlib import Path
+
+    orig_live_opps = reg.live_opportunities
+    orig_last_quotes = _rw.get_last_quotes
+    orig_db_path = reg.DB_PATH
+    reg.DB_PATH = Path(tempfile.gettempdir()) / f"atlas_test_oportunidades_hist_{_uuid.uuid4().hex}.db"
+    reg._schema_ready_for = None
+
+    reg.live_opportunities = lambda market_date: [
+        {"ticker": "OPPHIST2", "price_at_detection": 29.0, "stage": "INICIO",
+         "direction": "ALCISTA", "racional_available": True},
+    ]
+    try:
+        reg.set_meta(ultimo_sweep_at="2026-09-23T11:00:00+00:00")
+        _rw.get_last_quotes = lambda: {"OPPHIST2": _fresh_quote(30.02, 3.3, age_seconds=10)}
+        r1 = _client().get("/api/radar-oportunidades")
+        assert r1.get_json()["oportunidades"][0]["estado_final"] == "OPORTUNIDAD_PRIORITARIA"
+
+        # La etapa cambia a NO_PERSEGUIR (razón real, no de datos) --
+        # confirma NO_TOCAR de inmediato, un solo barrido alcanza.
+        reg.live_opportunities = lambda market_date: [
+            {"ticker": "OPPHIST2", "price_at_detection": 29.0, "stage": "NO_PERSEGUIR",
+             "direction": "BAJISTA", "racional_available": True},
+        ]
+        reg.set_meta(ultimo_sweep_at="2026-09-23T11:01:00+00:00")
+        r2 = _client().get("/api/radar-oportunidades")
+        assert r2.get_json()["oportunidades"][0]["estado_final"] == "NO_TOCAR"
+    finally:
+        reg.live_opportunities = orig_live_opps
+        _rw.get_last_quotes = orig_last_quotes
+        reg.DB_PATH = orig_db_path
+        reg._schema_ready_for = None
         reg.live_opportunities = orig_live_opps
         _rw.get_last_quotes = orig_last_quotes
 

@@ -215,7 +215,37 @@ def run_sweep_once() -> Optional[float]:
         proc = tracker.process_sweep(result.quotes, _history, market_date, session, observed_at)
 
         global _last_quotes, _last_diagnostics
-        _last_quotes = dict(result.quotes)
+        # FIX 2026-09-23 (autorizado explícitamente -- panel Oportunidades
+        # "parpadea"): antes, `_last_quotes = dict(result.quotes)` REEMPLAZABA
+        # por completo el caché en cada barrido. Cuando un chunk de Tradier
+        # falla parcialmente (`universe_quotes.py`, `chunk_diag.chunks_error`
+        # > 0 -- ya documentado ahí que esto pasa), los tickers de ESE chunk
+        # quedan ausentes de `result.quotes` este barrido -- no es un error
+        # raro, es esperado -- y con el reemplazo total perdían su precio de
+        # inmediato, disparando NO_TOCAR en `priority_classifier.py` aunque
+        # el dato real de hace 15-30s siguiera siendo utilizable.
+        #
+        # Ahora: merge sobre el universo de ESTE barrido (`symbols`, ya
+        # calculado arriba) -- para cada símbolo pedido, se prefiere el Quote
+        # NUEVO si vino; si no vino, se conserva el Quote ANTERIOR tal cual
+        # (mismo objeto, mismo `timestamp` real -- nunca se fabrica uno
+        # nuevo) para que `price_age_seconds`/`is_price_stale()` (recalculados
+        # en cada request de `/api/radar-oportunidades`, ver `server.py`)
+        # decidan correctamente si ese dato sigue vigente o ya venció, en vez
+        # de que la ausencia total dispare NO_TOCAR de inmediato.
+        #
+        # Deliberadamente acotado a `symbols` (el universo Racional pedido
+        # EN ESTE barrido): un símbolo que ya no forma parte del universo
+        # (removido de Racional) se deja caer, igual que con el reemplazo
+        # total de antes -- esto NO reintroduce una fuga de memoria/datos
+        # eternamente viejos para símbolos que Atlas ya no sigue.
+        merged_quotes: Dict[str, object] = {}
+        for sym in symbols:
+            if sym in result.quotes:
+                merged_quotes[sym] = result.quotes[sym]
+            elif sym in _last_quotes:
+                merged_quotes[sym] = _last_quotes[sym]
+        _last_quotes = merged_quotes
         _last_diagnostics = result.diagnostics
 
         duration = round(time.time() - t0, 2)

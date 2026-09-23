@@ -906,6 +906,132 @@ def test_maybe_run_eod_evaluation_no_se_duplica():
         _restore()
 
 
+# ---------------------------------------------------------------------------
+# FIX 2026-09-23 (autorizado explícitamente -- panel Oportunidades
+# "parpadea"): `_last_quotes` ahora MERGEA sobre el universo de CADA
+# barrido en vez de reemplazar por completo -- ver comentario real en
+# `run_sweep_once()`. Un chunk de Tradier que falla parcialmente
+# (`universe_quotes.py`, ya documentado ahí) no debe borrar el precio de
+# los tickers de ese chunk -- deben conservar su último Quote REAL
+# (mismo objeto, misma antigüedad real) hasta que ese dato venza de
+# verdad (`scan_worker.is_price_stale()`, en `server.py`, sin tocar).
+# ---------------------------------------------------------------------------
+
+def _fake_quote_price(symbol, last_price):
+    return Quote(symbol=symbol, name=symbol, last_price=last_price, change_percent=1.0,
+                 volume=1000, open=last_price, high=last_price, low=last_price,
+                 previous_close=last_price - 0.1, average_volume=500, relative_volume=1.5)
+
+
+def test_merge_conserva_cotizacion_previa_cuando_el_simbolo_falta_en_el_barrido_actual():
+    """Caso real: un chunk de Tradier falla parcialmente -- BBB no viene en
+    `result.quotes` de este barrido, pero SÍ está en `symbols` (sigue en el
+    universo) y SÍ estaba en `_last_quotes` del barrido anterior -> debe
+    conservarse tal cual (mismo objeto, no un precio fabricado)."""
+    _fresh()
+    orig_racional = w.broad_universe.racional_symbols
+    w.broad_universe.racional_symbols = lambda: {"AAA", "BBB"}
+    try:
+        # Barrido 1 -- ambos símbolos con Quote.
+        q_aaa_1 = _fake_quote_price("AAA", 10.0)
+        q_bbb_1 = _fake_quote_price("BBB", 20.0)
+        saved = _install_fakes(session="regular", quotes={"AAA": q_aaa_1, "BBB": q_bbb_1})
+        try:
+            w.run_sweep_once()
+        finally:
+            _uninstall_fakes(saved)
+        assert w.get_last_quotes() == {"AAA": q_aaa_1, "BBB": q_bbb_1}
+
+        # Barrido 2 -- BBB falta (chunk fallido simulado), AAA trae un
+        # precio NUEVO.
+        q_aaa_2 = _fake_quote_price("AAA", 11.0)
+        saved = _install_fakes(session="regular", quotes={"AAA": q_aaa_2})
+        try:
+            w.run_sweep_once()
+        finally:
+            _uninstall_fakes(saved)
+
+        last = w.get_last_quotes()
+        assert last["AAA"] is q_aaa_2  # el valor NUEVO siempre gana
+        assert last["BBB"] is q_bbb_1  # BBB conservó el ÚLTIMO dato REAL, sin fabricar nada
+    finally:
+        w.broad_universe.racional_symbols = orig_racional
+        _restore()
+
+
+def test_merge_nunca_inventa_un_simbolo_que_nunca_tuvo_cotizacion():
+    """Un símbolo que nunca apareció en ningún barrido (nunca hubo un
+    Quote real para él) no debe aparecer en `_last_quotes` solo porque
+    forma parte del universo pedido."""
+    _fresh()
+    orig_racional = w.broad_universe.racional_symbols
+    w.broad_universe.racional_symbols = lambda: {"AAA", "BBB"}
+    try:
+        saved = _install_fakes(session="regular", quotes={"AAA": _fake_quote_price("AAA", 10.0)})
+        try:
+            w.run_sweep_once()
+        finally:
+            _uninstall_fakes(saved)
+        last = w.get_last_quotes()
+        assert "AAA" in last
+        assert "BBB" not in last  # nunca tuvo cotización real -- nunca se fabrica una
+    finally:
+        w.broad_universe.racional_symbols = orig_racional
+        _restore()
+
+
+def test_merge_no_conserva_un_simbolo_que_salio_del_universo_actual():
+    """Si un símbolo deja de pedirse (removido de Racional entre un
+    barrido y el siguiente), su cotización vieja se deja caer -- igual que
+    con el reemplazo total de antes -- para no acumular datos eternamente
+    viejos de símbolos que Atlas ya no sigue."""
+    _fresh()
+    orig_racional = w.broad_universe.racional_symbols
+    try:
+        w.broad_universe.racional_symbols = lambda: {"AAA", "BBB"}
+        saved = _install_fakes(session="regular", quotes={
+            "AAA": _fake_quote_price("AAA", 10.0), "BBB": _fake_quote_price("BBB", 20.0),
+        })
+        try:
+            w.run_sweep_once()
+        finally:
+            _uninstall_fakes(saved)
+        assert set(w.get_last_quotes().keys()) == {"AAA", "BBB"}
+
+        # Barrido siguiente -- BBB ya NO forma parte del universo pedido
+        # (removido de Racional), y tampoco viene en el resultado.
+        w.broad_universe.racional_symbols = lambda: {"AAA"}
+        saved = _install_fakes(session="regular", quotes={"AAA": _fake_quote_price("AAA", 11.0)})
+        try:
+            w.run_sweep_once()
+        finally:
+            _uninstall_fakes(saved)
+        assert set(w.get_last_quotes().keys()) == {"AAA"}
+    finally:
+        w.broad_universe.racional_symbols = orig_racional
+        _restore()
+
+
+def test_merge_barrido_completo_sin_fallas_se_comporta_igual_que_antes():
+    """Caso normal (sin fallas de chunk): el merge coincide exactamente con
+    lo que hacía el reemplazo total -- `_last_quotes` termina siendo
+    exactamente `result.quotes` de este barrido."""
+    _fresh()
+    orig_racional = w.broad_universe.racional_symbols
+    w.broad_universe.racional_symbols = lambda: {"AAA", "BBB"}
+    try:
+        quotes = {"AAA": _fake_quote_price("AAA", 10.0), "BBB": _fake_quote_price("BBB", 20.0)}
+        saved = _install_fakes(session="regular", quotes=quotes)
+        try:
+            w.run_sweep_once()
+        finally:
+            _uninstall_fakes(saved)
+        assert w.get_last_quotes() == quotes
+    finally:
+        w.broad_universe.racional_symbols = orig_racional
+        _restore()
+
+
 if __name__ == "__main__":
     import traceback
 
