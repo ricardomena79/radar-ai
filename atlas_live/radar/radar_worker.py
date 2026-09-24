@@ -180,31 +180,54 @@ def run_sweep_once() -> Optional[float]:
             reg.set_meta(state="ERROR", ultimo_error="TRADIER_API_TOKEN no configurado -- radar no puede operar sin Tradier")
             return None
 
-        # REVERSIÓN a Racional-only (2026-09-21, autorizado explícitamente
-        # -- "que haga el barrido con las de Racional nomás. para qué
-        # otras si no puedo comprar"): reemplaza el universo AMPLIADO de
-        # Fase 5/Fase 1 (arriba, ver historial) por el catálogo Racional
-        # puro (`broad_universe.racional_symbols()`, ~2.734 símbolos hoy).
+        # SEGUNDA REVERSIÓN -- vuelve al universo AMPLIADO (2026-09-24,
+        # autorizado explícitamente: "yo pedi q el barrido fuera solo
+        # racional. pero eso lo pedi para el mercado. para el aprendisaje
+        # tiene q ocupar todo el universo"). El barrido Racional-only del
+        # 2026-09-21 (commit 2993ce8, motivo real documentado abajo) sigue
+        # siendo válido para lo que decide/muestra Atlas -- pero
+        # `candidate_detection`/`candidate_outcome`/`alert_stage_log` (la
+        # base real del aprendizaje v2, `live_experience_knowledge`) solo
+        # pueden nutrirse de lo que este barrido detecta, así que limitarlo
+        # a Racional (~2.734 símbolos) también limitaba de qué aprende
+        # Atlas -- eso nunca fue la intención.
         #
-        # Motivo real, medido en producción: con el universo ampliado
-        # (~6.600 símbolos), un barrido completo tardaba ~93s y el ciclo
-        # completo (barrido + espera auto-ajustada) llegaba a ~213s --
-        # por encima de PRICE_MAX_AGE_SECONDS=180s (scan_worker.py), así
-        # que las candidatas oscilaban entre VENCIDO/OK constantemente,
-        # vaciando el panel de Oportunidades de forma intermitente sin
-        # ser un error real. Con ~2.734 símbolos (el tamaño histórico ya
-        # medido: ~15s por barrido completo), el ciclo vuelve a quedar
-        # muy por debajo del umbral.
+        # Por qué es seguro volver a ampliar sin repetir el incidente: el
+        # panel de Oportunidades (`/api/radar-oportunidades`) YA filtra a
+        # `racional_available == True` en el propio servidor (server.py,
+        # `oportunidades = [o for o in oportunidades if
+        # o.get("racional_available") is True]`) -- el universo ampliado
+        # nunca llega a mostrarse ni a operarse, solo a detectarse/aprender.
+        # Además, el fix del parpadeo del mismo día (más abajo en esta
+        # función: merge de `_last_quotes` en vez de reemplazo total +
+        # histéresis de 2 barridos antes de degradar por dato vencido)
+        # ataca directamente la causa raíz del incidente original (un
+        # barrido lento dejaba candidatas VENCIDO de forma intermitente) --
+        # mitiga el riesgo, no lo elimina. Si el ciclo vuelve a superar
+        # `PRICE_MAX_AGE_SECONDS` de forma sostenida, es observable en
+        # `/api/finnhub-radar-resumen` (duración real del último sweep) y
+        # se puede revertir en minutos.
         #
-        # Alcance de este cambio, tal como se pidió: SOLO afecta qué
-        # símbolos detecta/procesa el radar (y por lo tanto qué alimenta
-        # `/api/radar-oportunidades`) -- Mercado (`market_view.py`) y ETFs
-        # Normales (`etf_normal_view.py`) ya usaban su propio universo
-        # Racional por separado, sin cambios acá. `candidate_gates.py`,
-        # `alert_stage.py`, `priority_classifier.py`,
-        # `atlas_decision_core.py`: sin tocar -- solo cambia QUÉ llega al
-        # mismo pipeline de siempre, nunca cómo se evalúa.
-        symbols = sorted(broad_universe.racional_symbols())
+        # Motivo real de la reversión anterior (2026-09-21, se mantiene
+        # documentado): con el universo ampliado (~6.600 símbolos), un
+        # barrido completo tardaba ~93s y el ciclo completo (barrido +
+        # espera auto-ajustada) llegaba a ~213s -- por encima de
+        # PRICE_MAX_AGE_SECONDS=180s (scan_worker.py).
+        #
+        # Alcance: solo cambia QUÉ símbolos detecta/procesa el radar (y por
+        # lo tanto qué alimenta `candidate_detection`/aprendizaje) --
+        # Mercado (`market_view.py`) y ETFs Normales (`etf_normal_view.py`)
+        # ya usaban su propio universo Racional por separado, sin cambios
+        # acá. `candidate_gates.py`, `alert_stage.py`,
+        # `priority_classifier.py`, `atlas_decision_core.py`: sin tocar --
+        # solo cambia QUÉ llega al mismo pipeline de siempre, nunca cómo se
+        # evalúa.
+        meta = broad_universe.fetch_broad_universe_meta()
+        symbols = sorted(
+            s for s, info in meta.items()
+            if info.get("type") == "EQUITY"
+            or (info.get("type") == "ETF" and broad_universe.is_leveraged_etf_name(info.get("name")))
+        )
         market_date = market_hours.market_date()
 
         t0 = time.time()

@@ -163,62 +163,28 @@ def test_un_barrido_roto_no_tumba_el_mecanismo():
         _restore()
 
 
-def test_sweep_usa_solo_el_universo_racional():
-    """REVERSIÓN a Racional-only (2026-09-21, autorizado explícitamente --
-    "que haga el barrido con las de Racional nomás. para qué otras si no
-    puedo comprar"): el barrido ya NO usa el universo AMPLIADO de Fase 5/
-    Fase 1 (fetch_broad_universe_meta()/build_expanded_universe()) -- usa
-    exclusivamente broad_universe.racional_symbols(), ordenado. Motivo
-    real medido: con el universo ampliado (~6.600 símbolos) el ciclo
-    completo (barrido+espera) superaba el umbral de frescura de 180s
-    (PRICE_MAX_AGE_SECONDS), vaciando Oportunidades de forma intermitente."""
-    _fresh()
-    saved = _install_fakes(session="regular", quotes={})
-    orig_racional = w.broad_universe.racional_symbols
-    captured = {}
-    # fetch_broad_universe_meta() deliberadamente NO se mockea a nada
-    # específico -- run_sweep_once() ya no la llama en absoluto, así que
-    # si algún cambio futuro la reintrodujera por error, este test fallaría
-    # al no encontrar el símbolo esperado (ANY_META_ONLY) en el resultado.
-    w.broad_universe.racional_symbols = lambda: {"ZZZZ", "AAPL", "MSTU"}
-    orig_fetch = w.fetch_universe_quotes
-
-    def _capturing_fetch(symbols, tradier_provider=None, fallback_provider=None):
-        captured["symbols"] = symbols
-        return orig_fetch(symbols, tradier_provider=tradier_provider, fallback_provider=fallback_provider)
-
-    w.fetch_universe_quotes = _capturing_fetch
-    try:
-        w.run_sweep_once()
-        # Exactamente racional_symbols(), ordenado -- sin unión con ningún
-        # universo ampliado.
-        assert captured["symbols"] == ["AAPL", "MSTU", "ZZZZ"]
-    finally:
-        w.broad_universe.racional_symbols = orig_racional
-        w.broad_universe.racional_symbols = orig_racional
-        w.fetch_universe_quotes = orig_fetch
-        _uninstall_fakes(saved)
-        _restore()
-
-
-def test_sweep_amplia_universo_con_racional_sin_filtrar_por_tipo():
-    """Fase 1 de ampliación hacia Racional (2026-09-07, autorizada
-    explícitamente): un ETF normal, un UNIT genuino y un símbolo Racional
-    sin identidad en absoluto deben llegar igual al barrido -- el filtro de
-    tipo (EQUITY + ETF apalancado) sigue aplicando SOLO al universo base,
-    nunca a lo que se agrega desde Racional. Sin duplicados: AAPL está en
-    ambos lados y aparece una sola vez."""
+def test_sweep_usa_universo_completo_equity_mas_etfs_apalancados():
+    """SEGUNDA REVERSIÓN (2026-09-24, autorizada explícitamente -- "eso lo
+    pedi para el mercado. para el aprendisaje tiene q ocupar todo el
+    universo"): el barrido vuelve a usar fetch_broad_universe_meta()
+    filtrado a EQUITY + ETFs apalancados (mismo filtro de Fase 5,
+    2026-08-17/2026-08-20), no racional_symbols() puro -- así
+    candidate_detection/candidate_outcome/alert_stage_log (la base real
+    del aprendizaje v2) se nutren de todo el universo, no solo de lo que
+    el usuario puede comprar hoy. `/api/radar-oportunidades` sigue
+    filtrando a racional_available==True en el servidor, así que el panel
+    de Oportunidades no se ve afectado por este cambio."""
     _fresh()
     saved = _install_fakes(session="regular", quotes={})
     orig_meta = w.broad_universe.fetch_broad_universe_meta
-    orig_racional = w.broad_universe.racional_symbols
     captured = {}
     w.broad_universe.fetch_broad_universe_meta = lambda: {
         "AAPL": {"type": "EQUITY", "name": "Apple Inc."},
-        "QQQ": {"type": "ETF", "name": "Invesco QQQ Trust Series 1"},  # ETF normal, Racional
-        "BEP": {"type": "UNIT", "name": "Brookfield Renewable Partners L.P. Limited Partnership Units"},
+        "ZZZZ": {"type": "EQUITY", "name": "ZZZZ Corp"},
+        "QQQ": {"type": "ETF", "name": "Invesco QQQ Trust Series 1"},
+        "MSTU": {"type": "ETF", "name": "T-Rex 2X Long MSTR Daily Target ETF"},
+        "XYZW": {"type": "WARRANT", "name": "XYZ Corp Warrants"},
     }
-    w.broad_universe.racional_symbols = lambda: {"AAPL", "QQQ", "BEP", "GHOSTRAC"}
     orig_fetch = w.fetch_universe_quotes
 
     def _capturing_fetch(symbols, tradier_provider=None, fallback_provider=None):
@@ -228,14 +194,28 @@ def test_sweep_amplia_universo_con_racional_sin_filtrar_por_tipo():
     w.fetch_universe_quotes = _capturing_fetch
     try:
         w.run_sweep_once()
-        assert captured["symbols"] == ["AAPL", "BEP", "GHOSTRAC", "QQQ"]
-        assert len(captured["symbols"]) == len(set(captured["symbols"]))  # sin duplicados
+        # EQUITY + el ETF apalancado (MSTU), ordenado -- QQQ (ETF normal) y
+        # XYZW (warrant) siguen afuera. racional_symbols() ya no se llama
+        # dentro de run_sweep_once() en absoluto.
+        assert captured["symbols"] == ["AAPL", "MSTU", "ZZZZ"]
     finally:
         w.broad_universe.fetch_broad_universe_meta = orig_meta
-        w.broad_universe.racional_symbols = orig_racional
         w.fetch_universe_quotes = orig_fetch
         _uninstall_fakes(saved)
         _restore()
+
+
+# NOTA (2026-09-24): el test que vivía acá
+# (`test_sweep_amplia_universo_con_racional_sin_filtrar_por_tipo`) verificaba
+# un comportamiento de una fase intermedia ("Fase 1 de ampliación hacia
+# Racional", 2026-09-07) que unía el universo base con TODO el catálogo
+# Racional sin aplicar el filtro de tipo -- ese comportamiento nunca llegó a
+# `run_sweep_once()` en la versión que se restauró hoy (que replica
+# exactamente el código de Fase 5/2026-08-17..08-20, EQUITY + ETF
+# apalancado, sin unión con Racional) -- `build_expanded_universe()` (donde
+# vivía esa unión) no tiene ningún caller en producción, confirmado por
+# grep. El test se retira en vez de "arreglarse" para no afirmar un
+# comportamiento que el código actual no tiene ni tuvo nunca en este punto.
 
 
 # ---------------------------------------------------------------------------
@@ -929,8 +909,10 @@ def test_merge_conserva_cotizacion_previa_cuando_el_simbolo_falta_en_el_barrido_
     universo) y SÍ estaba en `_last_quotes` del barrido anterior -> debe
     conservarse tal cual (mismo objeto, no un precio fabricado)."""
     _fresh()
-    orig_racional = w.broad_universe.racional_symbols
-    w.broad_universe.racional_symbols = lambda: {"AAA", "BBB"}
+    orig_meta = w.broad_universe.fetch_broad_universe_meta
+    w.broad_universe.fetch_broad_universe_meta = lambda: {
+        "AAA": {"type": "EQUITY", "name": "AAA Corp"}, "BBB": {"type": "EQUITY", "name": "BBB Corp"},
+    }
     try:
         # Barrido 1 -- ambos símbolos con Quote.
         q_aaa_1 = _fake_quote_price("AAA", 10.0)
@@ -955,7 +937,7 @@ def test_merge_conserva_cotizacion_previa_cuando_el_simbolo_falta_en_el_barrido_
         assert last["AAA"] is q_aaa_2  # el valor NUEVO siempre gana
         assert last["BBB"] is q_bbb_1  # BBB conservó el ÚLTIMO dato REAL, sin fabricar nada
     finally:
-        w.broad_universe.racional_symbols = orig_racional
+        w.broad_universe.fetch_broad_universe_meta = orig_meta
         _restore()
 
 
@@ -964,8 +946,10 @@ def test_merge_nunca_inventa_un_simbolo_que_nunca_tuvo_cotizacion():
     Quote real para él) no debe aparecer en `_last_quotes` solo porque
     forma parte del universo pedido."""
     _fresh()
-    orig_racional = w.broad_universe.racional_symbols
-    w.broad_universe.racional_symbols = lambda: {"AAA", "BBB"}
+    orig_meta = w.broad_universe.fetch_broad_universe_meta
+    w.broad_universe.fetch_broad_universe_meta = lambda: {
+        "AAA": {"type": "EQUITY", "name": "AAA Corp"}, "BBB": {"type": "EQUITY", "name": "BBB Corp"},
+    }
     try:
         saved = _install_fakes(session="regular", quotes={"AAA": _fake_quote_price("AAA", 10.0)})
         try:
@@ -976,7 +960,7 @@ def test_merge_nunca_inventa_un_simbolo_que_nunca_tuvo_cotizacion():
         assert "AAA" in last
         assert "BBB" not in last  # nunca tuvo cotización real -- nunca se fabrica una
     finally:
-        w.broad_universe.racional_symbols = orig_racional
+        w.broad_universe.fetch_broad_universe_meta = orig_meta
         _restore()
 
 
@@ -986,9 +970,11 @@ def test_merge_no_conserva_un_simbolo_que_salio_del_universo_actual():
     con el reemplazo total de antes -- para no acumular datos eternamente
     viejos de símbolos que Atlas ya no sigue."""
     _fresh()
-    orig_racional = w.broad_universe.racional_symbols
+    orig_meta = w.broad_universe.fetch_broad_universe_meta
     try:
-        w.broad_universe.racional_symbols = lambda: {"AAA", "BBB"}
+        w.broad_universe.fetch_broad_universe_meta = lambda: {
+            "AAA": {"type": "EQUITY", "name": "AAA Corp"}, "BBB": {"type": "EQUITY", "name": "BBB Corp"},
+        }
         saved = _install_fakes(session="regular", quotes={
             "AAA": _fake_quote_price("AAA", 10.0), "BBB": _fake_quote_price("BBB", 20.0),
         })
@@ -999,8 +985,8 @@ def test_merge_no_conserva_un_simbolo_que_salio_del_universo_actual():
         assert set(w.get_last_quotes().keys()) == {"AAA", "BBB"}
 
         # Barrido siguiente -- BBB ya NO forma parte del universo pedido
-        # (removido de Racional), y tampoco viene en el resultado.
-        w.broad_universe.racional_symbols = lambda: {"AAA"}
+        # (removido del universo base), y tampoco viene en el resultado.
+        w.broad_universe.fetch_broad_universe_meta = lambda: {"AAA": {"type": "EQUITY", "name": "AAA Corp"}}
         saved = _install_fakes(session="regular", quotes={"AAA": _fake_quote_price("AAA", 11.0)})
         try:
             w.run_sweep_once()
@@ -1008,7 +994,7 @@ def test_merge_no_conserva_un_simbolo_que_salio_del_universo_actual():
             _uninstall_fakes(saved)
         assert set(w.get_last_quotes().keys()) == {"AAA"}
     finally:
-        w.broad_universe.racional_symbols = orig_racional
+        w.broad_universe.fetch_broad_universe_meta = orig_meta
         _restore()
 
 
@@ -1017,8 +1003,10 @@ def test_merge_barrido_completo_sin_fallas_se_comporta_igual_que_antes():
     lo que hacía el reemplazo total -- `_last_quotes` termina siendo
     exactamente `result.quotes` de este barrido."""
     _fresh()
-    orig_racional = w.broad_universe.racional_symbols
-    w.broad_universe.racional_symbols = lambda: {"AAA", "BBB"}
+    orig_meta = w.broad_universe.fetch_broad_universe_meta
+    w.broad_universe.fetch_broad_universe_meta = lambda: {
+        "AAA": {"type": "EQUITY", "name": "AAA Corp"}, "BBB": {"type": "EQUITY", "name": "BBB Corp"},
+    }
     try:
         quotes = {"AAA": _fake_quote_price("AAA", 10.0), "BBB": _fake_quote_price("BBB", 20.0)}
         saved = _install_fakes(session="regular", quotes=quotes)
@@ -1028,7 +1016,7 @@ def test_merge_barrido_completo_sin_fallas_se_comporta_igual_que_antes():
             _uninstall_fakes(saved)
         assert w.get_last_quotes() == quotes
     finally:
-        w.broad_universe.racional_symbols = orig_racional
+        w.broad_universe.fetch_broad_universe_meta = orig_meta
         _restore()
 
 
