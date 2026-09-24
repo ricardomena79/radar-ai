@@ -8315,11 +8315,6 @@
     "type": "EQUITY"
   },
   {
-    "symbol": "NCPL",
-    "name": "Netcapital Inc",
-    "type": "EQUITY"
-  },
-  {
     "symbol": "NCT",
     "name": "Intercont (Cayman) Ltd",
     "type": "EQUITY"
@@ -10278,11 +10273,6 @@
     "symbol": "SCZ",
     "name": "MSCI EAFE Small-Cap ETF iShares",
     "type": "ETF"
-  },
-  {
-    "symbol": "SDEV",
-    "name": "Stablecoin Development Corp",
-    "type": "EQUITY"
   },
   {
     "symbol": "SDG",
