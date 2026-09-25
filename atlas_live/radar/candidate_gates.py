@@ -195,16 +195,31 @@ def gate_behavior_change(current: SweepSnapshot, history: List[SweepSnapshot], s
 # `gate_dollar_volume` deliberadamente NO está acá -- ver docstring de la
 # función para la evidencia real (validación 2026-08-14) de por qué un piso
 # absoluto no discrimina en el universo Racional (91.5% del universo real lo
-# disparaba solo). Las 7 puertas activas miden CAMBIO/RATIO, no nivel
+# disparaba solo). Las puertas activas miden CAMBIO/RATIO, no nivel
 # absoluto -- por diseño, ninguna tiene el mismo sesgo de tamaño.
+#
+# `gate_wakeup`/`gate_behavior_change` RETIRADAS (2026-09-24, autorizado
+# explícitamente): ambas disparan EXCLUSIVAMENTE sobre `relative_volume`
+# (ninguna exige que el precio se haya movido) -- mismo problema estructural
+# de RVOL en premarket ya documentado en esta sesión (caso NSSC). Evidencia
+# real, medida sobre 23.548 candidatas evaluables (dinero real >=$50.000,
+# `confiable_para_aprendizaje=1`): como ÚNICOS disparadores,
+# `cambio_de_comportamiento` acertó 0,7% a +10% (n=6.316) y `despertar`
+# 0,2% (n=2.175) -- contra 10,9% de `cambio_de_precio` sola (n=4.065) y un
+# acierto agregado del universo completo de 3,9%. Juntas aportaban el 48,5%
+# de TODO el volumen de candidatas detectadas con solo el 10,2% de los
+# aciertos reales a +10% (93 de 909). Retirarlas de `ALL_GATES` sube el
+# acierto medido de 3,9% a 6,7% (todo el universo) / 2,4% a 3,9% (Racional)
+# -- ver informe de sesión para el detalle completo por bucket. Las
+# funciones quedan definidas y documentadas, sin borrar -- disponibles para
+# recalibrar más adelante (ej. exigiendo también un piso mínimo de
+# `change_pct`) en vez de reactivarlas tal cual.
 ALL_GATES = [
     gate_price_change,
     gate_relative_volume,
     gate_acceleration,
-    gate_wakeup,
     gate_recovery,
     gate_sustained_premarket_climb,
-    gate_behavior_change,
 ]
 
 

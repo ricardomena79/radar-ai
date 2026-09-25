@@ -205,12 +205,15 @@ def test_G_campos_antiguos_de_candidate_detection_permanecen_intactos():
         _restore()
 
 
-def test_H_las_7_gates_siguen_siendo_exactamente_las_mismas():
-    assert len(gates.ALL_GATES) == 7
+def test_H_las_5_gates_activas_son_exactamente_las_esperadas():
+    # gate_wakeup/gate_behavior_change retiradas (2026-09-24, autorizado
+    # explícitamente -- sin poder predictivo real, ver docstring de
+    # ALL_GATES en candidate_gates.py).
+    assert len(gates.ALL_GATES) == 5
     nombres = {g.__name__ for g in gates.ALL_GATES}
     assert nombres == {
-        "gate_price_change", "gate_relative_volume", "gate_acceleration", "gate_wakeup",
-        "gate_recovery", "gate_sustained_premarket_climb", "gate_behavior_change",
+        "gate_price_change", "gate_relative_volume", "gate_acceleration",
+        "gate_recovery", "gate_sustained_premarket_climb",
     }
 
 

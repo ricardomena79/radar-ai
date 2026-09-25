@@ -84,12 +84,17 @@ def test_gate_behavior_change_auto_relativo():
     assert r.fired
 
 
-def test_evaluate_all_gates_corre_las_7_activas_siempre():
+def test_evaluate_all_gates_corre_las_5_activas_siempre():
     # dollar_volume NO está en ALL_GATES a propósito -- ver evidencia real
     # en el docstring de gate_dollar_volume (no discrimina en este universo).
+    # gate_wakeup/gate_behavior_change retiradas (2026-09-24, autorizado
+    # explícitamente -- sin poder predictivo real, ver docstring de
+    # ALL_GATES) -- quedan definidas pero fuera de la lista activa.
     results = g.evaluate_all_gates(_snap(change_pct=10.0, rvol=5.0), [], "regular")
-    assert len(results) == 7
+    assert len(results) == 5
     assert "dollar_volume" not in {r.name for r in results}
+    assert "despertar" not in {r.name for r in results}
+    assert "cambio_de_comportamiento" not in {r.name for r in results}
     assert g.any_gate_fired(results)
 
 
