@@ -208,6 +208,11 @@ body{
 .mercado-ext{font-size:11px;text-align:center;}
 .mercado-spark{display:block;width:56px;height:20px;}
 
+/* Volumen (2026-09-24) -- misma fila de Mercado, pero la columna de
+   precio necesita más ancho para mostrar volumen hoy/promedio/RVOL. */
+.volumen-row{grid-template-columns:26px 1fr minmax(120px,190px) 56px 20px 56px;}
+.volumen-stats{font-size:9.5px;color:var(--text-faint);white-space:normal;line-height:1.35;margin-top:2px;}
+
 /* ---------- universo yahoo (sector independiente de Universo Racional) ---------- */
 .panel-full{margin-top:18px;}
 

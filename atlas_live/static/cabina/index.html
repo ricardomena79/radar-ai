@@ -32,6 +32,7 @@
       <button class="nav-item" data-view="mercado"><span class="nav-icon">📈</span>Mercado</button>
       <button class="nav-item" data-view="etfs-normales"><span class="nav-icon">📦</span>ETFs Normales</button>
       <button class="nav-item" data-view="microcap"><span class="nav-icon">🪙</span>Microcap</button>
+      <button class="nav-item" data-view="volumen"><span class="nav-icon">📊</span>Volumen</button>
       <button class="nav-item" data-view="oportunidades"><span class="nav-icon">🎯</span>Oportunidades</button>
       <button class="nav-item" data-view="learning"><span class="nav-icon">🧠</span>Learning</button>
       <button class="nav-item" data-view="prediction-journal"><span class="nav-icon">📓</span>Prediction Journal</button>
@@ -121,6 +122,22 @@
         <div class="panel panel-full">
           <input type="text" id="microcap-search" class="mercado-search" placeholder="Buscar símbolo...">
           <div id="microcap-list"><div class="empty-state small">Esperando el primer ciclo...</div></div>
+        </div>
+      </section>
+
+      <!-- ================= VOLUMEN (2026-09-24, autorizado
+           explícitamente) -- universo y estado propios, todo Racional,
+           ordenado por RVOL (volumen de hoy / promedio) en vez de % de
+           cambio. ================= -->
+      <section id="view-volumen" class="view">
+        <div class="view-head">
+          <div class="eyebrow">Ranking en vivo por volumen relativo (RVOL)</div>
+          <h1>Volumen</h1>
+          <div class="view-sub" id="volumen-meta">universo independiente de Mercado</div>
+        </div>
+        <div class="panel panel-full">
+          <input type="text" id="volumen-search" class="mercado-search" placeholder="Buscar símbolo...">
+          <div id="volumen-list"><div class="empty-state small">Esperando el primer ciclo...</div></div>
         </div>
       </section>
 

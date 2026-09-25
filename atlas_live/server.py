@@ -172,6 +172,16 @@ etf_normal_view.start_etf_normal_view()
 from atlas_live import microcap_view
 microcap_view.start_microcap_view()
 
+# Volumen (2026-09-24, autorizado explícitamente): ranking en vivo de todo
+# Racional ordenado por RVOL (volumen de hoy / promedio), no por % de
+# cambio -- módulo HERMANO de market_view.py/etf_normal_view.py/
+# microcap_view.py, estado propio (nunca comparte snapshot/hilo con
+# ninguno de los otros). Mismo aislamiento total respecto a decisión/
+# aprendizaje -- ver docstring de atlas_live/volumen_view.py. Se
+# habilita/deshabilita por ATLAS_VOLUMEN_VIEW_ENABLED (default: encendido).
+from atlas_live import volumen_view
+volumen_view.start_volumen_view()
+
 
 @app.route("/")
 def index():
@@ -443,6 +453,20 @@ def api_microcap():
     el motor de decisión y el aprendizaje -- ver docstring de
     `microcap_view.py`."""
     return jsonify(microcap_view.get_microcap_snapshot())
+
+
+@app.route("/api/volumen")
+def api_volumen():
+    """Volumen (2026-09-24, autorizado explícitamente): snapshot ya
+    cacheado del ranking en vivo de todo Racional ordenado por RVOL
+    (volumen de hoy / promedio) -- mismo patrón que `/api/mercado`/
+    `/api/etfs-normales`/`/api/microcap`, pero con universo y estado 100%
+    propios (`atlas_live/volumen_view.py`). Público, sin token. Solo
+    lectura del snapshot ya calculado por el hilo de fondo -- este
+    endpoint NUNCA dispara una consulta nueva a Tradier. Completamente
+    aislado del radar, el motor de decisión y el aprendizaje -- ver
+    docstring de `volumen_view.py`."""
+    return jsonify(volumen_view.get_volumen_snapshot())
 
 
 @app.route("/api/admin/mercado-cycle-now", methods=["POST"])

@@ -793,6 +793,110 @@ function startMicrocapPolling() {
 }
 
 /* ============================================================
+ * VOLUMEN (2026-09-24, autorizado explícitamente) -- mismo tipo de
+ * ranking/presentación que Mercado (reutiliza _sparklineSvg/_mercadoAgeLabel/
+ * _mercadoAgeShort/_mercadoInitials tal cual), pero ordenado por RVOL
+ * (volumen de hoy / promedio) en vez de % de cambio. Fuente y estado
+ * propios: GET /api/volumen (snapshot cacheado por
+ * atlas_live/volumen_view.py, universo independiente de Mercado --
+ * todo Racional).
+ * ============================================================ */
+
+const VOLUMEN_POLL_MS = 1500;
+let _volumen = { generated_at: null, cycle_duration_s: null, rows: [] };
+let _volumenSearch = "";
+
+async function fetchVolumen() {
+  try {
+    const res = await fetch("/api/volumen");
+    _volumen = await res.json();
+  } catch (e) {
+    // Sin cambios de estado ante un fallo de red puntual -- mismo criterio
+    // que fetchMercado().
+  }
+  renderVolumen();
+}
+
+function _fmtVolumen(n) {
+  return n != null ? Number(n).toLocaleString("es-CL") : "--";
+}
+
+function renderVolumen() {
+  const listEl = document.getElementById("volumen-list");
+  const metaEl = document.getElementById("volumen-meta");
+  if (!listEl || !metaEl) return;
+
+  const rows = _volumen.rows || [];
+
+  metaEl.textContent = _volumen.total_universe != null
+    ? `Top ${rows.length} por RVOL (de ${_volumen.total_universe} escaneados) · ${_mercadoAgeLabel(_volumen.generated_at)}`
+    : "universo independiente de Mercado";
+
+  if (!rows.length) {
+    listEl.innerHTML = `<div class="empty-state small">${_volumen.ultimo_error ? "Error: " + _volumen.ultimo_error : "Esperando el primer ciclo..."}</div>`;
+    return;
+  }
+
+  const q = _volumenSearch.trim().toUpperCase();
+  const filtered = q
+    ? rows.filter((r) => r.symbol.toUpperCase().includes(q) || (r.name || "").toUpperCase().includes(q))
+    : rows;
+
+  if (!filtered.length) {
+    listEl.innerHTML = `<div class="empty-state small">Sin resultados para "${_volumenSearch}".</div>`;
+    return;
+  }
+
+  listEl.innerHTML = filtered.map((r) => {
+    const isUp = (r.change_pct ?? 0) >= 0;
+    const priceText = r.price != null ? r.price.toFixed(2) : "--";
+    let pctClass = "";
+    if (r.change_pct > 0) pctClass = "mercado-up";
+    else if (r.change_pct < 0) pctClass = "mercado-down";
+    const changePctText = r.change_pct == null
+      ? "s/d"
+      : `<span class="${pctClass}">${r.change_pct > 0 ? "+" : ""}${r.change_pct.toFixed(2)}%</span>`;
+
+    let extIcon = '<span class="mercado-ext" title="Dato fresco de este ciclo">🟢</span>';
+    if (r.data_status === "STALE") {
+      extIcon = `<span class="mercado-ext mercado-stale" title="Último dato conocido (${_mercadoAgeShort(r.data_age_seconds)})">⏱</span>`;
+    } else if (r.price_is_stale) {
+      extIcon = '<span class="mercado-ext mercado-stale" title="Precio vencido -- fuera de sesión">⏱</span>';
+    }
+
+    const rvolText = r.relative_volume != null ? `${fmtNum(r.relative_volume, 2)}x` : "--";
+
+    return `
+      <div class="mercado-row volumen-row" data-symbol="${r.symbol}">
+        <div class="mercado-logo">${_mercadoInitials(r.symbol)}</div>
+        <div class="mercado-id">
+          <div class="mercado-name">${r.name || r.symbol}</div>
+          <div class="mercado-ticker">${r.symbol}</div>
+        </div>
+        <div class="mercado-price">
+          ${priceText}
+          <div class="volumen-stats" title="Volumen de hoy vs. promedio de sesión regular completa">Vol. hoy ${_fmtVolumen(r.volume)} · prom. ${_fmtVolumen(r.average_volume)} · RVOL ${rvolText}</div>
+        </div>
+        <div class="mercado-change-pct">${changePctText}</div>
+        ${extIcon}
+        ${_sparklineSvg(r.sparkline, isUp)}
+      </div>`;
+  }).join("");
+}
+
+function startVolumenPolling() {
+  fetchVolumen();
+  setInterval(fetchVolumen, VOLUMEN_POLL_MS);
+  const searchInput = document.getElementById("volumen-search");
+  if (searchInput) {
+    searchInput.addEventListener("input", () => {
+      _volumenSearch = searchInput.value;
+      renderVolumen();
+    });
+  }
+}
+
+/* ============================================================
  * UNIVERSO YAHOO -- sector independiente de Universo Racional.
  * Capa 1 (identidad, ~6.600+): GET /api/universo-yahoo, se carga UNA sola
  * vez al abrir la Cabina; la búsqueda por ticker/nombre filtra 100% en el
@@ -1512,6 +1616,7 @@ function init() {
   startMercadoPolling();
   startEtfsNormalesPolling();
   startMicrocapPolling();
+  startVolumenPolling();
   initUniversoYahoo();
   fetchCapacidad();
   fetchPatronHorario();
