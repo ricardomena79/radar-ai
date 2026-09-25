@@ -69,6 +69,21 @@ def _env_int(name: str, default: int) -> int:
 
 WATCHLIST_EQUITIES = _env_int("ATLAS_SCAN_WATCHLIST_EQUITIES", 150)
 WATCHLIST_ETFS = _env_int("ATLAS_SCAN_WATCHLIST_ETFS", 50)
+# Tope de la capa 0 (_radar_candidates_layer, ver abajo) -- incidente real
+# 2026-09-24: `radar_worker.py` amplió su propio universo de barrido de
+# ~2.575 (Racional) a ~6.600 símbolos (autorizado explícitamente, para que
+# el aprendizaje se nutra de todo el mercado) -- esta capa, sin tope,
+# pasó de tomar unos cientos de candidatas/día a 6.306 en el primer día,
+# cada una disparando su propia llamada a Yahoo para historial
+# (`get_history()`, momentum/atlas_score) -- el mismo tipo de incidente ya
+# documentado en SCAN_REQUEST_DELAY_MS (2026-08-18, "0 ciclos con datos")
+# pero contra Yahoo en vez de Tradier, y esta vez lo bastante severo como
+# para agotar los 8 threads de gunicorn (`--workers 1 --threads 8`,
+# railway.json) y dejar sin respuesta TODO el servidor, no solo este
+# ciclo. Tope elegido con margen sobre WATCHLIST_EQUITIES+WATCHLIST_ETFS
+# (200) para seguir siendo la capa PRINCIPAL como pide el docstring de
+# `_build_watchlist()`, sin volver a ser ilimitado.
+RADAR_CANDIDATES_LAYER_MAX = _env_int("ATLAS_SCAN_RADAR_CANDIDATES_MAX", 300)
 # Piso fijo, siempre escaneado. Ampliado (2026-08-05) tras confirmar en vivo
 # el 2026-08-04 que movers reales (AMD, TSLA, MSTR, COIN) quedaban fuera del
 # muestreo estratificado y nunca eran vistos por Atlas, sin importar cuánto
@@ -411,10 +426,15 @@ def _prefilter_movers(chunk: List[Asset]) -> List[Asset]:
 
 
 def _radar_candidates_layer(by_symbol: Dict[str, "Asset"]) -> List[Asset]:
-    """Candidatas detectadas HOY por el radar de universo completo
-    (`atlas_live.radar`, Tradier sobre ~2.575 símbolos) -- fuente PRINCIPAL
-    del watchlist desde 2026-08-14 (CAPA 2). Aislada en su propio
-    try/except a propósito: si el radar está deshabilitado
+    """Candidatas detectadas HOY por el radar (`atlas_live.radar`, Tradier)
+    -- fuente PRINCIPAL del watchlist desde 2026-08-14 (CAPA 2). Acotada a
+    `RADAR_CANDIDATES_LAYER_MAX` (2026-09-24, incidente real -- ver su
+    constante): con el radar ahora barriendo el universo completo, el
+    volumen de candidatas/día puede ser de miles; se toman las MÁS
+    RECIENTES (`detected_at` descendente -- lo que Atlas encontró hace un
+    momento importa más que algo detectado horas atrás para este scoring
+    de momentum/flujo de dinero), nunca todas sin límite. Aislada en su
+    propio try/except a propósito: si el radar está deshabilitado
     (`ATLAS_RADAR_ENABLED=false`), recién arrancó y todavía no detectó
     nada, o la tabla no existe por cualquier motivo, esta capa queda vacía
     y el resto de `_build_watchlist` sigue funcionando exactamente igual
@@ -425,6 +445,8 @@ def _radar_candidates_layer(by_symbol: Dict[str, "Asset"]) -> List[Asset]:
 
         market_date = market_hours.market_date()
         candidatas = radar_registry.list_candidates_for_date(market_date)
+        candidatas = sorted(candidatas, key=lambda c: c.get("detected_at") or "", reverse=True)
+        candidatas = candidatas[:RADAR_CANDIDATES_LAYER_MAX]
         out = []
         for c in candidatas:
             asset = by_symbol.get(c["ticker"])
