@@ -218,6 +218,63 @@ def test_default_estado_validacion_es_ok_compatibilidad_hacia_atras():
     assert estado == "OPORTUNIDAD_PRIORITARIA"
 
 
+# --- Dirección bajista excluida de VIGILAR/PREPARACION (2026-09-25, caso
+# real SGMT: candidata bajando -2.1%, mezclada sin distinción con
+# oportunidades de compra genuinas en el panel de Oportunidades) ---
+
+def test_alerta_temprana_bajista_es_no_tocar_no_vigilar():
+    estado, motivo = classify_final_priority(
+        stage="ALERTA_TEMPRANA", direction="BAJISTA", change_pct_confiable=True, tiene_precio_actual=True,
+    )
+    assert estado == "NO_TOCAR"
+    assert "bajista" in motivo
+
+
+def test_alerta_fuerte_bajista_es_no_tocar_no_vigilar():
+    estado, motivo = classify_final_priority(
+        stage="ALERTA_FUERTE", direction="BAJISTA", change_pct_confiable=True, tiene_precio_actual=True,
+    )
+    assert estado == "NO_TOCAR"
+    assert "bajista" in motivo
+
+
+def test_preparacion_bajista_es_no_tocar_no_preparacion():
+    estado, motivo = classify_final_priority(
+        stage="PREPARACION", direction="BAJISTA", change_pct_confiable=True, tiene_precio_actual=True,
+    )
+    assert estado == "NO_TOCAR"
+    assert "bajista" in motivo
+
+
+def test_confirmacion_bajista_es_no_tocar_nunca_oportunidad_prioritaria():
+    estado, motivo = classify_final_priority(
+        stage="CONFIRMACION", direction="BAJISTA", change_pct_confiable=True, tiene_precio_actual=True,
+    )
+    assert estado == "NO_TOCAR"
+    assert estado != "OPORTUNIDAD_PRIORITARIA"
+
+
+def test_direccion_bajista_tiene_prioridad_sobre_estado_validacion_ok_pero_no_sobre_precio_vencido():
+    # La regla de BAJISTA vive DESPUÉS de estado_validacion en el orden de
+    # evaluación -- un precio vencido sigue ganando primero.
+    estado, motivo = classify_final_priority(
+        stage="ALERTA_TEMPRANA", direction="BAJISTA", change_pct_confiable=True,
+        tiene_precio_actual=True, estado_validacion=VALIDACION_VENCIDO,
+    )
+    assert estado == "NO_TOCAR"
+    assert "vencido" in motivo  # el motivo sigue siendo el de datos vencidos, no el de bajista
+
+
+def test_alerta_temprana_neutral_e_indefinida_siguen_siendo_vigilar():
+    # Confirma que la nueva regla NO afecta direcciones distintas de BAJISTA
+    # -- INDEFINIDA/NEUTRAL siguen entrando a VIGILAR igual que antes.
+    for direction in (None, "INDEFINIDA", "NEUTRAL"):
+        estado, _ = classify_final_priority(
+            stage="ALERTA_TEMPRANA", direction=direction, change_pct_confiable=True, tiene_precio_actual=True,
+        )
+        assert estado == "VIGILAR", f"direction={direction} debería seguir siendo VIGILAR"
+
+
 def test_todos_los_estados_devueltos_pertenecen_a_final_states():
     casos = [
         ("NO_PERSEGUIR", None), ("FLUJO_VENDEDOR", "BAJISTA"), ("INICIO", "ALCISTA"),

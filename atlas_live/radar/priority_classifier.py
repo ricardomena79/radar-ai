@@ -93,12 +93,24 @@ def classify_final_priority(
        ETAPA -- una señal de INICIO/CONFIRMACION con precio vencido nunca
        llega a evaluarse como oportunidad.
     3. `stage` ya es NO_PERSEGUIR/FLUJO_VENDEDOR -> NO_TOCAR.
-    4. `stage` en (INICIO, CONFIRMACION) con `direction=="ALCISTA"` ->
+    4. `direction=="BAJISTA"` (2026-09-25, autorizado explícitamente --
+       caso real SGMT: candidata bajando -2.1%, `direction=="INDEFINIDA"`
+       en ese caso puntual, pero el mismo hallazgo mostró 10/71 candidatas
+       `VIGILAR` con `direction=="BAJISTA"` confirmada, mezcladas sin
+       distinción con oportunidades de compra genuinas) -> NO_TOCAR, CON
+       PRIORIDAD sobre cualquier etapa -- una dirección bajista confirmada
+       nunca debe presentarse como "para vigilar/comprar", sin importar
+       qué tan temprana sea la etapa. `alert_stage.classify_alert_stage()`
+       ya intenta enrutar esto a `FLUJO_VENDEDOR` (regla 3 de arriba) --
+       esta regla es el cierre para los casos donde esa clasificación no
+       alcanzó a aplicar (ej. ALERTA_TEMPRANA/PREPARACION con dirección
+       bajista, que hoy no pasan por esa rama).
+    5. `stage` en (INICIO, CONFIRMACION) con `direction=="ALCISTA"` ->
        OPORTUNIDAD_PRIORITARIA (ya exige dirección confirmada por
        `alert_stage.classify_alert_stage`, se revalida acá por claridad).
-    5. `stage` en (ALERTA_TEMPRANA, ALERTA_FUERTE) -> VIGILAR.
-    6. `stage` en (PREPARACION, DETECCION_TEMPRANA) -> PREPARACION.
-    7. Cualquier otro caso (stage=None o desconocido) -> NO_TOCAR."""
+    6. `stage` en (ALERTA_TEMPRANA, ALERTA_FUERTE) -> VIGILAR.
+    7. `stage` en (PREPARACION, DETECCION_TEMPRANA) -> PREPARACION.
+    8. Cualquier otro caso (stage=None o desconocido) -> NO_TOCAR."""
     nota_historica = _historical_evidence_note(historical_evidence)
 
     if not tiene_precio_actual:
@@ -110,6 +122,9 @@ def classify_final_priority(
 
     if stage in _NO_TOCAR_STAGES:
         return "NO_TOCAR", f"Etapa {stage}"
+
+    if direction == "BAJISTA":
+        return "NO_TOCAR", f"Etapa {stage}, dirección bajista -- no se presenta como oportunidad de compra"
 
     if stage in _ALCISTA_AVANZADO and direction == "ALCISTA":
         motivo = f"Etapa {stage}, dirección confirmada"
