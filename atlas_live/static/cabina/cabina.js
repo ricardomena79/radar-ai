@@ -110,34 +110,6 @@ const PM_STATE_LABELS = {
 const PM_VOLUMEN_TITLE =
   "Vol. premarket -- percentil del dollar_volume acumulado HOY contra TODO el universo escaneado en este barrido. NO es RVOL (no usa average_volume/relative_volume) -- puede ser alto aunque RVOL esté cerca de 0 en premarket temprano.";
 
-/* Indicador COMPRA/VENTA (2026-09-20, autorizado explícitamente --
- * "por ahora es solo visual/informativo"). Fuente: bidsize_at_detection/
- * asksize_at_detection/bid_ask_size_ratio_at_detection/
- * bid_ask_size_imbalance_at_detection, ya expuestos por
- * live_opportunities()/GET /api/radar-oportunidades (congelados en el
- * momento de la detección, nunca recalculados acá). Puramente de
- * presentación -- no participa en _ordenarOportunidades() ni en ningún
- * otro cálculo de esta pantalla. Vacío ("") cuando no hay dato, mismo
- * criterio que el resto de los helpers de esta tarjeta. */
-function _bidAskSizeHtml(o) {
-  const bidsize = o.bidsize_at_detection;
-  const asksize = o.asksize_at_detection;
-  if (bidsize == null && asksize == null) return "";
-  const bidTxt = bidsize != null ? Number(bidsize).toLocaleString("es-CL") : "--";
-  const askTxt = asksize != null ? Number(asksize).toLocaleString("es-CL") : "--";
-  const ratio = o.bid_ask_size_ratio_at_detection;
-  const imbalance = o.bid_ask_size_imbalance_at_detection;
-  const ratioTxt = ratio != null ? `${fmtNum(ratio, 2)}x` : "--";
-  const imbalanceTxt = imbalance != null ? `${imbalance >= 0 ? "+" : ""}${imbalance.toFixed(3)}` : "--";
-  return `<div class="bidask-line" title="Tamaño de compra/venta al momento de la detección -- indicador de observación, no participa en el ranking ni en ninguna decisión">
-    <span class="bidask-compra">COMPRA 🟢 ${bidTxt}</span>
-    <span class="bidask-sep">|</span>
-    <span class="bidask-venta">VENTA 🔴 ${askTxt}</span>
-    <span class="bidask-ratio">Ratio ${ratioTxt}</span>
-    <span class="bidask-imbalance">Imbalance ${imbalanceTxt}</span>
-  </div>`;
-}
-
 function _pmVolumenHtml(o) {
   const state = o.premarket_volume_percentile_state;
   if (state === "VALID" && o.premarket_volume_percentile != null) {
@@ -362,7 +334,6 @@ function _renderOportunidadesEn(el, top) {
       <div class="proj-col">${_proyeccionHtml(o)}</div>
       <div class="why-col">
         <div class="why-line">${_porQueHtml(o)}</div>
-        ${_bidAskSizeHtml(o)}
       </div>
     </div>`;
   }).join("");
@@ -1523,33 +1494,12 @@ function renderPatronHorario(data) {
     </div>`;
 }
 
-/* ============================================================
- * Fase de observación bid/ask size (2026-09-20, autorizado explícitamente):
- * contador simple -- "Faltan: N" únicamente, sin gráficos ni texto extra.
- * Fuente: GET /api/bid-ask-size-observacion (público, solo lectura sobre
- * candidate_detection ya persistido). Puramente informativo.
- * ============================================================ */
-
-async function fetchBidAskSizeObservacion() {
-  const el = document.getElementById("bidask-obs-widget");
-  if (!el) return;
-  try {
-    const res = await fetch("/api/bid-ask-size-observacion");
-    if (!res.ok) throw new Error("HTTP " + res.status);
-    const data = await res.json();
-    el.textContent = `Faltan: ${data.faltan}`;
-  } catch (err) {
-    console.error("fetchBidAskSizeObservacion:", err);
-  }
-}
-
 /* ---------------- arranque ---------------- */
 
 const OPORTUNIDADES_POLL_MS = 30000;
 const UNIVERSO_POLL_MS = 60000;
 const CAPACITY_POLL_MS = 600000; // 10 min -- la capacidad cambia despacio
 const PATRON_HORARIO_POLL_MS = 600000; // 10 min -- cambia muy despacio (TTL backend 6h)
-const BIDASK_OBS_POLL_MS = 600000; // 10 min -- crece despacio, mismo criterio que Capacidad
 
 function init() {
   setupSidebar();
@@ -1565,14 +1515,12 @@ function init() {
   initUniversoYahoo();
   fetchCapacidad();
   fetchPatronHorario();
-  fetchBidAskSizeObservacion();
 
   setInterval(fetchOportunidades, OPORTUNIDADES_POLL_MS);
   setInterval(fetchAprendizaje, OPORTUNIDADES_POLL_MS);
   setInterval(fetchUniverso, UNIVERSO_POLL_MS);
   setInterval(fetchCapacidad, CAPACITY_POLL_MS);
   setInterval(fetchPatronHorario, PATRON_HORARIO_POLL_MS);
-  setInterval(fetchBidAskSizeObservacion, BIDASK_OBS_POLL_MS);
 }
 
 document.addEventListener("DOMContentLoaded", init);

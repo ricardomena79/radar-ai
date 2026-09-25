@@ -63,15 +63,6 @@ VALIDACION_EN_VALIDACION_MAX = 499         # 100 <= n <= 499 -> 🟡 EN VALIDACI
 META_CONFIANZA_PCT = 80.0
 META_MUESTRA_MINIMA = 500
 
-# Fase de observación de bid_ask_size_imbalance (2026-09-20, autorizado
-# explícitamente; objetivo subido de 200 a 1.000, luego a 10.000 y luego a
-# 20.000 el 2026-09-22, todos autorizados explícitamente -- los pisos
-# anteriores se cruzaron muy rápido; 20.000 exige varios días reales de
-# acumulación antes de evaluar si el indicador aporta algo) -- NUNCA se usa
-# en ranking/decisión/alert_stage/aprendizaje mientras tanto, ver
-# `bid_ask_size_observation_status()`.
-BID_ASK_SIZE_OBSERVATION_TARGET = 20000
-
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS candidate_detection (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1127,30 +1118,6 @@ def live_opportunities(market_date: str) -> List[Dict[str, Any]]:
             "asksize_at_detection": d.get("asksize_at_detection"),
         })
     return out
-
-
-def bid_ask_size_observation_status() -> Dict[str, Any]:
-    """Fase de observación de bid_ask_size_imbalance (2026-09-20, autorizado
-    explícitamente): cuenta casos VÁLIDOS reales ya registrados -- filas de
-    `candidate_detection` con `bid_ask_size_imbalance_at_detection` no nulo
-    (que, por construcción de `candidate_tracker.py`, solo puede ser no nulo
-    cuando `bidsize`/`asksize` estaban ambos presentes y la división era
-    calculable -- nunca cuenta sweeps ni candidatas sin ese dato). Acumulado
-    histórico TOTAL, sin filtrar por `market_date` -- el objetivo es juntar
-    200 casos en total, no por día. Solo lectura -- no participa en ranking,
-    decisión, `alert_stage` ni aprendizaje; es exclusivamente para saber
-    cuándo hay muestra suficiente para evaluar si el indicador aporta algo."""
-    with _connect() as conn:
-        row = conn.execute(
-            "SELECT COUNT(*) AS n FROM candidate_detection WHERE bid_ask_size_imbalance_at_detection IS NOT NULL"
-        ).fetchone()
-        casos_validos = row["n"] if row else 0
-    faltan = max(0, BID_ASK_SIZE_OBSERVATION_TARGET - casos_validos)
-    return {
-        "casos_validos": casos_validos,
-        "objetivo": BID_ASK_SIZE_OBSERVATION_TARGET,
-        "faltan": faltan,
-    }
 
 
 # --------------------------- análisis 1 minuto ---------------------------

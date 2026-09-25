@@ -86,10 +86,6 @@ body{
 .sidebar-capacity .cw-pct{font-size:13px;}
 .sidebar-capacity .cw-detail{font-size:10px;gap:1px 0;flex-direction:column;}
 
-/* Fase de observación bid/ask size (2026-09-20) -- contador simple, sin
-   gráficos, mismo ancho/ubicación que el widget de Capacidad. */
-.bidask-obs-widget{flex-shrink:0;margin-top:8px;padding:8px 12px;font-size:11px;font-family:"IBM Plex Mono",monospace;color:var(--text-dim);background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);text-align:center;}
-
 /* ---------- tabs internos de "Histórico" (2026-09-07, fusión de menú) ---------- */
 .historico-tabs{display:flex;gap:6px;margin-bottom:16px;border-bottom:1px solid var(--border);}
 .historico-tab{
@@ -176,14 +172,6 @@ body{
 .proj-col .proj-note-amplia{color:var(--text-faint);font-style:italic;margin-top:3px;}
 
 .why-col .why-line{font-size:13px;color:var(--text-dim);line-height:1.45;}
-
-/* Indicador COMPRA/VENTA (2026-09-20) -- puramente informativo, ver
-   cabina.js::_bidAskSizeHtml(). */
-.bidask-line{margin-top:6px;font-size:12px;font-family:"IBM Plex Mono",monospace;display:flex;flex-wrap:wrap;gap:8px;align-items:center;}
-.bidask-compra{color:var(--green);font-weight:600;}
-.bidask-venta{color:var(--red);font-weight:600;}
-.bidask-sep{color:var(--text-faint);}
-.bidask-ratio,.bidask-imbalance{color:var(--text-dim);}
 
 /* ---------- secondary row ---------- */
 .secondary-grid{display:grid;grid-template-columns:1fr 1.35fr;gap:18px;}
