@@ -77,6 +77,28 @@ def test_gate_sustained_premarket_climb_solo_en_premarket():
     assert not r_reg.fired
 
 
+# --- Piso de magnitud (2026-09-26, autorizado explícitamente): caso real
+# encontrado en producción -- 6.566 candidatas históricas dispararon esta
+# puerta con una subida sostenida pero mínima (incluso +0,01%), con solo
+# 4,2% de acierto real a +10%. Con el piso >=1,5%, el acierto medido sube
+# a un punto medio real entre 6,5% (piso 1%) y 8,9% (piso 2%). ---
+
+def test_gate_sustained_premarket_climb_no_dispara_con_alza_minima():
+    # Sostenido y positivo, pero por debajo del piso de magnitud (1,5%
+    # por defecto) -- antes del fix esto SÍ disparaba, ahora no.
+    history = [_snap(change_pct=0.2), _snap(change_pct=0.4), _snap(change_pct=0.6), _snap(change_pct=0.8)]
+    current = _snap(change_pct=1.0)
+    r = g.gate_sustained_premarket_climb(current, history, "premarket")
+    assert not r.fired
+
+
+def test_gate_sustained_premarket_climb_dispara_justo_en_el_piso():
+    history = [_snap(change_pct=0.5), _snap(change_pct=0.8), _snap(change_pct=1.0), _snap(change_pct=1.2)]
+    current = _snap(change_pct=1.5)  # exactamente MIN_SUSTAINED_CHANGE_PCT
+    r = g.gate_sustained_premarket_climb(current, history, "premarket")
+    assert r.fired
+
+
 def test_gate_behavior_change_auto_relativo():
     history = [_snap(rvol=0.8), _snap(rvol=0.9), _snap(rvol=1.0), _snap(rvol=0.85)]
     current = _snap(rvol=3.0)  # varias veces la mediana propia (~0.9)
@@ -84,17 +106,18 @@ def test_gate_behavior_change_auto_relativo():
     assert r.fired
 
 
-def test_evaluate_all_gates_corre_las_5_activas_siempre():
+def test_evaluate_all_gates_corre_las_4_activas_siempre():
     # dollar_volume NO está en ALL_GATES a propósito -- ver evidencia real
     # en el docstring de gate_dollar_volume (no discrimina en este universo).
-    # gate_wakeup/gate_behavior_change retiradas (2026-09-24, autorizado
-    # explícitamente -- sin poder predictivo real, ver docstring de
-    # ALL_GATES) -- quedan definidas pero fuera de la lista activa.
+    # gate_wakeup/gate_behavior_change (2026-09-24) y gate_relative_volume
+    # (2026-09-26) retiradas -- sin poder predictivo real, ver docstring de
+    # ALL_GATES -- quedan definidas pero fuera de la lista activa.
     results = g.evaluate_all_gates(_snap(change_pct=10.0, rvol=5.0), [], "regular")
-    assert len(results) == 5
+    assert len(results) == 4
     assert "dollar_volume" not in {r.name for r in results}
     assert "despertar" not in {r.name for r in results}
     assert "cambio_de_comportamiento" not in {r.name for r in results}
+    assert "volumen_relativo" not in {r.name for r in results}
     assert g.any_gate_fired(results)
 
 

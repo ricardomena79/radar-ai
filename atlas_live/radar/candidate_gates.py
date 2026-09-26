@@ -53,6 +53,14 @@ RECOVERY_MIN_DROP_PCT = _env_float("ATLAS_RADAR_GATE_RECOVERY_MIN_DROP_PCT", 3.0
 RECOVERY_MIN_REBOUND_PCT = _env_float("ATLAS_RADAR_GATE_RECOVERY_MIN_REBOUND_PCT", 2.0)
 BEHAVIOR_CHANGE_MIN_RATIO = _env_float("ATLAS_RADAR_GATE_BEHAVIOR_CHANGE_RATIO", 2.0)
 MIN_HISTORY_FOR_COMPARATIVE_GATES = _env_int("ATLAS_RADAR_GATE_MIN_HISTORY", 3)
+# Piso de magnitud para gate_sustained_premarket_climb (2026-09-26,
+# autorizado explícitamente): la puerta original disparaba con CUALQUIER
+# subida sostenida, aunque fuera +0,01% -- sin piso de magnitud. Evidencia
+# real (6.566 casos históricos como único disparador, dinero real
+# >=$50.000): piso 0%=4,2% de acierto a +10%, piso 1%=6,5%, piso 2%=8,9% --
+# relación limpia y monótona. 1.5% elegido como punto medio moderado (no
+# el extremo de 2%, para no sacrificar tanto volumen/aciertos reales).
+MIN_SUSTAINED_CHANGE_PCT = _env_float("ATLAS_RADAR_GATE_MIN_SUSTAINED_CHANGE_PCT", 1.5)
 
 
 @dataclass(frozen=True)
@@ -161,16 +169,25 @@ def gate_recovery(current: SweepSnapshot, history: List[SweepSnapshot], session:
 
 
 def gate_sustained_premarket_climb(current: SweepSnapshot, history: List[SweepSnapshot], session: str) -> GateResult:
-    """Viene subiendo desde el premarket -- cambio % positivo y sostenido a
-    lo largo de la sesión de premarket (no un pico aislado)."""
+    """Viene subiendo desde el premarket -- cambio % positivo, de magnitud
+    real (>=MIN_SUSTAINED_CHANGE_PCT, ver constante) y sostenido a lo largo
+    de la sesión de premarket (no un pico aislado)."""
     if session != "premarket":
         return GateResult(False, "sostenido_premarket", "no aplica fuera de premarket")
-    if len(history) < MIN_HISTORY_FOR_COMPARATIVE_GATES or current.change_pct is None or current.change_pct <= 0:
-        return GateResult(False, "sostenido_premarket", "historial insuficiente o sin alza actual")
+    if (
+        len(history) < MIN_HISTORY_FOR_COMPARATIVE_GATES
+        or current.change_pct is None
+        or current.change_pct < MIN_SUSTAINED_CHANGE_PCT
+    ):
+        return GateResult(False, "sostenido_premarket", "historial insuficiente o sin alza actual suficiente")
     pcts = [h.change_pct for h in history if h.change_pct is not None] + [current.change_pct]
     positivos = sum(1 for p in pcts if p > 0)
-    fired = positivos >= max(3, int(0.8 * len(pcts))) and current.change_pct > 0
-    return GateResult(fired, "sostenido_premarket", f"{positivos}/{len(pcts)} barridos en positivo", positivos / len(pcts))
+    fired = positivos >= max(3, int(0.8 * len(pcts))) and current.change_pct >= MIN_SUSTAINED_CHANGE_PCT
+    return GateResult(
+        fired, "sostenido_premarket",
+        f"{positivos}/{len(pcts)} barridos en positivo, actual={current.change_pct:.2f}% vs piso {MIN_SUSTAINED_CHANGE_PCT}%",
+        positivos / len(pcts),
+    )
 
 
 def gate_behavior_change(current: SweepSnapshot, history: List[SweepSnapshot], session: str) -> GateResult:
@@ -214,9 +231,25 @@ def gate_behavior_change(current: SweepSnapshot, history: List[SweepSnapshot], s
 # funciones quedan definidas y documentadas, sin borrar -- disponibles para
 # recalibrar más adelante (ej. exigiendo también un piso mínimo de
 # `change_pct`) en vez de reactivarlas tal cual.
+#
+# `gate_relative_volume` RETIRADA (2026-09-26, autorizado explícitamente,
+# misma auditoría que agregó el piso de magnitud a
+# `gate_sustained_premarket_climb`): como ÚNICO disparador (n=373,
+# universo completo, sin filtro de dinero), acertó 1,3% a +10% -- y a
+# diferencia de `gate_sustained_premarket_climb` (donde subir el piso de
+# magnitud SÍ mejoraba el acierto de forma limpia), acá subir el piso de
+# RVOL NO ayuda en absoluto: 1,5x->1,3%, 3x->1,5%, 5x->0,0%, 10x->0,0% --
+# plano/nulo sin importar el umbral, mismo patrón que `gate_wakeup`/
+# `gate_behavior_change` (RVOL puro, sin exigir movimiento de precio, sin
+# relación real con el resultado). Bajo impacto de volumen (373 de ~13.000
+# candidatas futuras, ~2,8%) pero evidencia limpia de que no es
+# recalibrable con un umbral -- se retira, no se ajusta. La función queda
+# definida y documentada, sin borrar. `gate_acceleration`/`gate_recovery`
+# se revisaron con el mismo criterio (n=1.093/206, magnitud creciente ->
+# acierto algo mejor) pero la muestra es demasiado chica para fijar un
+# umbral nuevo con confianza -- quedan sin cambios por ahora.
 ALL_GATES = [
     gate_price_change,
-    gate_relative_volume,
     gate_acceleration,
     gate_recovery,
     gate_sustained_premarket_climb,

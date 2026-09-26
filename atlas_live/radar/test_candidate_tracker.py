@@ -205,14 +205,14 @@ def test_G_campos_antiguos_de_candidate_detection_permanecen_intactos():
         _restore()
 
 
-def test_H_las_5_gates_activas_son_exactamente_las_esperadas():
-    # gate_wakeup/gate_behavior_change retiradas (2026-09-24, autorizado
-    # explícitamente -- sin poder predictivo real, ver docstring de
-    # ALL_GATES en candidate_gates.py).
-    assert len(gates.ALL_GATES) == 5
+def test_H_las_4_gates_activas_son_exactamente_las_esperadas():
+    # gate_wakeup/gate_behavior_change (2026-09-24) y gate_relative_volume
+    # (2026-09-26) retiradas -- sin poder predictivo real, ver docstring
+    # de ALL_GATES en candidate_gates.py.
+    assert len(gates.ALL_GATES) == 4
     nombres = {g.__name__ for g in gates.ALL_GATES}
     assert nombres == {
-        "gate_price_change", "gate_relative_volume", "gate_acceleration",
+        "gate_price_change", "gate_acceleration",
         "gate_recovery", "gate_sustained_premarket_climb",
     }
 
@@ -481,6 +481,16 @@ def test_caso_real_sezl_change_pct_cero_con_rvol_alto_da_alerta_temprana_no_fluj
         ref_reg.percentile_change_pct = lambda symbol, p: None
         try:
             h = SweepHistory()
+            # SEZL ya venía siendo candidata de un barrido anterior real
+            # (gate_price_change, cambio genuino) -- gate_relative_volume
+            # (2026-09-26, retirada) era la única puerta que antes permitía
+            # que ESTE barrido puntual (change_pct=0.0, solo RVOL) entrara
+            # como PRIMERA detección; el seguimiento de una candidata YA
+            # detectada (`_tag_alert_stage`, vía `elif reg.is_detected(...)`
+            # en `process_sweep`) sigue corriendo en cada barrido posterior
+            # sin importar si disparó una puerta ESE barrido -- exactamente
+            # el caso real que se está probando acá.
+            tracker.process_sweep({"SEZL": _quote("SEZL", 126.0, 6.0, rvol=1.0)}, h, "2026-08-17", "premarket", _now())
             tracker.process_sweep({"SEZL": _quote("SEZL", 128.96, 0.0, rvol=8.5789)}, h, "2026-08-17", "premarket", _now())
             assert reg.latest_alert_stage("SEZL", "2026-08-17") == "ALERTA_TEMPRANA"
         finally:
@@ -648,9 +658,11 @@ def test_pm_early_signal_se_congela_en_la_primera_deteccion():
     try:
         h = SweepHistory()
         quotes = dict(_padding_universe(n=150, volume=100))
-        # ATEC-like: cambio chico (temprano por change_pct<8%), volumen alto
-        # -> percentil alto dentro del universo padding (volume=100 c/u).
-        quotes["EARLY1"] = _quote("EARLY1", 10.0, 2.0, volume=50_000, avg_volume=500, rvol=2.0)
+        # ATEC-like: cambio moderado (temprano por change_pct<8%, pero
+        # >=piso de gate_price_change tras retirar gate_relative_volume el
+        # 2026-09-26), volumen alto -> percentil alto dentro del universo
+        # padding (volume=100 c/u).
+        quotes["EARLY1"] = _quote("EARLY1", 10.0, 3.5, volume=50_000, avg_volume=500, rvol=2.0)
         tracker.process_sweep(quotes, h, "2026-09-14", "premarket", _now())
 
         det = reg.get_detection("EARLY1", "2026-09-14")
