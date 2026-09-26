@@ -149,6 +149,18 @@
         </div>
         <div id="patron-horario-banner"></div>
         <div class="opp-list" id="opp-list"><div class="empty-state">Cargando oportunidades...</div></div>
+
+        <!-- VIGILAR (2026-09-26, autorizado explícitamente): medido con
+             evidencia real de producción, ~1,5% de acierto (IC 95%
+             0,9-2,3%, n=1.212) -- sin ventaja estadística demostrada.
+             Se sigue mostrando (nunca se descarta el dato), pero
+             SEPARADA y colapsada por defecto, para no diluir la única
+             categoría con evidencia real (OPORTUNIDAD_PRIORITARIA,
+             21,1% de acierto, arriba). -->
+        <details class="opp-vigilar-details">
+          <summary id="opp-vigilar-summary">En observación -- sin confirmar, no operar</summary>
+          <div class="opp-list opp-vigilar-list" id="opp-vigilar-list"></div>
+        </details>
       </section>
 
       <!-- ================= LEARNING ================= -->

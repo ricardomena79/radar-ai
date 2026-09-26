@@ -153,11 +153,17 @@ async function fetchOportunidades() {
 }
 
 function _ordenarOportunidades(oportunidades) {
-  // Solo las 2 categorías que priority_classifier.py ya considera
-  // accionables -- PREPARACION/NO_TOCAR no compiten por los 6 lugares
-  // del bloque principal (siguen existiendo en /api/radar-oportunidades
-  // tal cual, esta pantalla simplemente no las prioriza en un espacio
-  // reducido a propósito).
+  // Bloque PRINCIPAL (2026-09-26, autorizado explícitamente tras revisión
+  // con evidencia real de 3.5 semanas de producción): SOLO
+  // OPORTUNIDAD_PRIORITARIA -- es la única categoría con ventaja
+  // estadística real demostrada (21,1% de acierto a +10%, IC 95%
+  // 17,9-24,8%, n=525, medido día por día sobre 15 sesiones reales).
+  // VIGILAR medido en la MISMA revisión: 1,5% de acierto (IC 0,9-2,3%,
+  // n=1.212) -- prácticamente ruido, mezclarlo acá diluía la única señal
+  // real detrás de docenas de candidatas sin valor. VIGILAR se mueve a su
+  // propia sección secundaria, ver `_ordenarVigilar()`/`renderOportunidades()`
+  // más abajo -- nunca se descarta el dato, solo se deja de presentar
+  // como si fuera equivalente a una oportunidad real.
   //
   // Corrección (2026-09-11, autorizada explícitamente tras auditoría de
   // producción con evidencia real -- caso ATEC: OPORTUNIDAD_PRIORITARIA,
@@ -176,7 +182,7 @@ function _ordenarOportunidades(oportunidades) {
   // badge/orden de presentación (nunca para excluir), basados en
   // `stage_observed_at` (reconfirmación real), no en `detected_at`.
   const accionablesFrescas = oportunidades.filter(
-    (o) => o.estado_final === "OPORTUNIDAD_PRIORITARIA" || o.estado_final === "VIGILAR"
+    (o) => o.estado_final === "OPORTUNIDAD_PRIORITARIA"
   );
 
   // Gracia de 1 ciclo (ver comentario de `_oportunidadesGraciaPorTicker`
@@ -230,6 +236,24 @@ function _ordenarOportunidades(oportunidades) {
     if (prioridadDiff !== 0) return prioridadDiff;
     return (b.detected_at || "").localeCompare(a.detected_at || "");
   });
+}
+
+// Sección SECUNDARIA (2026-09-26, autorizado explícitamente) -- VIGILAR:
+// medido con evidencia real, 1,5% de acierto (IC 95% 0,9-2,3%, n=1.212) --
+// prácticamente sin ventaja estadística. Se sigue exponiendo (nunca se
+// descarta el dato), pero SEPARADA del bloque principal y sin la gracia
+// de 1 ciclo (esa protección es para no perder de vista la única señal
+// con valor real -- acá no hace falta el mismo cuidado). Orden simple,
+// mismo criterio de `prioridad_score`/`detected_at` que el bloque
+// principal, sin mezclar antigüedad/gracia.
+function _ordenarVigilar(oportunidades) {
+  return oportunidades
+    .filter((o) => o.estado_final === "VIGILAR")
+    .sort((a, b) => {
+      const prioridadDiff = (b.prioridad_score || 0) - (a.prioridad_score || 0);
+      if (prioridadDiff !== 0) return prioridadDiff;
+      return (b.detected_at || "").localeCompare(a.detected_at || "");
+    });
 }
 
 function _proyeccionHtml(o) {
@@ -350,6 +374,12 @@ function renderOportunidades() {
   _renderOportunidadesEn(document.getElementById("opp-list"), top);
   _renderOportunidadesEn(document.getElementById("inicio-opp-preview"), top.slice(0, MAX_OPORTUNIDADES_INICIO));
   _actualizarEstadoGeneralInicio({ oportunidadesCount: accionables.length });
+
+  // Sección secundaria VIGILAR (2026-09-26) -- ver `_ordenarVigilar()`.
+  const vigilar = _ordenarVigilar(_oportunidades);
+  const vigilarSummary = document.getElementById("opp-vigilar-summary");
+  if (vigilarSummary) vigilarSummary.textContent = `En observación -- sin confirmar, no operar (${vigilar.length})`;
+  _renderOportunidadesEn(document.getElementById("opp-vigilar-list"), vigilar.slice(0, 20));
 }
 
 /* ============================================================
