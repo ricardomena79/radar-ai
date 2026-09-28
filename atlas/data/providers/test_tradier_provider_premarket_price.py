@@ -197,13 +197,16 @@ def test_caso_c_ask_no_positivo_si_sigue_rescatando_bid_only():
     """Complemento del test anterior -- `ask<=0` (evidencia INDEPENDIENTE
     del bid, nunca comparativa) sigue clasificándose `"invalido"` y sigue
     activando bid-only sin cambios, a diferencia de `ask<bid`
-    (`"cruzado"`, ahora excluido)."""
-    data = _base(bid=50.0, ask=0.0)
+    (`"cruzado"`, ahora excluido). `bid=97.0` (en vez de 50.0, que tras la
+    recalibración de 2026-09-26 implicaría un cambio implausible de -49.5%
+    y caería al Caso C) mantiene el cambio implícito dentro del umbral de
+    plausibilidad -- este test cubre la rama `"invalido"`, no plausibilidad."""
+    data = _base(bid=97.0, ask=0.0)
     q = _to_quote(data, "TEST", now=NOW)
     assert q.price_basis == "tradier_bid_only"
     assert q.price_is_stale is False
     assert q.bid_only_reason == "ask_invalido"
-    assert q.last_price == 50.0
+    assert q.last_price == 97.0
 
 
 def test_caso_c_bid_vencido_aunque_ask_este_fresco_conserva_last():
@@ -722,13 +725,14 @@ def test_fase1d_quote_generico_sin_tradier_executable_price_espeja_last_price():
 
 # ---------------------------------------------------------------------------
 # Plausibilidad de BID_ONLY (2026-09-14, auditoría read-only + fix
-# autorizado explícitamente) -- casos reales AIN/IONR: un bid "fresco" por
-# timestamp puede seguir siendo económicamente stale (congelado en el mismo
-# valor exacto entre fechas distintas), generando una caída falsa de
-# 59.87%-77.68% contra `prevclose`. Umbral `BID_ONLY_MAX_PLAUSIBLE_CHANGE_PCT`
-# (55.0), con evidencia real de ambos lados: MRNA (49.91%, mayor movimiento
-# real de un solo día ya documentado en este sistema) queda por debajo;
-# AIN/IONR (mínimo real encontrado, 59.87%) queda por encima.
+# autorizado explícitamente; RECALIBRADO 2026-09-26) -- casos reales
+# AIN/IONR: un bid "fresco" por timestamp puede seguir siendo económicamente
+# stale (congelado en el mismo valor exacto entre fechas distintas),
+# generando una caída falsa de 59.87%-77.68% contra `prevclose`. Umbral
+# `BID_ONLY_MAX_PLAUSIBLE_CHANGE_PCT` recalibrado a 15.0 (2026-09-26) sobre
+# 71.887 casos históricos reales -- el cambio reclamado por un bid-only no
+# tiene poder predictivo del cambio real del día en NINGÚN rango de
+# magnitud (mediana real ~0.8%-1.4% incluso con reclamos de 70-100%).
 # ---------------------------------------------------------------------------
 
 def _bidonly_base(**overrides):
@@ -742,7 +746,7 @@ def _bidonly_base(**overrides):
 
 def test_bidonly_plausibilidad_1_nssc_real_sigue_funcionando():
     """Caso real NSSC (2026-08-24, el caso que originó BID_ONLY): +2.39%
-    -- muy por debajo del umbral (55%) -- debe seguir rescatándose sin
+    -- muy por debajo del umbral (15%) -- debe seguir rescatándose sin
     ningún cambio de comportamiento. Mismo caso que
     `test_bidonly_1_nssc_real_bid_fresco_ask_vencido_y_roto`, repetido acá
     para dejar explícito que el fix no lo afecta."""
@@ -792,10 +796,10 @@ def test_bidonly_plausibilidad_3_ionr_real_bid_degenerado_se_rechaza():
 
 def test_bidonly_plausibilidad_4_justo_debajo_del_umbral_sigue_bidonly():
     """Frontera inferior: un cambio implícito apenas por debajo del umbral
-    (55%) debe seguir aceptándose -- confirma que el corte es el esperado,
+    (15%) debe seguir aceptándose -- confirma que el corte es el esperado,
     no accidentalmente más estricto."""
     prevclose = 100.0
-    bid = prevclose * (1 - (BID_ONLY_MAX_PLAUSIBLE_CHANGE_PCT - 1) / 100)  # ~54% de caída
+    bid = prevclose * (1 - (BID_ONLY_MAX_PLAUSIBLE_CHANGE_PCT - 1) / 100)  # ~14% de caída
     data = _bidonly_base(bid=bid, prevclose=prevclose)
     q = _to_quote(data, "TEST", now=NOW)
     assert q.price_basis == "tradier_bid_only"
@@ -805,10 +809,10 @@ def test_bidonly_plausibilidad_4_justo_debajo_del_umbral_sigue_bidonly():
 
 def test_bidonly_plausibilidad_5_justo_encima_del_umbral_se_rechaza():
     """Frontera superior: un cambio implícito apenas por encima del umbral
-    (55%) debe rechazarse -- confirma que el corte es el esperado, no
+    (15%) debe rechazarse -- confirma que el corte es el esperado, no
     accidentalmente más laxo."""
     prevclose = 100.0
-    bid = prevclose * (1 - (BID_ONLY_MAX_PLAUSIBLE_CHANGE_PCT + 1) / 100)  # ~56% de caída
+    bid = prevclose * (1 - (BID_ONLY_MAX_PLAUSIBLE_CHANGE_PCT + 1) / 100)  # ~16% de caída
     data = _bidonly_base(bid=bid, prevclose=prevclose)
     q = _to_quote(data, "TEST", now=NOW)
     assert q.price_basis == "tradier_regular_close_stale"
@@ -816,17 +820,18 @@ def test_bidonly_plausibilidad_5_justo_encima_del_umbral_se_rechaza():
     assert q.change_percent is None
 
 
-def test_bidonly_plausibilidad_6_movimiento_grande_pero_real_sigue_aceptado():
-    """Un movimiento grande pero por debajo del umbral (ej. +40%, dentro
-    del rango de movimientos reales ya documentados en este sistema, ver
-    `price_integrity.EXTREME_CHANGE_PCT_THRESHOLD`) debe seguir
-    aceptándose -- el fix NUNCA debe convertir volatilidad legítima en
-    dato inválido, solo rechazar lo manifiestamente implausible."""
-    data = _bidonly_base(bid=140.0, prevclose=100.0)  # +40%, real y plausible
+def test_bidonly_plausibilidad_6_movimiento_grande_ahora_se_rechaza_por_falta_de_correlacion_real():
+    """RECALIBRADO 2026-09-26: un movimiento grande (+40%) vía bid-only ya
+    NO se acepta -- la auditoría histórica (71.887 casos) mostró que
+    reclamos de esta magnitud casi nunca corresponden a un movimiento real
+    (mediana real <1.5% incluso en el bucket 30-40%). El bid-only nunca es
+    una fuente confiable de MAGNITUD -- por eso ahora cae al Caso C
+    (conservador) en vez de mostrarse como si fuera un movimiento real."""
+    data = _bidonly_base(bid=140.0, prevclose=100.0)  # +40%, reclamo típico de los casos falsos auditados
     q = _to_quote(data, "TEST", now=NOW)
-    assert q.price_basis == "tradier_bid_only"
-    assert q.last_price == 140.0
-    assert round(q.change_percent, 2) == 40.0
+    assert q.price_basis == "tradier_regular_close_stale"
+    assert q.price_is_stale is True
+    assert q.change_percent is None
 
 
 def test_bidonly_plausibilidad_7_sin_prevclose_mantiene_comportamiento_previo():

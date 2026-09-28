@@ -329,8 +329,9 @@ function _renderOportunidadesEn(el, top) {
     // (precio confiable/comprable) cuando existe; si es null (BID_ONLY/
     // STALE_REGULAR_CLOSE), se sigue mostrando el precio de SEÑAL
     // (price_actual, nunca oculto) con un badge explícito -- Fix 1
-    // (BID_ONLY_MAX_PLAUSIBLE_CHANGE_PCT=55.0) no se toca, sigue siendo el
-    // que decide si un bid-only llega a mostrarse acá.
+    // (BID_ONLY_MAX_PLAUSIBLE_CHANGE_PCT, recalibrado a 15.0 el 2026-09-26)
+    // no se toca acá, sigue siendo el que decide si un bid-only llega a
+    // mostrarse acá.
     const precioMostrado = o.executable_price != null ? o.executable_price : o.price_actual;
     const soloSenal = o.executable_price == null && o.price_actual != null;
     const badgeSoloSenal = soloSenal

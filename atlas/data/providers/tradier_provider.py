@@ -132,7 +132,8 @@ ASK_BROKEN_MIN_RATIO = 1.25
 BID_ONLY_MAX_AGE_SECONDS = _env_float("ATLAS_BID_ONLY_MAX_AGE_SECONDS", 5 * BID_ASK_MAX_AGE_SECONDS)
 
 # --- Plausibilidad del BID_ONLY (2026-09-14, auditoría read-only + fix ------
-# autorizado explícitamente) -------------------------------------------------
+# autorizado explícitamente; RECALIBRADO 2026-09-26 con evidencia histórica
+# completa -- ver abajo) ------------------------------------------------------
 #
 # Casos reales encontrados en producción (consulta de solo lectura contra
 # `radar_candidates.db`, 2026-09-14): AIN e IONR (y ~15+ tickers más)
@@ -150,18 +151,44 @@ BID_ONLY_MAX_AGE_SECONDS = _env_float("ATLAS_BID_ONLY_MAX_AGE_SECONDS", 5 * BID_
 # y ya excluidos del aprendizaje por `confiable_para_aprendizaje`, pero sin
 # esto la detección/Cabina seguían mostrando el movimiento falso).
 #
-# Umbral elegido con evidencia real de AMBOS lados, sin inventar un número
-# nuevo sin anclaje: el mayor movimiento real de un solo día ya documentado
-# y calibrado en este mismo sistema (MRNA, `total_day_change_pct=49.91%`,
-# ancla ya usada en `atlas/data/price_integrity.py::EXTREME_CHANGE_PCT_THRESHOLD`)
-# queda muy por debajo; el menor de los casos degenerados reales
-# encontrados acá (AIN/IONR, 59.87%) queda muy por encima. El punto medio
-# entre ambos (~54.9%) se redondea a 55.0 -- deja margen real de los dos
-# lados, sin pegarse a ninguno de los dos límites conocidos. Solo se aplica
-# cuando hay `prevclose` disponible para comparar -- sin referencia no hay
-# forma de probar que el bid es implausible, así que el comportamiento
-# previo (usar el bid, `change_percent=None`) queda intacto en ese caso.
-BID_ONLY_MAX_PLAUSIBLE_CHANGE_PCT = _env_float("ATLAS_BID_ONLY_MAX_PLAUSIBLE_CHANGE_PCT", 55.0)
+# Umbral original (55.0, 2026-09-14) elegido como punto medio entre 2 únicos
+# casos ancla (MRNA 49.91% real vs. AIN/IONR ~60%+ falsos) -- sin muestra
+# amplia todavía en ese momento.
+#
+# RECALIBRACIÓN (2026-09-26, autorizada explícitamente -- "investiga y
+# corregilo"): auditoría completa de las 71.887 detecciones históricas vía
+# `tradier_bid_only`, agrupadas por bucket de `|change_pct_at_detection|`
+# reclamado, comparadas contra el cambio REAL del día
+# (`total_day_change_pct` en `candidate_outcome`):
+#
+#   bucket claimed    n        mediana real
+#   0-10%            42.394    1.31%
+#   10-20%           10.791    1.42%
+#   20-30%            4.579    1.33%
+#   30-40%            2.167    1.32%
+#   40-55%            2.303    1.16%
+#   55-70%            8.294    0.84%
+#   70-100%           1.339    0.91%
+#
+# El cambio reclamado NO tiene poder predictivo del cambio real en NINGÚN
+# rango -- incluso claimed 70-100% mediana real <1%. Ni siquiera el
+# subconjunto "mejor" (claimed>=20% Y real>=15%, 126 de 18.702 casos,
+# 0.67%) sirve de evidencia a favor del umbral viejo: en esos mismos casos
+# el reclamo sigue sobrestimando el movimiento real por un factor de 3x a
+# 40x (ej. REAX reclamó +900.4%, real +18.6%; VMAR reclamó +806.4%, real
+# +23.4%) -- el bid-only nunca es una medida confiable de magnitud, ni
+# siquiera cuando "acierta" que hubo algún movimiento real.
+#
+# Con esta evidencia, 55.0 no discrimina nada -- se recalibra a 15.0: bien
+# por debajo de todos los casos falsos ya confirmados (AIN/IONR 59.87%+),
+# con margen razonable sobre el ruido normal de diferencia bid/prevclose,
+# consistente con que ya en el bucket 10-20% la mediana real (1.42%) es
+# indistinguible de la de 0-10% (1.31%) -- no hay evidencia de que subir
+# más el piso capture movimiento real adicional. Solo se aplica cuando hay
+# `prevclose` disponible para comparar -- sin referencia no hay forma de
+# probar que el bid es implausible, así que el comportamiento previo (usar
+# el bid, `change_percent=None`) queda intacto en ese caso.
+BID_ONLY_MAX_PLAUSIBLE_CHANGE_PCT = _env_float("ATLAS_BID_ONLY_MAX_PLAUSIBLE_CHANGE_PCT", 15.0)
 
 
 @dataclass
@@ -268,15 +295,18 @@ def _resolve_current_price(data: Dict[str, Any], now: datetime) -> Dict[str, Any
     confiar cuando la evidencia es ambigua.
 
     Blindaje 2 (2026-09-14, auditoría read-only + fix autorizado
-    explícitamente, ver `BID_ONLY_MAX_PLAUSIBLE_CHANGE_PCT` arriba): el
+    explícitamente, RECALIBRADO 2026-09-26 con evidencia histórica
+    completa -- ver `BID_ONLY_MAX_PLAUSIBLE_CHANGE_PCT` arriba): el
     blindaje de 2026-09-11 (párrafo anterior) no alcanzaba para AIN/IONR
     -- ahí el ask SÍ estaba limpiamente descartado (`vencido`/`ausente`,
     evidencia independiente, nunca `"roto"`/`"cruzado"`), así que pasaban
     igual, con un bid económicamente stale pero "fresco" por timestamp
     (congelado en el mismo valor exacto entre fechas distintas). Ahora,
     con `prevclose` disponible, un cambio implícito del bid contra
-    `prevclose` que supere `BID_ONLY_MAX_PLAUSIBLE_CHANGE_PCT` (55%,
-    evidencia real de ambos lados) NUNCA se acepta como bid-only -- cae al
+    `prevclose` que supere `BID_ONLY_MAX_PLAUSIBLE_CHANGE_PCT` (15%,
+    recalibrado 2026-09-26 sobre 71.887 casos históricos -- el cambio
+    reclamado no tiene poder predictivo del cambio real en ningún rango)
+    NUNCA se acepta como bid-only -- cae al
     Caso C. Sin `prevclose` no hay forma de probar que es implausible, el
     comportamiento previo (usar el bid) queda intacto.
 
