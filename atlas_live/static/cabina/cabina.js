@@ -294,6 +294,24 @@ function _porQueHtml(o) {
   return razones.length ? razones.join(" · ") : "Sin detalle adicional disponible.";
 }
 
+// Badge de cabecera por estado_final -- solo los 2 estados que esta
+// pantalla realmente muestra (bloque principal=OPORTUNIDAD_PRIORITARIA,
+// sección secundaria=VIGILAR, ver `_ordenarOportunidades()`/`_ordenarVigilar()`),
+// con PREPARACION/NO_TOCAR cubiertos por si algún caller futuro los pasa.
+const ESTADO_BADGE = {
+  OPORTUNIDAD_PRIORITARIA: { label: "Oportunidad prioritaria", cls: "estado-oportunidad" },
+  VIGILAR: { label: "Vigilar", cls: "estado-vigilar" },
+  PREPARACION: { label: "Preparación", cls: "estado-preparacion" },
+  NO_TOCAR: { label: "No tocar", cls: "estado-no-tocar" },
+};
+
+// Tarjeta (2026-09-29, autorizado explícitamente -- el usuario pidió este
+// formato en lugar de la fila compacta anterior): separa con claridad 2
+// números que antes se mezclaban en un único "chg" -- `change_pct_at_detection`
+// (CONGELADO, el % que tenía la acción en el momento exacto de la
+// detección, nunca cambia después) de `change_pct_actual` (VIVO, se
+// recalcula en cada fetch con el precio más reciente). Ningún dato nuevo:
+// ambos campos ya viajaban en el JSON, solo no se mostraban juntos.
 function _renderOportunidadesEn(el, top) {
   if (!el) return;
   if (!top.length) {
@@ -304,9 +322,12 @@ function _renderOportunidadesEn(el, top) {
   el.innerHTML = top.map((o, i) => {
     const chg = o.change_pct_actual;
     const chgClass = chg > 0 ? "up" : chg < 0 ? "down" : "";
+    const chgDet = o.change_pct_at_detection;
+    const chgDetClass = chgDet > 0 ? "up" : chgDet < 0 ? "down" : "";
     const rvol = o.relative_volume_hoy ?? o.relative_volume_at_detection;
     const rank1 = i === 0 ? " rank-1" : i === 1 ? " rank-2" : "";
     const detectadaHace = o.minutos_desde_deteccion != null ? `hace ${Math.round(o.minutos_desde_deteccion)} min` : "";
+    const badge = ESTADO_BADGE[o.estado_final] || { label: o.estado_final || "--", cls: "estado-no-tocar" };
 
     // Vigencia (2026-09-08, autorizado explícitamente): NUNCA saca a la
     // candidata de la lista ni de su bucket -- solo agrega este badge.
@@ -339,27 +360,38 @@ function _renderOportunidadesEn(el, top) {
       : "";
 
     return `
-    <div class="opp-row${rank1}${antigua ? " opp-antigua" : ""}${revalidando ? " opp-revalidando" : ""}">
-      <div class="rank-badge">${i + 1}</div>
-      <div class="tk-col">
-        <div class="ticker">${o.ticker}</div>
-        <div class="meta">${detectadaHace}${o.racional_available ? " · Racional" : ""}</div>
-        ${badgeAntigua}
-        ${badgeRevalidando}
-        ${badgeSoloSenal}
+    <div class="opp-card${rank1}${antigua ? " opp-antigua" : ""}${revalidando ? " opp-revalidando" : ""}">
+      <div class="opp-card-head">
+        <div class="opp-card-head-left">
+          <div class="rank-badge">${i + 1}</div>
+          <div>
+            <div class="ticker">${o.ticker}</div>
+            <div class="meta">Precio actual: ${precioMostrado != null ? "$" + fmtNum(precioMostrado, 2) : "--"} · ${detectadaHace}${o.racional_available ? " · Racional" : ""}</div>
+          </div>
+        </div>
+        <div class="opp-badge-estado ${badge.cls}">${badge.label}</div>
       </div>
-      <div class="px-col">
-        <div class="price">${precioMostrado != null ? "$" + fmtNum(precioMostrado, 2) : "--"}</div>
-        <div class="chg ${chgClass}">${fmtPct(chg)}</div>
+      ${badgeAntigua || badgeRevalidando || badgeSoloSenal ? `<div class="opp-card-flags">${badgeAntigua}${badgeRevalidando}${badgeSoloSenal}</div>` : ""}
+
+      <div class="opp-card-body">
+        <div class="opp-card-section">
+          <div class="opp-card-label">Cuándo la detectó</div>
+          <div class="opp-card-row"><span>Hora</span><span>${fmtTimeSimple(o.detected_at)}${o.session ? " (" + o.session + ")" : ""}</span></div>
+          <div class="opp-card-row"><span>Precio al detectar</span><span>${o.price_at_detection != null ? "$" + fmtNum(o.price_at_detection, 2) : "--"}</span></div>
+          <div class="opp-card-row"><span>Cambio detectado</span><span class="${chgDetClass}">${fmtPct(chgDet)}</span></div>
+        </div>
+
+        <div class="opp-card-section">
+          <div class="opp-card-label">Qué está pasando ahora</div>
+          <div class="opp-card-row"><span>Cambio desde detección</span><span class="${chgClass}">${fmtPct(chg)}</span></div>
+          <div class="opp-card-row"><span>Dirección</span><span>${o.direction || "--"}</span></div>
+          <div class="opp-card-row"><span>Etapa</span><span>${o.stage || "--"}</span></div>
+          <div class="opp-card-row"><span title="${PM_VOLUMEN_TITLE}">RVOL</span><span>${rvol != null ? fmtNum(rvol) + "x" : "--"}</span></div>
+        </div>
       </div>
-      <div class="vol-col">
-        <div class="vol-val" title="RVOL -- volumen acumulado hoy vs. promedio de SESIÓN REGULAR completa (Quote.average_volume). Estructuralmente bajo en los primeros minutos de premarket -- ver Vol. premarket abajo.">${rvol != null ? "RVOL " + fmtNum(rvol) + "x" : "--"}</div>
-        ${_pmVolumenHtml(o)}
-      </div>
-      <div class="proj-col">${_proyeccionHtml(o)}</div>
-      <div class="why-col">
-        <div class="why-line">${_porQueHtml(o)}</div>
-      </div>
+
+      <div class="opp-card-motivo ${chgClass === "down" ? "motivo-alerta" : ""}">${_porQueHtml(o)}</div>
+      <div class="opp-card-evidencia">${_proyeccionHtml(o)}${_pmVolumenHtml(o)}</div>
     </div>`;
   }).join("");
 }
@@ -1631,7 +1663,12 @@ function renderPatronHorario(data) {
 
 /* ---------------- arranque ---------------- */
 
-const OPORTUNIDADES_POLL_MS = 30000;
+// 2026-09-29, autorizado explícitamente -- bajado de 30s a 8s para poder
+// ver "cambio desde detección" moverse casi en vivo, tarjeta por tarjeta.
+// APRENDIZAJE_POLL_MS queda separada a propósito: ese chip no tiene motivo
+// para refrescarse tan seguido, se mantiene en el intervalo anterior.
+const OPORTUNIDADES_POLL_MS = 8000;
+const APRENDIZAJE_POLL_MS = 30000;
 const UNIVERSO_POLL_MS = 60000;
 const CAPACITY_POLL_MS = 600000; // 10 min -- la capacidad cambia despacio
 const PATRON_HORARIO_POLL_MS = 600000; // 10 min -- cambia muy despacio (TTL backend 6h)
@@ -1653,7 +1690,7 @@ function init() {
   fetchPatronHorario();
 
   setInterval(fetchOportunidades, OPORTUNIDADES_POLL_MS);
-  setInterval(fetchAprendizaje, OPORTUNIDADES_POLL_MS);
+  setInterval(fetchAprendizaje, APRENDIZAJE_POLL_MS);
   setInterval(fetchUniverso, UNIVERSO_POLL_MS);
   setInterval(fetchCapacidad, CAPACITY_POLL_MS);
   setInterval(fetchPatronHorario, PATRON_HORARIO_POLL_MS);
