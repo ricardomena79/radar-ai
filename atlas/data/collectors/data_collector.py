@@ -5,8 +5,21 @@ from typing import Dict, List, Optional
 import pandas as pd
 
 from atlas.data.models.quote import Quote
-from atlas.data.providers.base import DataProvider
+from atlas.data.providers.base import DataProvider, ProviderError
 from atlas.storage import MemoryCache
+
+# Caché NEGATIVO de get_history() (2026-09-29, autorizado explícitamente --
+# investigación real: con Yahoo rate-limitando de forma sostenida,
+# `_score_symbol()` en `atlas_live/scan_worker.py` pide historial del MISMO
+# símbolo hasta 5 veces por ciclo (atlas_score.py + momentum_engine.py +
+# decision_engine.py, cada uno con su propia llamada daily/intradía) -- como
+# el caché de ÉXITO nunca se alcanzaba a escribir (la excepción se propaga
+# ANTES de esa línea), cada una de esas 5 llamadas repetía el mismo
+# round-trip de red que ya había fallado segundos antes. TTL deliberadamente
+# corto (mucho menor al de éxito, 300s) -- alcanza para cubrir las llamadas
+# redundantes de un mismo símbolo dentro del mismo ciclo, sin ocultar una
+# recuperación real de Yahoo por mucho tiempo.
+DEFAULT_HISTORY_ERROR_TTL = 90.0
 
 
 class DataCollector:
@@ -23,10 +36,12 @@ class DataCollector:
         provider: DataProvider,
         cache: Optional[MemoryCache] = None,
         cache_ttl: float = 300.0,
+        history_error_ttl: float = DEFAULT_HISTORY_ERROR_TTL,
     ) -> None:
         self._provider = provider
         self._cache = cache if cache is not None else MemoryCache()
         self._cache_ttl = cache_ttl
+        self._history_error_ttl = history_error_ttl
 
     @staticmethod
     def _quote_key(symbol: str) -> str:
@@ -35,6 +50,10 @@ class DataCollector:
     @staticmethod
     def _history_key(symbol: str, period: str, interval: str) -> str:
         return f"history:{symbol.upper()}:{period}:{interval}"
+
+    @staticmethod
+    def _history_error_key(symbol: str, period: str, interval: str) -> str:
+        return f"history_error:{symbol.upper()}:{period}:{interval}"
 
     def get_quote(self, symbol: str) -> Quote:
         """Obtiene la cotización de un símbolo, sirviendo desde caché si está vigente."""
@@ -71,12 +90,26 @@ class DataCollector:
         return [quotes[symbol] for symbol in symbols if symbol in quotes]
 
     def get_history(self, symbol: str, period: str = "6mo", interval: str = "1d") -> pd.DataFrame:
-        """Obtiene barras OHLCV históricas, sirviendo desde caché si está vigente."""
+        """Obtiene barras OHLCV históricas, sirviendo desde caché si está vigente.
+
+        Caché negativo (2026-09-29): un fallo reciente del proveedor para
+        el mismo símbolo/period/interval se re-lanza directo desde memoria,
+        sin volver a golpear la red -- ver `DEFAULT_HISTORY_ERROR_TTL`
+        arriba para la evidencia real que motivó esto."""
         key = self._history_key(symbol, period, interval)
         cached = self._cache.get(key)
         if cached is not None:
             return cached
 
-        history = self._provider.get_history(symbol, period=period, interval=interval)
+        error_key = self._history_error_key(symbol, period, interval)
+        cached_error = self._cache.get(error_key)
+        if cached_error is not None:
+            raise cached_error
+
+        try:
+            history = self._provider.get_history(symbol, period=period, interval=interval)
+        except ProviderError as exc:
+            self._cache.set(error_key, exc, ttl=self._history_error_ttl)
+            raise
         self._cache.set(key, history, ttl=self._cache_ttl)
         return history
