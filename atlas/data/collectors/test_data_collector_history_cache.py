@@ -14,8 +14,10 @@ from atlas.data.providers.base import ProviderError, QuoteNotFoundError
 class _FakeProvider:
     def __init__(self):
         self.history_calls = []
+        self.quote_calls = []
         self.next_error = None
         self.next_result = None
+        self.next_quote = None
 
     def get_history(self, symbol, period="6mo", interval="1d"):
         self.history_calls.append((symbol, period, interval))
@@ -24,7 +26,14 @@ class _FakeProvider:
         return self.next_result if self.next_result is not None else pd.DataFrame({"Close": [1.0]})
 
     def get_quote(self, symbol):
-        raise NotImplementedError
+        self.quote_calls.append(symbol)
+        if self.next_error is not None:
+            raise self.next_error
+        if self.next_quote is not None:
+            return self.next_quote
+        from atlas.data.models.quote import Quote
+        return Quote(symbol=symbol, name=None, last_price=1.0, change_percent=0.0, volume=1,
+                     open=1.0, high=1.0, low=1.0, previous_close=1.0)
 
     def get_quotes(self, symbols):
         raise NotImplementedError
@@ -104,10 +113,34 @@ def test_quote_not_found_error_tambien_se_cachea_como_negativo():
     assert len(provider.history_calls) == 1
 
 
-def test_get_quote_y_get_quotes_sin_cambios_de_comportamiento():
-    """El caché negativo es EXCLUSIVO de get_history() -- get_quote()/
-    get_quotes() no se tocan en absoluto."""
-    from atlas.data.models.quote import Quote
+def test_get_quote_fallo_no_afecta_otro_symbol():
+    provider = _FakeProvider()
+    provider.next_error = ProviderError("Too Many Requests")
+    collector = DataCollector(provider, quote_error_ttl=90.0)
+
+    with pytest.raises(ProviderError):
+        collector.get_quote("AAPL")
+    with pytest.raises(ProviderError):
+        collector.get_quote("NVDA")
+    assert provider.quote_calls == ["AAPL", "NVDA"]  # ambos tocaron la red, son símbolos distintos
+
+
+def test_get_quote_exito_se_sigue_cacheando_normalmente():
+    provider = _FakeProvider()
+    collector = DataCollector(provider)
+    q1 = collector.get_quote("AAPL")
+    q2 = collector.get_quote("AAPL")
+    assert q1.symbol == q2.symbol == "AAPL"
+    assert provider.quote_calls == ["AAPL"]  # segundo servido desde caché de éxito, sin cambios
+
+
+def test_get_quote_tambien_tiene_cache_negativo_2026_09_29():
+    """Extensión el mismo día (autorizado explícitamente) -- get_quote()
+    gana el MISMO caché negativo que get_history(), tras confirmar en
+    producción que Yahoo Y Finnhub pueden rate-limitar cotizaciones al
+    mismo tiempo. get_quotes() (el lote) NO se toca -- ver docstring de
+    DataCollector.get_quotes(), el circuit breaker de MultiProvider ya
+    protege ese camino."""
 
     class _QuoteProvider:
         def __init__(self):
@@ -124,12 +157,41 @@ def test_get_quote_y_get_quotes_sin_cambios_de_comportamiento():
             raise NotImplementedError
 
     provider = _QuoteProvider()
+    collector = DataCollector(provider, quote_error_ttl=90.0)
+    with pytest.raises(ProviderError):
+        collector.get_quote("AAPL")
+    with pytest.raises(ProviderError):
+        collector.get_quote("AAPL")
+    assert provider.calls == 1  # el segundo se sirvió del caché negativo, sin red
+
+
+def test_get_quotes_lote_sin_cambios_de_comportamiento():
+    """get_quotes() (el LOTE, distinto de get_quote()) no gana caché
+    negativo propio en esta extensión -- el circuit breaker de
+    MultiProvider ya cubre la redundancia entre ciclos para el camino de
+    lote, sin necesitar una segunda capa acá."""
+
+    class _QuotesProvider:
+        def __init__(self):
+            self.calls = 0
+
+        def get_quote(self, symbol):
+            raise NotImplementedError
+
+        def get_quotes(self, symbols):
+            self.calls += 1
+            raise ProviderError("boom")
+
+        def get_history(self, symbol, period="6mo", interval="1d"):
+            raise NotImplementedError
+
+    provider = _QuotesProvider()
     collector = DataCollector(provider)
     with pytest.raises(ProviderError):
-        collector.get_quote("AAPL")
+        collector.get_quotes(["AAPL"])
     with pytest.raises(ProviderError):
-        collector.get_quote("AAPL")
-    assert provider.calls == 2  # sin caché negativo acá, comportamiento intacto
+        collector.get_quotes(["AAPL"])
+    assert provider.calls == 2  # sin cambios -- comportamiento intacto
 
 
 if __name__ == "__main__":

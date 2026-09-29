@@ -1,15 +1,25 @@
 """Tests de MultiProvider -- failover (ya existente, cero cambios de
-comportamiento) + circuit breaker de get_history() (2026-09-29, autorizado
-explícitamente, ver `_history_breaker_*`/`CIRCUIT_BREAKER_*` en
-multi_provider.py). Sin red -- proveedores falsos, control total del
-tiempo vía monkeypatch de `time.monotonic`."""
+comportamiento) + circuit breaker de get_history()/get_quote()/get_quotes()
+(2026-09-29, autorizado explícitamente, ver `_breaker_*`/`CIRCUIT_BREAKER_*`
+en multi_provider.py -- extendido el mismo día de history a quote/quotes
+tras confirmar en producción que Yahoo Y Finnhub pueden rate-limitar
+cotizaciones al mismo tiempo). Sin red -- proveedores falsos, control
+total del tiempo vía monkeypatch de `time.monotonic`."""
 
 import pandas as pd
 import pytest
 
 import atlas_live.data_fusion.multi_provider as mp
+from atlas.data.models.quote import Quote
 from atlas.data.providers.base import ProviderError, QuoteNotFoundError
 from atlas_live.data_fusion.multi_provider import MultiProvider
+
+
+def _quote(symbol="AAPL", price=100.0):
+    return Quote(
+        symbol=symbol, name=None, last_price=price, change_percent=0.0, volume=1,
+        open=price, high=price, low=price, previous_close=price,
+    )
 
 
 class _FakeProvider:
@@ -20,8 +30,11 @@ class _FakeProvider:
     def __init__(self):
         self.history_calls = 0
         self.quote_calls = 0
+        self.quotes_calls = 0
         self.next_error = None
         self.next_result = None
+        self.next_quote = None
+        self.next_quotes = None
 
     def get_history(self, symbol, period="6mo", interval="1d"):
         self.history_calls += 1
@@ -33,10 +46,13 @@ class _FakeProvider:
         self.quote_calls += 1
         if self.next_error is not None:
             raise self.next_error
-        raise NotImplementedError
+        return self.next_quote if self.next_quote is not None else _quote(symbol)
 
     def get_quotes(self, symbols):
-        raise NotImplementedError
+        self.quotes_calls += 1
+        if self.next_error is not None:
+            raise self.next_error
+        return self.next_quotes if self.next_quotes is not None else [_quote(s) for s in symbols]
 
 
 _counter = [0]
@@ -53,23 +69,11 @@ def _named_provider_class():
 def _reset_breaker_state():
     """El breaker es intencionalmente global (ver docstring del módulo) --
     se limpia antes/después de cada test para que no haya fugas entre tests."""
-    mp._history_consecutive_failures.clear()
-    mp._history_breaker_open_until.clear()
+    mp._breaker_consecutive_failures.clear()
+    mp._breaker_open_until.clear()
     yield
-    mp._history_consecutive_failures.clear()
-    mp._history_breaker_open_until.clear()
-
-
-def test_failover_get_quote_sin_cambios():
-    """Regresión pura -- comportamiento ya existente, sin tocar."""
-    ClsA, ClsB = _named_provider_class(), _named_provider_class()
-    a, b = ClsA(), ClsB()
-    a.next_error = ProviderError("boom")
-    b.next_result = None
-    provider = MultiProvider([a, b])
-    with pytest.raises(NotImplementedError):
-        provider.get_quote("AAPL")
-    assert a.quote_calls == 1
+    mp._breaker_consecutive_failures.clear()
+    mp._breaker_open_until.clear()
 
 
 def test_get_history_exitoso_no_activa_breaker():
@@ -171,7 +175,7 @@ def test_breaker_por_proveedor_no_afecta_al_otro_en_el_failover():
 def test_quote_not_found_error_no_activa_el_breaker():
     """QuoteNotFoundError se propaga tal cual (comportamiento ya existente,
     símbolo puntual, no es una falla del proveedor completo) -- nunca debe
-    contar como fallo del circuit breaker."""
+    contar como fallo del circuit breaker, en NINGUNO de los 3 métodos."""
     Cls = _named_provider_class()
     fake = Cls()
     fake.next_error = QuoteNotFoundError("XXXX")
@@ -181,6 +185,11 @@ def test_quote_not_found_error_no_activa_el_breaker():
         with pytest.raises(QuoteNotFoundError):
             provider.get_history("XXXX")
     assert fake.history_calls == mp.CIRCUIT_BREAKER_FAILURES + 2  # nunca se saltó, breaker nunca se abrió
+
+    for _ in range(mp.CIRCUIT_BREAKER_FAILURES + 2):
+        with pytest.raises(QuoteNotFoundError):
+            provider.get_quote("XXXX")
+    assert fake.quote_calls == mp.CIRCUIT_BREAKER_FAILURES + 2
 
 
 def test_breaker_es_global_entre_instancias_de_multiprovider():
@@ -202,14 +211,110 @@ def test_breaker_es_global_entre_instancias_de_multiprovider():
     assert fake_b.history_calls == 0  # nunca llegó a tocar la red -- el breaker viajó con la clase
 
 
+# --- get_quote()/get_quotes() (2026-09-29, extensión del fix de arriba) ---
+
+def test_get_quote_exitoso_no_activa_breaker():
+    Cls = _named_provider_class()
+    fake = Cls()
+    provider = MultiProvider([fake])
+    q = provider.get_quote("AAPL")
+    assert q.symbol == "AAPL"
+    assert fake.quote_calls == 1
+
+
+def test_get_quote_breaker_se_abre_tras_N_fallos_y_deja_de_intentar():
+    Cls = _named_provider_class()
+    fake = Cls()
+    fake.next_error = ProviderError("Too Many Requests")
+    provider = MultiProvider([fake])
+
+    for _ in range(mp.CIRCUIT_BREAKER_FAILURES):
+        with pytest.raises(ProviderError):
+            provider.get_quote("AAPL")
+    assert fake.quote_calls == mp.CIRCUIT_BREAKER_FAILURES
+
+    with pytest.raises(ProviderError, match="cooldown"):
+        provider.get_quote("AAPL")
+    assert fake.quote_calls == mp.CIRCUIT_BREAKER_FAILURES  # sin incremento
+
+
+def test_get_quotes_lote_exitoso_no_activa_breaker():
+    Cls = _named_provider_class()
+    fake = Cls()
+    provider = MultiProvider([fake])
+    result = provider.get_quotes(["AAPL", "NVDA"])
+    assert {q.symbol for q in result} == {"AAPL", "NVDA"}
+    assert fake.quotes_calls == 1
+
+
+def test_get_quotes_breaker_se_abre_tras_N_fallos_y_deja_de_intentar():
+    Cls = _named_provider_class()
+    fake = Cls()
+    fake.next_error = ProviderError("Too Many Requests")
+    provider = MultiProvider([fake])
+
+    for _ in range(mp.CIRCUIT_BREAKER_FAILURES):
+        with pytest.raises(ProviderError):
+            provider.get_quotes(["AAPL", "NVDA"])
+    assert fake.quotes_calls == mp.CIRCUIT_BREAKER_FAILURES
+
+    with pytest.raises(ProviderError, match="cooldown"):
+        provider.get_quotes(["AAPL", "NVDA"])
+    assert fake.quotes_calls == mp.CIRCUIT_BREAKER_FAILURES  # sin incremento
+
+
+def test_ambos_proveedores_rate_limitados_a_la_vez_get_quote():
+    """Reproduce el incidente real de producción -- Yahoo Y Finnhub
+    rate-limitando al mismo tiempo -- confirma que tras agotar el breaker
+    de AMBOS, la 6ta llamada falla instantáneo (sin red) en vez de volver
+    a intentar los 2 round-trips que ya se sabe que van a fallar."""
+    ClsYahoo, ClsFinnhub = _named_provider_class(), _named_provider_class()
+    yahoo, finnhub = ClsYahoo(), ClsFinnhub()
+    yahoo.next_error = ProviderError("Yahoo Too Many Requests")
+    finnhub.next_error = ProviderError("Finnhub HTTP 429")
+    provider = MultiProvider([yahoo, finnhub])
+
+    for _ in range(mp.CIRCUIT_BREAKER_FAILURES):
+        with pytest.raises(ProviderError):
+            provider.get_quote("AAPL")
+    assert yahoo.quote_calls == mp.CIRCUIT_BREAKER_FAILURES
+    assert finnhub.quote_calls == mp.CIRCUIT_BREAKER_FAILURES
+
+    with pytest.raises(ProviderError, match="cooldown"):
+        provider.get_quote("AAPL")
+    assert yahoo.quote_calls == mp.CIRCUIT_BREAKER_FAILURES  # ninguno de los 2 se volvió a tocar
+    assert finnhub.quote_calls == mp.CIRCUIT_BREAKER_FAILURES
+
+
+def test_breaker_de_history_no_afecta_al_de_quote_del_mismo_proveedor():
+    """Un proveedor rate-limitado en get_history() sigue respondiendo
+    get_quote() con normalidad -- cada método lleva su propio contador
+    (kind='history' vs kind='quote'), nunca se mezclan."""
+    Cls = _named_provider_class()
+    fake = Cls()
+    fake.next_error = ProviderError("Too Many Requests")
+    provider = MultiProvider([fake])
+
+    for _ in range(mp.CIRCUIT_BREAKER_FAILURES):
+        with pytest.raises(ProviderError):
+            provider.get_history("AAPL")
+    with pytest.raises(ProviderError, match="cooldown"):
+        provider.get_history("AAPL")  # get_history() ya en cooldown
+
+    fake.next_error = None  # get_quote() nunca falló -- debe seguir funcionando normal
+    q = provider.get_quote("AAPL")
+    assert q.symbol == "AAPL"
+    assert fake.quote_calls == 1  # get_quote() nunca fue afectado por el breaker de history
+
+
 if __name__ == "__main__":
     import traceback
 
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     p = f = 0
     for fn in fns:
-        mp._history_consecutive_failures.clear()
-        mp._history_breaker_open_until.clear()
+        mp._breaker_consecutive_failures.clear()
+        mp._breaker_open_until.clear()
         try:
             fn()
             print("PASS", fn.__name__)

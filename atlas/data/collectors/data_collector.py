@@ -21,6 +21,15 @@ from atlas.storage import MemoryCache
 # recuperación real de Yahoo por mucho tiempo.
 DEFAULT_HISTORY_ERROR_TTL = 90.0
 
+# Caché NEGATIVO de get_quote() (2026-09-29, autorizado explícitamente --
+# mismo día, extensión del fix de arriba tras confirmar en producción que
+# Yahoo Y Finnhub pueden rate-limitar cotizaciones al mismo tiempo, dejando
+# la app entera sin threads libres -- ver docstring de
+# `atlas_live/data_fusion/multi_provider.py`). Mismo criterio que el
+# histórico: un fallo reciente para el mismo símbolo se re-lanza desde
+# memoria, sin volver a golpear la red.
+DEFAULT_QUOTE_ERROR_TTL = 60.0
+
 
 class DataCollector:
     """Envuelve un DataProvider; el resto del sistema depende solo de esta clase.
@@ -37,15 +46,21 @@ class DataCollector:
         cache: Optional[MemoryCache] = None,
         cache_ttl: float = 300.0,
         history_error_ttl: float = DEFAULT_HISTORY_ERROR_TTL,
+        quote_error_ttl: float = DEFAULT_QUOTE_ERROR_TTL,
     ) -> None:
         self._provider = provider
         self._cache = cache if cache is not None else MemoryCache()
         self._cache_ttl = cache_ttl
         self._history_error_ttl = history_error_ttl
+        self._quote_error_ttl = quote_error_ttl
 
     @staticmethod
     def _quote_key(symbol: str) -> str:
         return f"quote:{symbol.upper()}"
+
+    @staticmethod
+    def _quote_error_key(symbol: str) -> str:
+        return f"quote_error:{symbol.upper()}"
 
     @staticmethod
     def _history_key(symbol: str, period: str, interval: str) -> str:
@@ -56,13 +71,26 @@ class DataCollector:
         return f"history_error:{symbol.upper()}:{period}:{interval}"
 
     def get_quote(self, symbol: str) -> Quote:
-        """Obtiene la cotización de un símbolo, sirviendo desde caché si está vigente."""
+        """Obtiene la cotización de un símbolo, sirviendo desde caché si está vigente.
+
+        Caché negativo (2026-09-29): un fallo reciente del proveedor para
+        el mismo símbolo se re-lanza directo desde memoria -- ver
+        `DEFAULT_QUOTE_ERROR_TTL` arriba."""
         key = self._quote_key(symbol)
         cached = self._cache.get(key)
         if cached is not None:
             return cached
 
-        quote = self._provider.get_quote(symbol)
+        error_key = self._quote_error_key(symbol)
+        cached_error = self._cache.get(error_key)
+        if cached_error is not None:
+            raise cached_error
+
+        try:
+            quote = self._provider.get_quote(symbol)
+        except ProviderError as exc:
+            self._cache.set(error_key, exc, ttl=self._quote_error_ttl)
+            raise
         self._cache.set(key, quote, ttl=self._cache_ttl)
         return quote
 
