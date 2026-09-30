@@ -1045,11 +1045,6 @@
     "type": "EQUITY"
   },
   {
-    "symbol": "BA",
-    "name": "Boeing Company, The",
-    "type": "EQUITY"
-  },
-  {
     "symbol": "BABA",
     "name": "Alibaba Group",
     "type": "EQUITY"
@@ -5385,11 +5380,6 @@
     "type": "ETF"
   },
   {
-    "symbol": "HODU",
-    "name": "Direxion Daily HOOD Bull 2X Shares",
-    "type": "ETF"
-  },
-  {
     "symbol": "HOG",
     "name": "Harley-Davidson, Inc.",
     "type": "EQUITY"
@@ -5403,16 +5393,6 @@
     "symbol": "HON",
     "name": "Honeywell International Inc.",
     "type": "EQUITY"
-  },
-  {
-    "symbol": "HOOD",
-    "name": "Robinhood Markets, Inc.",
-    "type": "EQUITY"
-  },
-  {
-    "symbol": "HOOG",
-    "name": "Themes ETF Trust Leveraged Robinhood ETF",
-    "type": "ETF"
   },
   {
     "symbol": "HOOX",
@@ -9950,11 +9930,6 @@
     "type": "EQUITY"
   },
   {
-    "symbol": "ROBN",
-    "name": "T-Rex 2X Long HOOD Daily Target ETF",
-    "type": "ETF"
-  },
-  {
     "symbol": "ROBO",
     "name": "Robo Global Robotics & Automation ETF",
     "type": "ETF"
@@ -12260,11 +12235,6 @@
     "type": "ETF"
   },
   {
-    "symbol": "USDE",
-    "name": "StablecoinX Inc Class A",
-    "type": "EQUITY"
-  },
-  {
     "symbol": "USHY",
     "name": "iShares Broad USD High Yield Corporate Bond ETF",
     "type": "ETF"
@@ -13388,11 +13358,6 @@
     "symbol": "XRAY",
     "name": "DENTSPLY International Inc.",
     "type": "EQUITY"
-  },
-  {
-    "symbol": "XRPT",
-    "name": "2X XRP ETF",
-    "type": "ETF"
   },
   {
     "symbol": "XRT",
