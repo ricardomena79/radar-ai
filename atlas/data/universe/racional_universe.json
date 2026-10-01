@@ -13588,5 +13588,40 @@
     "symbol": "ZYXI",
     "name": "Zynex Inc",
     "type": "EQUITY"
+  },
+  {
+    "symbol": "CHWM",
+    "name": "Chilwa Minerals Limited - American Depository Shares",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "XX",
+    "name": "Roundhill S&P 500 Target 10,000 2030 ETF",
+    "type": "ETF"
+  },
+  {
+    "symbol": "TDEM",
+    "name": "T. Rowe Price Dynamic Emerging Markets Bond ETF",
+    "type": "ETF"
+  },
+  {
+    "symbol": "OCTI",
+    "name": "AllianzIM International Equity Buffer15 Uncapped Oct ETF",
+    "type": "ETF"
+  },
+  {
+    "symbol": "MMHI",
+    "name": "NYLIM MacKay Muni High Income ETF",
+    "type": "ETF"
+  },
+  {
+    "symbol": "LLMA",
+    "name": "Global X LLM ETF",
+    "type": "ETF"
+  },
+  {
+    "symbol": "EAFH",
+    "name": "Xtrackers MSCI EAFE 50% Hedged Equity ETF",
+    "type": "ETF"
   }
 ]
