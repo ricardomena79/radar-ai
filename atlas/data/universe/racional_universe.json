@@ -13623,5 +13623,55 @@
     "symbol": "EAFH",
     "name": "Xtrackers MSCI EAFE 50% Hedged Equity ETF",
     "type": "ETF"
+  },
+  {
+    "symbol": "SPXP",
+    "name": "Direxion U.S. 500 Plus ETF",
+    "type": "ETF"
+  },
+  {
+    "symbol": "SLVI",
+    "name": "NEOS Silver High Income ETF",
+    "type": "ETF"
+  },
+  {
+    "symbol": "BBCI",
+    "name": "Bradbury Capital Inc. - Ordinary Shares",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "RINK",
+    "name": "Russell Investments Multisector Bond ETF",
+    "type": "ETF"
+  },
+  {
+    "symbol": "ACYB",
+    "name": "FT Vest Laddered Autocallable Buffer & Resilient Income ETF",
+    "type": "ETF"
+  },
+  {
+    "symbol": "CPU",
+    "name": "Amplify Top 10 Semiconductors ETF",
+    "type": "ETF"
+  },
+  {
+    "symbol": "OAKL",
+    "name": "Oakmark U.S. Concentrated ETF",
+    "type": "ETF"
+  },
+  {
+    "symbol": "SMTJ",
+    "name": "Synera Funds Takumi+ ETF",
+    "type": "ETF"
+  },
+  {
+    "symbol": "TBCVW",
+    "name": "Thunder Bridge Capital Partners V, Ltd. - Warrants",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "PAXGU",
+    "name": "Pine Tree Acquisition Corp. - Units",
+    "type": "EQUITY"
   }
 ]
