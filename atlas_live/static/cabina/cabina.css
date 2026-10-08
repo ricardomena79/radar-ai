@@ -197,6 +197,11 @@ body{
 .opp-card-evidencia .proj-val.proj-sin-dato{font-size:13px;color:var(--text-dim);}
 .opp-card-evidencia .proj-note{font-size:10.5px;color:#3E8A6E;margin-top:1px;}
 .opp-card-evidencia .proj-note-amplia{color:var(--text-faint);font-style:italic;margin-top:3px;}
+.opp-card-evidencia .prob-block{margin-top:7px;}
+.opp-card-evidencia .prob-chips{display:flex;flex-wrap:wrap;gap:5px;margin-top:3px;}
+.opp-card-evidencia .prob-chip{font-size:11px;color:var(--text);background:rgba(11,122,84,.10);border-radius:5px;padding:2px 6px;white-space:nowrap;}
+.opp-card-evidencia .prob-chip b{color:#0B7A54;margin-right:3px;}
+.opp-card-evidencia .prob-chica{opacity:.65;}
 .opp-card-evidencia .vol-pm{font-size:10.5px;color:#3E8A6E;margin-top:4px;}
 .opp-card-evidencia .vol-pm.dim{font-style:italic;color:var(--text-faint);}
 

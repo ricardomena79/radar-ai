@@ -256,6 +256,27 @@ function _ordenarVigilar(oportunidades) {
     });
 }
 
+function _probUmbralesHtml(o) {
+  // Probabilidad MEDIDA (casos pasados reales de esta misma condición) de
+  // llegar a cada umbral en algún momento del día -- ver
+  // `threshold_probability.py`. Con muestra chica se atenúa y se avisa.
+  const g = o.probabilidad_umbrales;
+  if (!g || !g.umbrales) return "";
+  const robusta = g.validation_state === "VALIDACION_ROBUSTA";
+  const filas = Object.values(g.umbrales).map(u =>
+    `<span class="prob-chip" title="${u.aciertos} de ${g.n} casos · intervalo ${fmtNum(u.ci_inferior)}%–${fmtNum(u.ci_superior)}%">
+       <b>+${fmtNum(u.umbral_pct, 0)}%</b> ${fmtNum(u.pct)}%</span>`
+  ).join("");
+  const nota = robusta
+    ? `${g.n} casos pasados de esta condición`
+    : `muestra chica (${g.n} casos) -- tomar con cautela`;
+  return `<div class="prob-block${robusta ? "" : " prob-chica"}">
+            <div class="proj-label">Chance de llegar a</div>
+            <div class="prob-chips">${filas}</div>
+            <div class="proj-note">en algún momento del día · ${nota}</div>
+          </div>`;
+}
+
 function _proyeccionHtml(o) {
   // Fuente ÚNICA y canónica de la proyección: la predicción CONGELADA
   // (la misma que audita Precisión de Magnitud) -- nunca se mezcla con
@@ -275,11 +296,13 @@ function _proyeccionHtml(o) {
     return `<div class="proj-label">Proyección Atlas</div>
             <div class="proj-val">+${fmtNum(pred.predicted_pct)}%</div>
             <div class="proj-note">${pred.muestra_n ? `mediana de ${pred.muestra_n} casos similares` : "evidencia histórica"}</div>
-            ${notaAmplia}`;
+            ${notaAmplia}
+            ${_probUmbralesHtml(o)}`;
   }
   return `<div class="proj-label">Proyección Atlas</div>
           <div class="proj-val proj-sin-dato">Sin evidencia suficiente</div>
-          <div class="proj-note">Atlas todavía no tiene un grupo comparable para esta condición</div>`;
+          <div class="proj-note">Atlas todavía no tiene un grupo comparable para esta condición</div>
+          ${_probUmbralesHtml(o)}`;
 }
 
 function _porQueHtml(o) {

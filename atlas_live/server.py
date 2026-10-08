@@ -1319,6 +1319,12 @@ def _api_radar_oportunidades_impl():
         p["ticker"]: p for p in radar_registry.magnitud_predictions_for_date(market_date)
     }
 
+    from atlas_live.radar import threshold_probability as tprob
+    try:
+        threshold_table = tprob.get_cached_threshold_table(market_date)
+    except Exception:
+        threshold_table = {}
+
     now = datetime.now(timezone.utc)
 
     # Marcador de barrido real (2026-09-23, histéresis de datos de precio,
@@ -1491,6 +1497,7 @@ def _api_radar_oportunidades_impl():
         # exista una (nunca se recalcula acá, para que se pueda calificar
         # después contra el resultado real sin que "se mueva").
         o["prediccion_magnitud_congelada"] = magnitud_preds_by_ticker.get(o["ticker"])
+        o["probabilidad_umbrales"] = tprob.lookup(threshold_table, o.get("direction"), o.get("stage"))
 
         candidate_snapshot = dcomp.candidate_from_radar_row(o, market_date, estado_validacion)
         features = dcomp.features_from_radar_row(o)
@@ -1964,6 +1971,33 @@ def api_candidate_full_history():
             "ticker": ticker, "market_date": market_date,
         }), 404
     return jsonify(historia)
+
+
+@app.route("/api/probabilidad-umbrales")
+def api_probabilidad_umbrales():
+    """Probabilidad MEDIDA de que una candidata alcance +2% / +5% / +10% en
+    algún momento del día después de la detección, por condición
+    `(direction, alert_stage)`. Sale de los casos pasados reales de Atlas
+    (`candidate_outcome`, solo `market_date` anteriores a hoy), con
+    intervalo de Wilson y estado de validación por grupo. Solo lectura,
+    informativo: no afecta ninguna decisión."""
+    from atlas_live.memory import market_hours as _mh
+    from atlas_live.radar import threshold_probability as tprob
+
+    market_date = _mh.market_date()
+    try:
+        table = tprob.get_cached_threshold_table(market_date)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": f"{type(exc).__name__}: {exc}", "grupos": []}), 200
+    grupos = sorted(table.values(), key=lambda g: (-g["n"], g["direction"], g["stage"]))
+    return jsonify({
+        "ok": True,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "as_of_date": market_date,
+        "criterio": "maximo del dia despues de la deteccion (max_return_after_detection_pct), casos finales y confiables de dias anteriores",
+        "umbrales_pct": list(tprob.THRESHOLDS_PCT),
+        "grupos": grupos,
+    })
 
 
 @app.route("/api/flujo-sectorial")
