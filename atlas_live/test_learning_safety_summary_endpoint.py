@@ -35,6 +35,16 @@ finally:
 from atlas_live.core import learning_safety_summary as lss  # noqa: E402
 
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _sin_cache_de_resumen():
+    server._SUMMARY_CACHE.clear()
+    yield
+    server._SUMMARY_CACHE.clear()
+
+
 def _client():
     return server.app.test_client()
 
@@ -85,3 +95,32 @@ def test_contra_el_estado_real_no_filtra_eventos():
     # el veredicto del experimento bidireccional debe estar presente y ser
     # uno de los 5 valores conocidos.
     assert body["bidirectional_shadow_verdict"]["veredicto"] in bvi.VERDICTS_BIDIRECCIONAL
+
+
+def test_resumen_se_cachea_y_recalcula_una_sola_vez(monkeypatch):
+    from atlas_live.core import learning_safety_summary as lss
+
+    llamadas = []
+
+    def fake():
+        llamadas.append(1)
+        return {"ok": True, "n": len(llamadas)}
+
+    monkeypatch.setattr(lss, "build_safety_summary", fake)
+    c = _client()
+    r1 = c.get("/api/aprendizaje-seguridad-resumen").get_json()
+    r2 = c.get("/api/aprendizaje-seguridad-resumen").get_json()
+    assert r1 == r2 and len(llamadas) == 1
+
+
+def test_learning_maturity_se_cachea_por_fecha(monkeypatch):
+    from atlas_live.learning import live_summary
+
+    llamadas = []
+    monkeypatch.setattr(live_summary, "get_live_learning_summary",
+                        lambda market_date=None: (llamadas.append(market_date) or {"d": market_date}))
+    c = _client()
+    c.get("/api/learning-maturity?date=2026-10-07")
+    c.get("/api/learning-maturity?date=2026-10-07")
+    c.get("/api/learning-maturity?date=2026-10-06")
+    assert llamadas == ["2026-10-07", "2026-10-06"]

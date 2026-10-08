@@ -15,6 +15,7 @@ llama a `main()`, solo importa `app`.
 import os
 import sys
 import threading
+import time
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
@@ -2035,7 +2036,7 @@ def api_aprendizaje_seguridad_resumen():
     Nunca lanza."""
     from atlas_live.core import learning_safety_summary as lss
 
-    return jsonify(lss.build_safety_summary())
+    return jsonify(_cached_summary("aprendizaje-seguridad-resumen", lss.build_safety_summary, ttl=max(SUMMARY_CACHE_TTL_SECONDS, 0) * 5))
 
 
 @app.route("/api/finnhub-radar-resumen")
@@ -2105,6 +2106,34 @@ def api_storage_guard_status():
     return jsonify(sg.status())
 
 
+_SUMMARY_CACHE: Dict[str, Tuple[float, Any]] = {}
+_SUMMARY_CACHE_LOCKS: Dict[str, threading.Lock] = {}
+_SUMMARY_CACHE_GUARD = threading.Lock()
+SUMMARY_CACHE_TTL_SECONDS = float(os.environ.get("ATLAS_SUMMARY_CACHE_TTL_SECONDS", "60"))
+
+
+def _cached_summary(key: str, builder, ttl: float = None):
+    """Resultado de `builder()` reutilizado hasta `ttl` segundos. Estos
+    resúmenes recorren decenas de miles de filas históricas en cada llamada
+    y la Cabina los consulta cada 30 s desde cada pestaña abierta: sin
+    caché saturan el GIL y dejan sin respuesta a todo el servidor. Un lock
+    por clave hace que solo UNA llamada recalcule; las demás esperan y leen
+    el resultado recién calculado. Si `builder()` falla, la excepción
+    sube igual que antes y no se cachea nada."""
+    ttl = SUMMARY_CACHE_TTL_SECONDS if ttl is None else ttl
+    if ttl <= 0:
+        return builder()
+    with _SUMMARY_CACHE_GUARD:
+        lock = _SUMMARY_CACHE_LOCKS.setdefault(key, threading.Lock())
+    with lock:
+        hit = _SUMMARY_CACHE.get(key)
+        if hit is not None and time.monotonic() - hit[0] < ttl:
+            return hit[1]
+        value = builder()
+        _SUMMARY_CACHE[key] = (time.monotonic(), value)
+        return value
+
+
 @app.route("/api/learning-maturity")
 def api_learning_maturity():
     """Aprendizaje en Vivo + Madurez (2026-08-15, ver
@@ -2116,7 +2145,10 @@ def api_learning_maturity():
     from atlas_live.learning import live_summary
 
     date_param = request.args.get("date")
-    return jsonify(live_summary.get_live_learning_summary(market_date=date_param))
+    return jsonify(_cached_summary(
+        f"learning-maturity:{date_param}",
+        lambda: live_summary.get_live_learning_summary(market_date=date_param),
+    ))
 
 
 @app.route("/api/historical-reference-summary")
