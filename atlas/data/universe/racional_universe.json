@@ -13668,5 +13668,55 @@
     "symbol": "PAXGU",
     "name": "Pine Tree Acquisition Corp. - Units",
     "type": "EQUITY"
+  },
+  {
+    "symbol": "VGTX",
+    "name": "XFUNDS TECHNOLOGY INCOME ETF",
+    "type": "ETF"
+  },
+  {
+    "symbol": "XXSP",
+    "name": "SUBVERSIVE S&P 500 REDCT ETF",
+    "type": "ETF"
+  },
+  {
+    "symbol": "XXQQ",
+    "name": "SUBVERSIV GROW 100 REDCT ETF",
+    "type": "ETF"
+  },
+  {
+    "symbol": "OPTO",
+    "name": "TUTTLE CAPITAL PHTNCS IB ETF",
+    "type": "ETF"
+  },
+  {
+    "symbol": "SKYD.WS",
+    "name": "SKYDANCE CORP",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "SCATW",
+    "name": "Southern Cross Acquisition II Corp. - Warrants",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "SCATR",
+    "name": "Southern Cross Acquisition II Corp. - Rights",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "SCAT",
+    "name": "Southern Cross Acquisition II Corp. - Ordinary Shares",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "TRXB",
+    "name": "TRex Bio",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "MSGR.WI",
+    "name": "MSG RANGERS CORP",
+    "type": "EQUITY"
   }
 ]
