@@ -13671,22 +13671,22 @@
   },
   {
     "symbol": "VGTX",
-    "name": "XFUNDS TECHNOLOGY INCOME ETF",
+    "name": "XFUNDS Technology Income ETF",
     "type": "ETF"
   },
   {
     "symbol": "XXSP",
-    "name": "SUBVERSIVE S&P 500 REDCT ETF",
+    "name": "Subversive S&P 500 Redacted ETF",
     "type": "ETF"
   },
   {
     "symbol": "XXQQ",
-    "name": "SUBVERSIV GROW 100 REDCT ETF",
+    "name": "Subversive Growth 100 Redacted ETF",
     "type": "ETF"
   },
   {
     "symbol": "OPTO",
-    "name": "TUTTLE CAPITAL PHTNCS IB ETF",
+    "name": "Tuttle Capital Photonics Income Blast ETF",
     "type": "ETF"
   },
   {
@@ -13718,5 +13718,15 @@
     "symbol": "MSGR.WI",
     "name": "MSG RANGERS CORP",
     "type": "EQUITY"
+  },
+  {
+    "symbol": "AIOK",
+    "name": "AI OKTO CORP. - Common Stock",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "KMLM",
+    "name": "KraneShares Mount Lucas Managed Futures Index Strategy ETF",
+    "type": "ETF"
   }
 ]
