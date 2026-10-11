@@ -13728,5 +13728,50 @@
     "symbol": "KMLM",
     "name": "KraneShares Mount Lucas Managed Futures Index Strategy ETF",
     "type": "ETF"
+  },
+  {
+    "symbol": "BA",
+    "name": "Boeing Company (The) Common Stock",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "FL",
+    "name": "Foot Locker, Inc.",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "GOGL",
+    "name": "Corgi GOOGL 2x Daily ETF",
+    "type": "ETF"
+  },
+  {
+    "symbol": "HOOD",
+    "name": "Robinhood Markets, Inc. - Class A Common Stock",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "PARA",
+    "name": "Banzai International, Inc. - Class A Common Stock",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "RDFN",
+    "name": "Redfin Corporation",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "WBA",
+    "name": "Walgreens Boots Alliance, Inc.",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "WOLF",
+    "name": "Wolfspeed, Inc. Common Stock New",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "X",
+    "name": "United States Steel Corporation",
+    "type": "EQUITY"
   }
 ]

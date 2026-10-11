@@ -17,8 +17,8 @@ def test_se_cruza_con_el_universo_y_solo_devuelve_simbolos_de_racional():
     universo = load_universe()
     assert assets and all(a.symbol in universo for a in assets)
     assert all(eh.is_extended_hours(a.symbol) for a in assets)
-    # BA/HOOD figuran en el listado pero no en el universo operativo
-    assert "BA" in eh.load_extended_hours_symbols() and "BA" not in {a.symbol for a in assets}
+    # BA/HOOD/WOLF figuran en el listado y en el universo operativo
+    assert {"BA", "HOOD", "WOLF"} <= {a.symbol for a in assets}
     assert [a.symbol for a in assets] == sorted(a.symbol for a in assets)
 
 
