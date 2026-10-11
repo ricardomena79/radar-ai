@@ -33,6 +33,7 @@
       <button class="nav-item" data-view="etfs-normales"><span class="nav-icon">📦</span>ETFs Normales</button>
       <button class="nav-item" data-view="microcap"><span class="nav-icon">🪙</span>Microcap</button>
       <button class="nav-item" data-view="volumen"><span class="nav-icon">📊</span>Volumen</button>
+      <button class="nav-item" data-view="horario-extendido"><span class="nav-icon">🌙</span>Horario extendido</button>
       <button class="nav-item" data-view="oportunidades"><span class="nav-icon">🎯</span>Oportunidades</button>
       <button class="nav-item" data-view="learning"><span class="nav-icon">🧠</span>Learning</button>
       <button class="nav-item" data-view="prediction-journal"><span class="nav-icon">📓</span>Prediction Journal</button>
@@ -106,6 +107,22 @@
         <div class="panel panel-full">
           <input type="text" id="etfs-normales-search" class="mercado-search" placeholder="Buscar símbolo...">
           <div id="etfs-normales-list"><div class="empty-state small">Esperando el primer ciclo...</div></div>
+        </div>
+      </section>
+
+      <!-- ================= HORARIO EXTENDIDO (2026-10-10, autorizado
+           explícitamente) -- instrumentos de Racional habilitados para
+           operar fuera del horario regular. Solo funciona entre el cierre
+           y la apertura. ================= -->
+      <section id="view-horario-extendido" class="view">
+        <div class="view-head">
+          <div class="eyebrow">Instrumentos habilitados en horario extendido, entre el cierre y la apertura</div>
+          <h1>Horario extendido</h1>
+          <div class="view-sub" id="horario-extendido-meta">disponible después del cierre y antes de la apertura</div>
+        </div>
+        <div class="panel panel-full">
+          <input type="text" id="horario-extendido-search" class="mercado-search" placeholder="Buscar símbolo...">
+          <div id="horario-extendido-list"><div class="empty-state small">Esperando el primer ciclo...</div></div>
         </div>
       </section>
 

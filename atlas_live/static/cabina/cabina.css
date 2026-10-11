@@ -293,3 +293,4 @@ body{
   .opp-card-body{grid-template-columns:1fr;gap:8px;}
   .secondary-grid{grid-template-columns:1fr;}
 }
+.ext-tag{font-size:9px;font-weight:700;letter-spacing:.05em;color:var(--text-faint);border:1px solid var(--border,rgba(0,0,0,.15));border-radius:4px;padding:0 4px;margin-left:5px;vertical-align:middle;}

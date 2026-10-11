@@ -183,6 +183,16 @@ microcap_view.start_microcap_view()
 from atlas_live import volumen_view
 volumen_view.start_volumen_view()
 
+# Horario extendido (2026-10-10, autorizado explícitamente): ranking en vivo
+# de los instrumentos de Racional habilitados para operar fuera del horario
+# regular. Solo trabaja entre el cierre y la apertura -- módulo HERMANO de
+# microcap_view.py/volumen_view.py, estado propio, mismo aislamiento total
+# respecto a decisión/aprendizaje -- ver docstring de
+# atlas_live/extended_hours_view.py. Se habilita/deshabilita por
+# ATLAS_EXTENDED_HOURS_VIEW_ENABLED (default: encendido).
+from atlas_live import extended_hours_view
+extended_hours_view.start_extended_hours_view()
+
 
 @app.route("/")
 def index():
@@ -468,6 +478,18 @@ def api_volumen():
     aislado del radar, el motor de decisión y el aprendizaje -- ver
     docstring de `volumen_view.py`."""
     return jsonify(volumen_view.get_volumen_snapshot())
+
+
+@app.route("/api/horario-extendido")
+def api_horario_extendido():
+    """Horario extendido (2026-10-10, autorizado explícitamente): snapshot
+    ya cacheado del ranking de los instrumentos de Racional habilitados
+    para operar fuera del horario regular. `activa` es False durante la
+    sesión regular. Público, sin token. Solo lectura -- NUNCA dispara una
+    consulta nueva a Tradier. Completamente aislado del radar, el motor de
+    decisión y el aprendizaje -- ver docstring de
+    `extended_hours_view.py`."""
+    return jsonify(extended_hours_view.get_extended_hours_snapshot())
 
 
 @app.route("/api/admin/mercado-cycle-now", methods=["POST"])

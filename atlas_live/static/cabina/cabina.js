@@ -879,6 +879,112 @@ function startMicrocapPolling() {
 }
 
 /* ============================================================
+ * HORARIO EXTENDIDO (2026-10-10, autorizado explícitamente) -- instrumentos
+ * de Racional habilitados para operar fuera del horario regular. Mismo tipo
+ * de lista que Mercado/Microcap (reutiliza _sparklineSvg/_mercadoAgeLabel/
+ * _mercadoAgeShort/_mercadoInitials), fuente propia: GET /api/horario-extendido
+ * (snapshot cacheado por atlas_live/extended_hours_view.py). Solo funciona
+ * entre el cierre y la apertura: durante la sesión regular el backend
+ * informa `activa=false` y acá se muestra un aviso en vez de la lista.
+ * ============================================================ */
+
+const HORARIO_EXTENDIDO_POLL_MS = 3000;
+let _horarioExtendido = { generated_at: null, rows: [], activa: null };
+let _horarioExtendidoSearch = "";
+
+async function fetchHorarioExtendido() {
+  try {
+    const res = await fetch("/api/horario-extendido");
+    _horarioExtendido = await res.json();
+  } catch (e) {
+    // Sin cambios de estado ante un fallo de red puntual.
+  }
+  renderHorarioExtendido();
+}
+
+function renderHorarioExtendido() {
+  const listEl = document.getElementById("horario-extendido-list");
+  const metaEl = document.getElementById("horario-extendido-meta");
+  const searchEl = document.getElementById("horario-extendido-search");
+  if (!listEl || !metaEl) return;
+
+  const d = _horarioExtendido;
+  const rows = d.rows || [];
+
+  if (d.activa === false) {
+    if (searchEl) searchEl.style.display = "none";
+    metaEl.textContent = "disponible después del cierre y antes de la apertura";
+    listEl.innerHTML = `<div class="empty-state small">El mercado está en sesión regular. Esta sección funciona
+      después del cierre (16:00 hora de Nueva York) y antes de la apertura (9:30).</div>`;
+    return;
+  }
+  if (searchEl) searchEl.style.display = "";
+
+  const cerrado = d.session_actual === "closed";
+  metaEl.textContent = d.generated_at
+    ? `${d.frescos} con precio fresco de ${d.total_universe} habilitadas · ${_mercadoAgeLabel(d.generated_at)}${cerrado ? " · mercado cerrado, último dato" : ""}`
+    : "disponible después del cierre y antes de la apertura";
+
+  if (!rows.length) {
+    listEl.innerHTML = `<div class="empty-state small">${d.ultimo_error ? "Error: " + d.ultimo_error : "Esperando el primer ciclo..."}</div>`;
+    return;
+  }
+
+  const q = _horarioExtendidoSearch.trim().toUpperCase();
+  const filtered = q
+    ? rows.filter((r) => r.symbol.toUpperCase().includes(q) || (r.name || "").toUpperCase().includes(q))
+    : rows;
+  if (!filtered.length) {
+    listEl.innerHTML = `<div class="empty-state small">Sin resultados para "${_horarioExtendidoSearch}".</div>`;
+    return;
+  }
+
+  listEl.innerHTML = filtered.map((r) => {
+    const isUp = (r.change_pct ?? 0) >= 0;
+    const priceText = r.price != null ? r.price.toFixed(2) : "--";
+    let pctClass = "";
+    if (r.change_pct > 0) pctClass = "mercado-up";
+    else if (r.change_pct < 0) pctClass = "mercado-down";
+    const changePctText = r.change_pct == null
+      ? "s/d"
+      : `<span class="${pctClass}">${r.change_pct > 0 ? "+" : ""}${r.change_pct.toFixed(2)}%</span>`;
+
+    let extIcon = '<span class="mercado-ext" title="Dato fresco de este ciclo">🟢</span>';
+    if (r.data_status === "STALE") {
+      extIcon = `<span class="mercado-ext mercado-stale" title="Último dato conocido (${_mercadoAgeShort(r.data_age_seconds)})">⏱</span>`;
+    } else if (r.price_is_stale) {
+      extIcon = '<span class="mercado-ext mercado-stale" title="Precio vencido -- fuera de sesión">⏱</span>';
+    }
+    const etf = r.tipo === "ETF" ? ' <span class="ext-tag">ETF</span>' : "";
+
+    return `
+      <div class="mercado-row" data-symbol="${r.symbol}">
+        <div class="mercado-logo">${_mercadoInitials(r.symbol)}</div>
+        <div class="mercado-id">
+          <div class="mercado-name">${r.name || r.symbol}${etf}</div>
+          <div class="mercado-ticker">${r.symbol}</div>
+        </div>
+        <div class="mercado-price">${priceText}</div>
+        <div class="mercado-change-pct">${changePctText}</div>
+        ${extIcon}
+        ${_sparklineSvg(r.sparkline, isUp)}
+      </div>`;
+  }).join("");
+}
+
+function startHorarioExtendidoPolling() {
+  fetchHorarioExtendido();
+  setInterval(fetchHorarioExtendido, HORARIO_EXTENDIDO_POLL_MS);
+  const searchInput = document.getElementById("horario-extendido-search");
+  if (searchInput) {
+    searchInput.addEventListener("input", () => {
+      _horarioExtendidoSearch = searchInput.value;
+      renderHorarioExtendido();
+    });
+  }
+}
+
+/* ============================================================
  * VOLUMEN (2026-09-24, autorizado explícitamente) -- mismo tipo de
  * ranking/presentación que Mercado (reutiliza _sparklineSvg/_mercadoAgeLabel/
  * _mercadoAgeShort/_mercadoInitials tal cual), pero ordenado por RVOL
@@ -1708,6 +1814,7 @@ function init() {
   startEtfsNormalesPolling();
   startMicrocapPolling();
   startVolumenPolling();
+  startHorarioExtendidoPolling();
   initUniversoYahoo();
   fetchCapacidad();
   fetchPatronHorario();
