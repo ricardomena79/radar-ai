@@ -13773,5 +13773,95 @@
     "symbol": "X",
     "name": "United States Steel Corporation",
     "type": "EQUITY"
+  },
+  {
+    "symbol": "MNDR",
+    "name": "Mobile-health Network Solutions - Class A Ordinary Shares",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "LNKS",
+    "name": "Linkers Industries Limited - Class A Ordinary Shares",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "YMAT",
+    "name": "J-Star Holding Co., Ltd. - Class A Ordinary Shares",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "CLWT",
+    "name": "Euro Tech Holdings Company Limited - Ordinary Shares",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "AACPW",
+    "name": "Apogee Acquisition Corp - Warrant",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "DAICW",
+    "name": "CID HoldCo, Inc. - Warrants",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "WFF",
+    "name": "WF Holding Limited - Ordinary Shares",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "QUMSR",
+    "name": "Quantumsphere Acquisition Corp. - Rights",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "DKI",
+    "name": "DarkIris Inc. - Class A Ordinary Shares",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "SSEAR",
+    "name": "Starry Sea Acquisition Corp - Rights",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "ABLV",
+    "name": "Able View Global Inc. - Class B Ordinary Shares",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "YHNAR",
+    "name": "YHN Acquisition I Limited - Right",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "VIVK",
+    "name": "Vivakor, Inc. - Common Stock",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "ALISU",
+    "name": "Calisa Acquisition Corp - Units",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "CTNM",
+    "name": "Contineum Therapeutics, Inc. - Common stock",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "DNMXW",
+    "name": "Dynamix Corporation III - Warrants",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "SXTC",
+    "name": "China SXT Pharmaceuticals, Inc. - Class A Ordinary Shares",
+    "type": "EQUITY"
+  },
+  {
+    "symbol": "CTY",
+    "name": "City Therapeutics",
+    "type": "EQUITY"
   }
 ]
