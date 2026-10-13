@@ -75,6 +75,66 @@ def test_termina_la_pausa_y_se_vuelve_a_consultar(monkeypatch):
     _FakeYahoo.raise_rate_limit = True
     with pytest.raises(RateLimitError):
         mv._fetch_yahoo_chunk(["AAA"])
-    monkeypatch.setattr(mv, "_yahoo_blocked_until", time.monotonic() - 1)
+    monkeypatch.setattr(mv.yahoo_shared_pause, "_blocked_until", time.monotonic() - 1)
     _FakeYahoo.raise_rate_limit = False
     assert set(mv._fetch_yahoo_chunk(["AAA"])) == {"AAA"}
+
+
+# --- pre-filtro de scan_worker: usa la misma pausa y se apaga sin mercado ---
+
+def _assets(n):
+    from atlas.data.universe import Asset
+    return [Asset(symbol=f"S{i}", name="x", type="EQUITY") for i in range(n)]
+
+
+def test_prefilter_no_sale_a_yahoo_si_esta_en_pausa(monkeypatch):
+    import atlas_live.scan_worker as sw
+
+    def boom(symbol):
+        raise AssertionError("no debe consultar Yahoo en pausa")
+
+    monkeypatch.setattr(sw.yf, "Ticker", boom)
+    mv.yahoo_shared_pause.trigger()
+    assert sw._lightweight_change_pct(_assets(1)[0]) is None
+
+
+def test_un_rate_limit_del_prefiltro_pausa_a_las_vistas(monkeypatch):
+    import atlas_live.scan_worker as sw
+
+    class _Boom:
+        def __init__(self, symbol):
+            pass
+
+        @property
+        def fast_info(self):
+            raise RuntimeError("Too Many Requests. Rate limited.")
+
+    monkeypatch.setattr(sw.yf, "Ticker", _Boom)
+    assert not mv._yahoo_blocked()
+    sw._lightweight_change_pct(_assets(1)[0])
+    assert mv._yahoo_blocked()
+
+
+def test_prefiltro_se_apaga_en_overnight_y_fin_de_semana(monkeypatch):
+    import atlas_live.memory.market_hours as mh
+    import atlas_live.scan_worker as sw
+
+    llamadas = []
+    monkeypatch.setattr(sw, "_lightweight_change_pct", lambda a: llamadas.append(a) or (a, 1.0))
+    chunk = _assets(5)
+    for sesion in ("overnight", "closed"):
+        monkeypatch.setattr(mh, "get_session", lambda now=None, s=sesion: s)
+        assert sw._prefilter_movers(chunk) == []
+    assert llamadas == []
+    monkeypatch.setattr(mh, "get_session", lambda now=None: "regular")
+    assert sw._prefilter_movers(chunk) != [] and len(llamadas) == 5
+
+
+def test_bloque_grande_sin_datos_pausa_yahoo(monkeypatch):
+    import atlas_live.memory.market_hours as mh
+    import atlas_live.scan_worker as sw
+
+    monkeypatch.setattr(mh, "get_session", lambda now=None: "regular")
+    monkeypatch.setattr(sw, "_lightweight_change_pct", lambda a: None)
+    assert sw._prefilter_movers(_assets(60)) == []
+    assert mv._yahoo_blocked()

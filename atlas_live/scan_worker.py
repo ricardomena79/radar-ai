@@ -41,6 +41,7 @@ from atlas.knowledge import NORMAL, KnowledgeEngine
 from atlas_live import explosive_diagnostics, explosive_engine
 from atlas_live.core import atlas_decision_core as adc
 from atlas_live.core import decision_composition as dcomp
+from atlas_live.data_fusion import yahoo_shared_pause
 from atlas_live.data_fusion.registry import get_default_provider
 from atlas_live.data_fusion.tradier_first_provider import TradierFirstProvider
 from atlas_live.explosive_engine import ExplosiveResult
@@ -393,6 +394,8 @@ def _lightweight_change_pct(asset: Asset) -> Optional[Tuple[Asset, float]]:
     PREFILTER_CHUNK_SIZE: deliberadamente no construye un Quote ni pasa por
     el Data Fusion Engine, solo pide precio + cierre anterior para rankear
     candidatos a entrar al watchlist real."""
+    if yahoo_shared_pause.is_paused():
+        return None
     try:
         fast_info = yf.Ticker(asset.symbol).fast_info
         last_price = fast_info.get("lastPrice")
@@ -401,7 +404,9 @@ def _lightweight_change_pct(asset: Asset) -> Optional[Tuple[Asset, float]]:
             return None
         change_pct = (last_price - previous_close) / previous_close * 100
         return asset, change_pct
-    except Exception:
+    except Exception as exc:
+        if yahoo_shared_pause.looks_like_rate_limit(exc):
+            yahoo_shared_pause.trigger()
         return None
 
 
@@ -412,6 +417,13 @@ def _prefilter_movers(chunk: List[Asset]) -> List[Asset]:
     interrumpe al resto ni tumba el ciclo."""
     if not chunk:
         return []
+    # Sin mercado (overnight / fin de semana) no hay movers del dia que
+    # rankear, y con Yahoo en pausa por rate-limit seguir consultando solo
+    # prolonga el bloqueo: el watchlist se arma con las otras capas.
+    from atlas_live.memory import market_hours
+
+    if market_hours.get_session() in ("overnight", "closed") or yahoo_shared_pause.is_paused():
+        return []
     results: List[Tuple[Asset, float]] = []
     with ThreadPoolExecutor(max_workers=PREFILTER_WORKERS) as executor:
         futures = [executor.submit(_lightweight_change_pct, asset) for asset in chunk]
@@ -419,6 +431,9 @@ def _prefilter_movers(chunk: List[Asset]) -> List[Asset]:
             result = future.result()
             if result is not None:
                 results.append(result)
+    if not results and len(chunk) >= 50:
+        # Un bloque grande sin ningun dato: Yahoo no esta respondiendo.
+        yahoo_shared_pause.trigger()
 
     equities = sorted((r for r in results if r[0].type == "EQUITY"), key=lambda r: abs(r[1]), reverse=True)
     etfs = sorted((r for r in results if r[0].type == "ETF"), key=lambda r: abs(r[1]), reverse=True)

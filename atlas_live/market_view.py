@@ -47,7 +47,7 @@ from atlas.data.providers.base import RateLimitError
 from atlas.data.providers.tradier_provider import TRADIER_CHUNK_SIZE, TradierProvider
 from atlas.data.providers.tradier_symbol_map import normalize
 from atlas.data.universe import load_universe
-from atlas_live.data_fusion import finnhub_shared_budget
+from atlas_live.data_fusion import finnhub_shared_budget, yahoo_shared_pause
 from atlas_live.data_fusion.finnhub_provider import FinnhubProvider
 from atlas_live.data_fusion.multi_source_resolver import (
     es_fresco_independiente,
@@ -386,21 +386,18 @@ def _fetch_with_circuit_breaker(
 # (2) tras un rate-limit todas las vistas dejan de consultar Yahoo durante
 # una pausa, para que el bloqueo se levante.
 YAHOO_QUOTE_TTL_SECONDS = _env_float("ATLAS_YAHOO_QUOTE_TTL_SECONDS", 90.0)
-YAHOO_RATE_LIMIT_COOLDOWN_SECONDS = _env_float("ATLAS_YAHOO_RATE_LIMIT_COOLDOWN_SECONDS", 600.0)
 _yahoo_cache_lock = threading.Lock()
 _yahoo_quote_cache: Dict[str, Tuple[float, Any]] = {}
-_yahoo_blocked_until = 0.0
 
 
 def _yahoo_blocked() -> bool:
-    return time.monotonic() < _yahoo_blocked_until
+    return yahoo_shared_pause.is_paused()
 
 
 def _reset_yahoo_shared_state() -> None:
-    global _yahoo_blocked_until
     with _yahoo_cache_lock:
         _yahoo_quote_cache.clear()
-        _yahoo_blocked_until = 0.0
+    yahoo_shared_pause.reset()
 
 
 def _fetch_yahoo_chunk(symbols: List[str]) -> Dict[str, Any]:
@@ -416,7 +413,6 @@ def _fetch_yahoo_chunk(symbols: List[str]) -> Dict[str, Any]:
     `YAHOO_QUOTE_TTL_SECONDS` (por cualquier vista) y, si Yahoo está en
     pausa por rate-limit, no sale a la red: devuelve lo que haya en caché o
     relanza `RateLimitError`."""
-    global _yahoo_blocked_until
     now = time.monotonic()
     result: Dict[str, Any] = {}
     missing: List[str] = []
@@ -438,8 +434,7 @@ def _fetch_yahoo_chunk(symbols: List[str]) -> Dict[str, Any]:
     try:
         quotes = provider.get_quotes(missing)
     except RateLimitError:
-        with _yahoo_cache_lock:
-            _yahoo_blocked_until = time.monotonic() + YAHOO_RATE_LIMIT_COOLDOWN_SECONDS
+        yahoo_shared_pause.trigger()
         if result:
             return result
         raise
