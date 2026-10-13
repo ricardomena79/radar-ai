@@ -377,6 +377,32 @@ def _fetch_with_circuit_breaker(
     return result, stats
 
 
+# Caché y pausa COMPARTIDAS por todas las vistas (Mercado, ETFs Normales,
+# Microcap, Volumen, Horario extendido): todas llaman a `_fetch_yahoo_chunk`.
+# En overnight Yahoo es la única fuente y cada vista le pedía el universo
+# completo por su cuenta, y aun bloqueado seguían reintentando -- con lo que
+# Yahoo respondía "Too Many Requests" y nada se actualizaba de noche. Ahora
+# (1) un símbolo pedido por varias vistas se consulta una sola vez por TTL, y
+# (2) tras un rate-limit todas las vistas dejan de consultar Yahoo durante
+# una pausa, para que el bloqueo se levante.
+YAHOO_QUOTE_TTL_SECONDS = _env_float("ATLAS_YAHOO_QUOTE_TTL_SECONDS", 90.0)
+YAHOO_RATE_LIMIT_COOLDOWN_SECONDS = _env_float("ATLAS_YAHOO_RATE_LIMIT_COOLDOWN_SECONDS", 600.0)
+_yahoo_cache_lock = threading.Lock()
+_yahoo_quote_cache: Dict[str, Tuple[float, Any]] = {}
+_yahoo_blocked_until = 0.0
+
+
+def _yahoo_blocked() -> bool:
+    return time.monotonic() < _yahoo_blocked_until
+
+
+def _reset_yahoo_shared_state() -> None:
+    global _yahoo_blocked_until
+    with _yahoo_cache_lock:
+        _yahoo_quote_cache.clear()
+        _yahoo_blocked_until = 0.0
+
+
 def _fetch_yahoo_chunk(symbols: List[str]) -> Dict[str, Any]:
     """Un chunk = UNA sesión HTTP compartida (`yf.Tickers`, ya
     implementado en `YahooFinanceProvider.get_quotes()`, heredado sin
@@ -384,10 +410,45 @@ def _fetch_yahoo_chunk(symbols: List[str]) -> Dict[str, Any]:
     símbolo. Si Yahoo devuelve rate-limit, `get_quotes()` ya lo convierte
     en `RateLimitError` y lo relanza de inmediato (comportamiento
     preexistente, reutilizado tal cual) -- se propaga para que el
-    circuit breaker del ciclo lo cuente y frene el resto de los chunks."""
+    circuit breaker del ciclo lo cuente y frene el resto de los chunks.
+
+    Antes de consultar la red reutiliza lo ya pedido hace menos de
+    `YAHOO_QUOTE_TTL_SECONDS` (por cualquier vista) y, si Yahoo está en
+    pausa por rate-limit, no sale a la red: devuelve lo que haya en caché o
+    relanza `RateLimitError`."""
+    global _yahoo_blocked_until
+    now = time.monotonic()
+    result: Dict[str, Any] = {}
+    missing: List[str] = []
+    with _yahoo_cache_lock:
+        for sym in symbols:
+            hit = _yahoo_quote_cache.get(sym)
+            if hit is not None and now - hit[0] < YAHOO_QUOTE_TTL_SECONDS:
+                result[sym] = hit[1]
+            else:
+                missing.append(sym)
+    if not missing:
+        return result
+    if _yahoo_blocked():
+        if result:
+            return result
+        raise RateLimitError("Yahoo en pausa tras un rate-limit reciente -- no se consulta la red")
+
     provider = YahooFinanceLiveProvider()
-    quotes = provider.get_quotes(symbols)
-    return {q.symbol: q for q in quotes}
+    try:
+        quotes = provider.get_quotes(missing)
+    except RateLimitError:
+        with _yahoo_cache_lock:
+            _yahoo_blocked_until = time.monotonic() + YAHOO_RATE_LIMIT_COOLDOWN_SECONDS
+        if result:
+            return result
+        raise
+    fetched_at = time.monotonic()
+    with _yahoo_cache_lock:
+        for q in quotes:
+            _yahoo_quote_cache[q.symbol] = (fetched_at, q)
+    result.update({q.symbol: q for q in quotes})
+    return result
 
 
 def _fetch_yahoo_batch(symbols: List[str]) -> Tuple[Dict[str, Any], Dict[str, int]]:

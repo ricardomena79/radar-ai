@@ -5,11 +5,19 @@ se reemplazan por versiones falsas dentro del módulo
 monkey-patching ya usado en `test_scan_stability.py`."""
 
 import time
+import pytest
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import atlas_live.market_view as mv
 from atlas.data.universe.universe import Asset
+
+
+@pytest.fixture(autouse=True)
+def _yahoo_compartido_limpio():
+    mv._reset_yahoo_shared_state()
+    yield
+    mv._reset_yahoo_shared_state()
 
 
 class _FakeQuote:
