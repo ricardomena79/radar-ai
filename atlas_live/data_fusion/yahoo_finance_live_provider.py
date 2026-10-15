@@ -94,6 +94,27 @@ def _select_session_price(info: Dict[str, Any], market_state: Optional[str]) -> 
     return "regular", regular_price, regular_time
 
 
+def _change_baseline(info: Dict[str, Any], price_type: str, previous_close: Optional[float]) -> Optional[float]:
+    """Precio base contra el que se mide el cambio % de la sesión usada.
+
+    - `regular`: cierre del día anterior (`regularMarketPreviousClose`), sin
+      cambios respecto al comportamiento histórico.
+    - `premarket` / `afterhours`: el ÚLTIMO CIERRE REGULAR, que fuera de la
+      sesión regular Yahoo expone como `regularMarketPrice`. Mientras no es
+      sesión regular, `regularMarketPreviousClose` es el cierre de DOS
+      sesiones atrás; usarlo inflaba (o distorsionaba) el cambio %. Misma
+      base que usan los campos `preMarketChangePercent` /
+      `postMarketChangePercent` del propio Yahoo.
+
+    Si `regularMarketPrice` falta, se cae a `previous_close` (comportamiento
+    anterior) -- nunca se inventa una base."""
+    if price_type in ("premarket", "afterhours"):
+        last_regular_close = info.get("regularMarketPrice") or info.get("currentPrice")
+        if last_regular_close:
+            return last_regular_close
+    return previous_close
+
+
 class YahooFinanceLiveProvider(YahooFinanceProvider):
     """Mismo proveedor de Core, con selección de precio consciente de la
     sesión de mercado (Regular/Premarket/After-hours) -- ver docstring
@@ -116,13 +137,14 @@ class YahooFinanceLiveProvider(YahooFinanceProvider):
         expected_price_type = MARKET_STATE_TO_PRICE_TYPE.get(market_state or "", "regular")
         stale_session_fallback = expected_price_type != "regular" and price_type == "regular"
 
-        # `change_percent` se recalcula con la MISMA fórmula que ya usa
-        # `YahooFinanceProvider` (precio actual vs. cierre del día
-        # anterior) -- no se redefine su significado, solo se le pasa un
-        # "precio actual" más preciso (el de la sesión real) en vez de
-        # siempre el de sesión regular.
-        if selected_price is not None and base.previous_close:
-            change_percent = ((selected_price - base.previous_close) / base.previous_close) * 100
+        # `change_percent` = precio actual (el de la sesión real) vs. el
+        # último cierre regular. Base correcta según sesión: ver
+        # `_change_baseline` (caso real AZN 2026-10-15: en premarket el
+        # cambio salía +6.98% en vez de +2.86% por usar el cierre de dos
+        # sesiones atrás).
+        baseline = _change_baseline(info, price_type, base.previous_close)
+        if selected_price is not None and baseline:
+            change_percent = ((selected_price - baseline) / baseline) * 100
         else:
             change_percent = base.change_percent
 
